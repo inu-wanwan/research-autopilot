@@ -45,12 +45,23 @@ class CheckResult:
 
 
 class ApprovalController:
-    def __init__(self, store: Store, linear_ops: LinearOps, channel: ConfirmationChannel,
-                 notify: Callable[[ApprovalRequest, str], None] = lambda r, m: None) -> None:
+    """``mode="linear"``: the Linear status change alone decides, verified by the actor's user id
+    (``approver_ids``), non-bot actor, ordering after the request, no own write of that state, unchanged
+    spec hash and expiry. ``mode="linear+form"`` additionally requires the Prefect form submission."""
+
+    def __init__(self, store: Store, linear_ops: LinearOps, channel: ConfirmationChannel | None,
+                 notify: Callable[[ApprovalRequest, str], None] = lambda r, m: None, mode: str = "linear+form",
+                 approver_ids: set[str] | None = None) -> None:
+        if mode not in ("linear", "linear+form"):
+            raise ValueError(f"unknown approval mode {mode}")
+        if mode == "linear" and not approver_ids:
+            raise ValueError("linear approval mode requires approver Linear user ids (RA_APPROVER_LINEAR_USER_IDS)")
         self.store = store
         self.ops = linear_ops
         self.channel = channel
         self.notify = notify
+        self.mode = mode
+        self.approver_ids = set(approver_ids or ())
 
     # ---------------------------------------------------------------- request
 
@@ -76,7 +87,8 @@ class ApprovalController:
             return ApprovalRequest.model_validate(existing[0])
         self.ops.set_state(issue, AWAITING, f"approval request {req.request_id} ({kind.value})")
         req.autopilot_set_awaiting_at = utcnow()
-        req.confirmation_ref = self.channel.open(req)
+        if self.mode == "linear+form" and self.channel is not None:
+            req.confirmation_ref = self.channel.open(req)
         self._save(req)
         self.notify(req, "requested")
         return req
@@ -91,8 +103,15 @@ class ApprovalController:
             return self._close(req, ApprovalStatus.EXPIRED, "request expired")
         if current_spec_hash != req.spec_hash:
             return self._close(req, ApprovalStatus.STALE, "task spec changed after the request; a new request is needed")
-        subs = [FormSubmission.model_validate(s) for s in self.store.find(db.form_submissions, request_id=req.request_id)]
         decision_state = HUMAN_DECISION_STATES.get(issue.state_name)
+        if self.mode == "linear":
+            if not decision_state:
+                return CheckResult(ApprovalStatus.PENDING, None, "waiting for a human Linear status change")
+            ok, who = self._verify_transition(req, issue, history)
+            if not ok:
+                return CheckResult(ApprovalStatus.PENDING, None, f"Linear transition not accepted: {who}")
+            return self._decide(req, decision_state, who, "linear_status", issue.state_name, "")
+        subs = [FormSubmission.model_validate(s) for s in self.store.find(db.form_submissions, request_id=req.request_id)]
         if not subs:
             note = (f"Linear shows {issue.state_name!r}; waiting for confirmation in the Prefect form"
                     if decision_state else "waiting for a human decision")
@@ -106,16 +125,19 @@ class ApprovalController:
         ok, why = self._verify_transition(req, issue, history)
         if not ok:
             return CheckResult(ApprovalStatus.PENDING, None, f"Linear transition not accepted: {why}")
-        decision = ApprovalDecision(request_id=req.request_id, decision=sub.decision, actor=sub.approver,
-                                    channel="prefect_form", linear_state=issue.state_name, spec_hash=req.spec_hash,
-                                    comment=sub.comment)
+        return self._decide(req, sub.decision, sub.approver, "prefect_form", issue.state_name, sub.comment)
+
+    def _decide(self, req: ApprovalRequest, decision_value: str, actor: str, channel: str, linear_state: str,
+                comment: str) -> CheckResult:
+        decision = ApprovalDecision(request_id=req.request_id, decision=decision_value, actor=actor, channel=channel,
+                                    linear_state=linear_state, spec_hash=req.spec_hash, comment=comment)
         if not self.store.insert_new(db.approval_decisions, req.request_id, decision.model_dump(mode="json")):
             return CheckResult(ApprovalStatus.PENDING, None, "decision already recorded")
         status = {"approve": ApprovalStatus.APPROVED, "reject": ApprovalStatus.REJECTED,
-                  "revise": ApprovalStatus.REVISION_REQUESTED}[sub.decision]
+                  "revise": ApprovalStatus.REVISION_REQUESTED}[decision_value]
         req.status = status
         self._save(req)
-        return CheckResult(status, decision, f"verified {sub.decision} by {sub.approver}")
+        return CheckResult(status, decision, f"verified {decision_value} by {actor} via {channel}")
 
     def _verify_transition(self, req: ApprovalRequest, issue, history: list[dict]) -> tuple[bool, str]:
         since = req.autopilot_set_awaiting_at or req.created_at
@@ -128,10 +150,12 @@ class ApprovalController:
             return False, f"changed by a bot/integration ({last['botActor']})"
         if not last.get("actor"):
             return False, "actor of the change is unknown"
+        if self.approver_ids and last["actor"].get("id") not in self.approver_ids:
+            return False, f"changed by {last['actor'].get('name')!r}, who is not an authorized approver"
         own = [w for w in self.store.linear_writes_for(issue.identifier) if w["to_state"] == issue.state_name]
         if own:
             return False, "Autopilot itself wrote this state"
-        return True, f"changed by {last['actor'].get('name')}"
+        return True, f"{last['actor'].get('name')} ({last['actor'].get('id')})"
 
     # ---------------------------------------------------------------- helpers
 

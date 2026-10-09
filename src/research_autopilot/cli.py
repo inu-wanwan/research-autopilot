@@ -234,6 +234,28 @@ def autopilot_poll(task: str | None = typer.Option(None, "--task", help="Only th
     typer.echo(json.dumps(autopilot_poll_flow(task_id=task, dry_run=check_only), ensure_ascii=False, indent=2, default=str))
 
 
+@ap_app.command("approve")
+def autopilot_approve(request_id: str, decision: str = typer.Option(..., "--decision", help="approve | reject | revise"),
+                      approver: str = typer.Option(..., "--approver"), comment: str = typer.Option("", "--comment")) -> None:
+    """Submit the approval form of a pending request through the authenticated Prefect API
+    (same as pressing Resume in the Prefect UI; requires PREFECT_API_AUTH_STRING). The poller then
+    verifies it against the Linear status, spec hash and expiry like any form submission."""
+    if decision not in ("approve", "reject", "revise"):
+        raise typer.BadParameter("decision must be approve, reject or revise")
+    from prefect.flow_runs import resume_flow_run
+
+    from research_autopilot.storage import db as dbm
+
+    store = Store(load_settings().resolved_database_url())
+    req = store.get(dbm.approval_requests, request_id)
+    if req is None or not req.get("confirmation_ref"):
+        typer.echo("unknown request or no confirmation form", err=True)
+        raise typer.Exit(1)
+    resume_flow_run(req["confirmation_ref"], run_input={"decision": decision, "approver": approver, "comment": comment,
+                                                        "request_id": request_id, "spec_hash": req["spec_hash"]})
+    typer.echo(f"submitted {decision} for {request_id[:8]} (form run {req['confirmation_ref']}); now set the Linear status")
+
+
 @ap_app.command("status")
 def autopilot_status() -> None:
     """Workflow runs, pending approvals and outbox state."""

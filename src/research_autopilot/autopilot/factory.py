@@ -33,9 +33,10 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     writer = NotionWriter(p2.notion_api_token.get_secret_value(), p2.notion_tasks_data_source_id, s5.notes_data_source_id)
     ops = LinearOps(linear, plan.store, test_only=s5.test_only, write_enabled=s5.write_enabled and not dry_run)
     channel = PrefectConfirmationChannel(s5.confirm_deployment, s5.prefect_ui_url)
-    approvals = ApprovalController(plan.store, ops, channel,
+    approvals = ApprovalController(plan.store, ops, channel if s5.approval_mode == "linear+form" else None,
                                    notify=lambda req, msg: notify_approval(plan.store, None, req, msg, "https://linear.app",
-                                                                          channel.url(req.confirmation_ref)))
+                                                                          channel.url(req.confirmation_ref)),
+                                   mode=s5.approval_mode, approver_ids=set(s5.approver_linear_user_ids))
     return AutopilotDeps(settings=AutopilotSettings(default_budget=s5.budget, prefect_ui_url=s5.prefect_ui_url, dry_run=dry_run),
                          plan=plan, impl=impl, exp=exp, linear=linear, notion_writer=writer, ops=ops, approvals=approvals,
                          outbox=Outbox(plan.store, writer, linear, ops),

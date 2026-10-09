@@ -205,7 +205,7 @@ class FakeCompletionReviewer:
 
 
 def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benchmark task", settings=None,
-          completion=None, missing_states=(), test_only=True, sci_reviews=None):
+          completion=None, missing_states=(), test_only=True, sci_reviews=None, approval_mode="linear+form"):
     repo = make_repo(tmp)
     root_issue = make_issue("INU-900").model_copy(update={"title": root_title})
     linear = FakeLinearFull(root_issue, missing_states=missing_states)
@@ -228,7 +228,8 @@ def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benc
     writer = FakeNotionWriter(notion)
     channel = FakeChannel()
     deps = AutopilotDeps(settings=settings or AutopilotSettings(), plan=plan, impl=impl, exp=exp, linear=linear,
-                         notion_writer=writer, ops=ops, approvals=ApprovalController(plan.store, ops, channel),
+                         notion_writer=writer, ops=ops,
+                         approvals=ApprovalController(plan.store, ops, channel, mode=approval_mode, approver_ids={USER["id"]}),
                          outbox=Outbox(plan.store, writer, linear, ops),
                          completion_reviewer=completion if completion is not None else FakeCompletionReviewer())
     return deps, linear, notion, writer, channel

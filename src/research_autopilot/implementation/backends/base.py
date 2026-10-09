@@ -70,6 +70,19 @@ class ProcessOutcome:
     duration: float
 
 
+SECRET_ENV = re.compile(r"(API_KEY|TOKEN|SECRET|PASSWORD|AUTH_STRING|DATABASE_URL|PRIVATE_KEY|CREDENTIAL)", re.I)
+SECRET_ENV_NAMES = {"NOTION_API_TOKEN", "LINEAR_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PREFECT_API_AUTH_STRING",
+                    "PREFECT_AUTH_STRING", "POSTGRES_PASSWORD", "RA_DATABASE_URL", "RA_NOTIFY_TOKEN", "RA_MODEL_PRICING"}
+
+
+def sanitized_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for coding agents, reviewers and check commands: Research Autopilot's own credentials
+    (Notion / Linear / OpenAI keys, Prefect auth, DB URL, ...) are removed so an LLM-driven process cannot use
+    them (e.g. to change a Linear status). CLI logins (Codex / Claude) live in their own config dirs."""
+    env = dict(os.environ if base is None else base)
+    return {k: v for k, v in env.items() if k not in SECRET_ENV_NAMES and not SECRET_ENV.search(k)}
+
+
 def run_process(cmd: list[str], cwd: Path, stdin_text: str, timeout: int, log_path: Path,
                 on_start: Callable[[int], None], env: dict[str, str] | None = None) -> ProcessOutcome:
     """Run a CLI in its own process group; on timeout the whole group is killed
@@ -77,7 +90,7 @@ def run_process(cmd: list[str], cwd: Path, stdin_text: str, timeout: int, log_pa
     log_path.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True, env=env)
+                            text=True, start_new_session=True, env=env if env is not None else sanitized_env())
     on_start(proc.pid)
     timed_out = False
     try:

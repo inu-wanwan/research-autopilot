@@ -24,6 +24,7 @@ from research_autopilot.implementation.models import (
     ReviewOutcome,
     Usage,
 )
+from research_autopilot.implementation.backends.base import sanitized_env
 from research_autopilot.implementation.prompts import reviewer_prompt
 from research_autopilot.implementation.worktree import WorktreeManager, matches_any
 
@@ -81,7 +82,7 @@ def run_check(name: str, cmd: list[str] | None, cwd: Path, timeout: int) -> Chec
         return CheckResult(name=name, command=None, ok=True, skipped=True, output_tail="not configured")
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                           env={**sanitized_env(), "PYTHONDONTWRITEBYTECODE": "1"})
     except FileNotFoundError as exc:
         return CheckResult(name=name, command=cmd, ok=False, exit_code=None, output_tail=f"command not found: {exc}")
     except subprocess.TimeoutExpired:

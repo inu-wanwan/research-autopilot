@@ -17,6 +17,8 @@ class Phase5Settings(BaseModel):
     approval_poll_seconds: int = 60
     prefect_ui_url: str | None = None
     confirm_deployment: str = "approval-confirm/manual"
+    approval_mode: str = "linear"  # "linear" (status change by an authorized user) | "linear+form"
+    approver_linear_user_ids: list[str] = []
 
     @property
     def budget(self) -> Budget:
@@ -33,7 +35,9 @@ def load_phase5_settings(env: dict[str, str] | None = None) -> Phase5Settings:
     conv = {"RA_AUTOPILOT_WRITE": ("write_enabled", _b), "RA_AUTOPILOT_TEST_ONLY": ("test_only", _b),
             "NOTION_NOTES_DATA_SOURCE_ID": ("notes_data_source_id", str),
             "RA_AUTOPILOT_BUDGET_USD": ("budget_api_usd", float), "RA_AUTOPILOT_BUDGET_CPU_HOURS": ("budget_cpu_hours", float),
-            "RA_AUTOPILOT_POLL_SECONDS": ("poll_seconds", int), "PREFECT_UI_URL": ("prefect_ui_url", str)}
+            "RA_AUTOPILOT_POLL_SECONDS": ("poll_seconds", int), "PREFECT_UI_URL": ("prefect_ui_url", str),
+            "RA_APPROVAL_MODE": ("approval_mode", str),
+            "RA_APPROVER_LINEAR_USER_IDS": ("approver_linear_user_ids", lambda v: [x.strip() for x in v.split(",") if x.strip()])}
     for var, (field, f) in conv.items():
         if (raw := env.get(var, "").strip()):
             d[field] = f(raw)
