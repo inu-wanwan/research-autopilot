@@ -429,3 +429,29 @@ def test_no_secrets_in_persisted_record(tmp_path):
     rec = run(deps)
     blob = open(rec.artifact_path).read() + json.dumps(deps.store.list_runs(), default=str)
     assert "SECRET" not in blob
+
+
+def test_handoff_carries_phase3_fields_and_mode(tmp_path):
+    sections = {**__import__("phase2_fakes").FULL_SECTIONS, "repository": "h2-test",
+                "file_scope": "- src/**\n- tests/**", "non_goals": "No production runs"}
+    linear = FakeLinear(make_issue())
+    deps = make_deps(tmp_path, FakeNotion(make_page(sections=sections)), linear, [make_plan()], [review("approved")],
+                     linear_write_enabled=True)
+    rec = run(deps, mode="apply")
+    handoff = json.loads(open(rec.handoff_path).read())
+    assert handoff["phase2_mode"] == "apply" and handoff["repository"] == "h2-test"
+    assert handoff["file_scope"].startswith("- src/**") and handoff["non_goals"] == "No production runs"
+
+
+def test_old_handoff_without_phase3_fields_still_loads():
+    from research_autopilot.models import ExecutionHandoff
+    from phase2_fakes import make_plan as mp
+    old = {"schema_version": "1", "task_id": "INU-1", "plan_id": "p", "plan_run_id": "r", "decision_id": "d",
+           "sources": [], "purpose": None, "scientific_invariants": None, "acceptance_criteria": None,
+           "artifact_requirements": None, "plan": mp().model_dump(mode="json"),
+           "review": review("approved").model_dump(mode="json"),
+           "human_approval": {"linear_state": "Todo", "linear_state_type": "unstarted", "notion_pending": False,
+                              "approved": True},
+           "approvals_needed": [], "open_questions": []}
+    h = ExecutionHandoff.model_validate(old)
+    assert h.phase2_mode is None and h.repository is None

@@ -81,7 +81,7 @@ def test_notion_get_task_maps_sections_across_pages():
         [heading(2, "Purpose"), para("goal text"), heading(2, "Implementation"), para("do x")],
         [heading(3, "1. Details", has_children=False), para("more"),
          {"id": "child", "type": "toggle", "toggle": {"rich_text": rt("toggle")}, "has_children": True},
-         heading(2, "完了条件"), para("- table exists"), heading(2, "Inputs"), para("data")],
+         heading(2, "完了条件"), para("- table exists"), heading(2, "Inputs"), para("data"), heading(2, "Notes"), para("n")],
     ]
     task = notion(notion_handler(blocks)).get_task(PAGE)
     assert task.title == "[AUTO] Phase 2" and task.linear_issue_id == "INU-265" and task.pending is False
@@ -89,7 +89,7 @@ def test_notion_get_task_maps_sections_across_pages():
     assert "do x" in task.sections["specification"] and "### 1. Details" in task.sections["specification"]
     assert "nested detail" in task.sections["specification"]
     assert task.sections["acceptance_criteria"] == "- table exists"
-    assert task.other_sections == {"Inputs": "data"}
+    assert task.sections["input_artifacts"] == "data" and task.other_sections == {"Notes": "n"}
 
 
 def test_notion_rejects_page_outside_data_source():

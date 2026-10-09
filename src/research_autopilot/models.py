@@ -108,6 +108,11 @@ class TaskSpec(BaseModel):
     other_sections: dict[str, str]
     preamble: str | None
     sources: list[SourceRef]
+    # Phase 3 additions (optional for backward compatibility)
+    repository: str | None = None
+    file_scope: str | None = None
+    non_goals: str | None = None
+    input_artifacts: str | None = None
 
     @classmethod
     def from_sources(cls, issue: LinearIssue, page: NotionTask) -> "TaskSpec":
@@ -127,6 +132,10 @@ class TaskSpec(BaseModel):
             other_sections=page.other_sections,
             preamble=page.preamble or None,
             sources=[issue.source_ref(), page.source_ref()],
+            repository=s.get("repository"),
+            file_scope=s.get("file_scope"),
+            non_goals=s.get("non_goals"),
+            input_artifacts=s.get("input_artifacts"),
         )
 
     def section(self, name: str) -> str | None:
@@ -387,3 +396,10 @@ class ExecutionHandoff(BaseModel):
     human_approval: HumanApproval
     approvals_needed: list[str]
     open_questions: list[str]
+    # Phase 3 additions (optional; absent in handoffs written before Phase 3)
+    phase2_mode: Literal["dry_run", "apply"] | None = None
+    specification: str | None = None
+    repository: str | None = None
+    file_scope: str | None = None
+    non_goals: str | None = None
+    input_artifacts: str | None = None

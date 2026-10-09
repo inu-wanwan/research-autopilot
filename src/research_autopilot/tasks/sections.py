@@ -42,6 +42,15 @@ CANONICAL_SECTIONS: dict[str, tuple[set[str], tuple[str, ...]]] = {
         {"artifacts", "artifact", "artifact requirements", "deliverables", "成果物"},
         (),
     ),
+    # Phase 3: human-authored implementation scope
+    "repository": ({"repository", "repo", "target repository", "リポジトリ", "対象リポジトリ"}, ()),
+    "file_scope": (
+        {"allowed files", "allowed file scope", "file scope", "allowed paths", "変更可能ファイル", "変更範囲",
+         "変更可能範囲"},
+        (),
+    ),
+    "non_goals": ({"non-goals", "non goals", "nongoals", "out of scope", "スコープ外", "対象外"}, ()),
+    "input_artifacts": ({"inputs", "input", "input artifacts", "入力", "入力データ"}, ()),
 }
 
 _NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*[.)]?|[-*・])\s*")

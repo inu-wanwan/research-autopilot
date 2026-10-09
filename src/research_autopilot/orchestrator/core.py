@@ -150,6 +150,9 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                 plan=outcome.plan.plan, review=outcome.review.review, human_approval=approval,
                 approvals_needed=outcome.plan.plan.approvals_needed,
                 open_questions=outcome.plan.plan.open_questions,
+                phase2_mode=mode, specification=bundle.spec.specification,
+                repository=bundle.spec.repository, file_scope=bundle.spec.file_scope,
+                non_goals=bundle.spec.non_goals, input_artifacts=bundle.spec.input_artifacts,
             )))
         return decision
     finally:

@@ -14,7 +14,8 @@ from research_autopilot.tasks.sections import canonical_section, split_sections
     ("Implementation", "specification"), ("Work", "specification"), ("実験仕様", "specification"),
     ("Acceptance criteria", "acceptance_criteria"), ("完了条件", "acceptance_criteria"),
     ("Artifacts", "artifact_requirements"), ("Dependencies", "dependencies"),
-    ("Scientific invariants", "scientific_invariants"), ("Inputs", None), ("まとめる内容", None),
+    ("Scientific invariants", "scientific_invariants"), ("Inputs", "input_artifacts"), ("Repository", "repository"),
+    ("Allowed files", "file_scope"), ("Non-goals", "non_goals"), ("Notes", None), ("まとめる内容", None),
 ])
 def test_heading_mapping(heading, expected):
     assert canonical_section(heading) == expected
