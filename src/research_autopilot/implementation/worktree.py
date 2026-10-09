@@ -166,6 +166,26 @@ class WorktreeManager:
         files |= set(self.git("ls-files", "--others", "--exclude-standard", cwd=path).split())
         return sorted(f for f in files if f and not matches_any(f, NOISE_PATTERNS))
 
+    # ---------------------------------------------------------------- reading a fixed commit
+
+    def object_type(self, commit: str, rel: str) -> str | None:
+        out = self.git("cat-file", "-t", f"{commit}:{rel}", check=False).strip()
+        return out or None
+
+    def file_at(self, commit: str, rel: str) -> bool:
+        return self.object_type(commit, rel.removeprefix("./")) == "blob"
+
+    def dir_at(self, commit: str, rel: str) -> bool:
+        return self.object_type(commit, rel.removeprefix("./").rstrip("/")) == "tree"
+
+    def read_at(self, commit: str, rel: str) -> str | None:
+        if not self.file_at(commit, rel):
+            return None
+        return self.git("show", f"{commit}:{rel}")
+
+    def changed_between(self, a: str, b: str) -> list[str]:
+        return sorted(f for f in self.git("diff", "--name-only", a, b).split() if f)
+
     def has_uncommitted(self, path: Path) -> bool:
         return bool(self.git("status", "--porcelain", "--", ".", *_NOISE_PATHSPEC, cwd=path).strip())
 

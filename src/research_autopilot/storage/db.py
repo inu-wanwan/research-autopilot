@@ -62,6 +62,8 @@ implementation_runs = sa.Table(
     sa.Column("flow_run_id", sa.String(36)),
     sa.Column("state", sa.String(16), nullable=False),
     sa.Column("implementation_commit", sa.String(64)),
+    sa.Column("parent_run_id", sa.String(36), index=True),
+    sa.Column("failure_report_id", sa.String(64), unique=True),  # duplicate FailureReport guard
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("record", sa.JSON, nullable=False),
@@ -176,7 +178,8 @@ class Store:
     def save_implementation(self, manifest) -> None:
         values = dict(task_id=manifest.task_id, phase2_plan_run_id=manifest.phase2_plan_run_id,
                       flow_run_id=manifest.flow_run_id, state=manifest.state.value,
-                      implementation_commit=manifest.implementation_commit, created_at=manifest.created_at,
+                      implementation_commit=manifest.implementation_commit, parent_run_id=manifest.parent_run_id,
+                      failure_report_id=manifest.failure_report_id, created_at=manifest.created_at,
                       updated_at=manifest.updated_at, record=manifest.model_dump(mode="json"))
         with self.engine.begin() as conn:
             updated = conn.execute(implementation_runs.update().where(
@@ -199,3 +202,11 @@ class Store:
             q = q.where(implementation_runs.c.task_id == task_id)
         with self.engine.connect() as conn:
             return [dict(r) for r in conn.execute(q).mappings()]
+
+    def find_implementation_by_failure_report(self, report_id: str):
+        from research_autopilot.implementation.models import ImplementationManifest
+
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(implementation_runs.c.record).where(
+                implementation_runs.c.failure_report_id == report_id)).first()
+        return ImplementationManifest.model_validate(row[0]) if row else None

@@ -1,6 +1,7 @@
 """Fakes and fixtures for Phase 3 tests: isolated git repo, fake backends / reviewers,
 and a real Phase 2 apply-mode run (with Phase 2 fakes) that produces the handoff."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -22,11 +23,38 @@ from research_autopilot.tasks.manager import TaskManager
 SECTIONS = {
     **FULL_SECTIONS,
     "repository": "h2-test",
-    "file_scope": "- h2_energy.py\n- tests/**",
+    "file_scope": "- h2_energy.py\n- tests/**\n- configs/**",
     "non_goals": "No production calculations.",
 }
 
 GOOD_CODE = "def energy():\n    return -1.137\n"
+CONFIG = json.dumps({"basis": "sto-3g", "bond_length_angstrom": 0.74}) + "\n"
+
+
+def experiment_def(**overrides) -> str:
+    d = {
+        "experiment_id": "h2-sto3g",
+        "execution": {"argv": ["python", "h2_energy.py", "--config", "configs/h2.json"], "working_directory": ".",
+                      "setup": [], "env_var_names": ["OMP_NUM_THREADS"]},
+        "environment": {"type": "python", "python_version": "3.12", "dependency_files": ["pyproject.toml"],
+                        "install_argv": ["uv", "sync", "--frozen"]},
+        "inputs": [{"path": "configs/h2.json", "kind": "config", "scientific": True, "description": "geometry/basis"}],
+        "resources": {
+            "cpu": {"value": 1, "basis": "estimated", "rationale": "single small SCF", "confidence": "high"},
+            "memory_gb": {"value": 1, "basis": "estimated", "rationale": "STO-3G H2 is tiny", "confidence": "high"},
+            "gpu": {"value": 0, "basis": "required", "rationale": "CPU-only code", "confidence": "high"},
+            "walltime_minutes": {"value": 2, "basis": "estimated", "rationale": "seconds for FCI", "confidence": "medium"},
+            "parallelizable": False, "parallel_notes": "", "job_dependencies": []},
+        "outputs": [{"path": "results/h2.json", "format": "json", "required": True,
+                     "units": {"e_rhf": "Hartree", "e_fci": "Hartree"}, "validation": "keys e_rhf, e_fci"}],
+        "metrics": [{"name": "correlation_energy", "definition": "e_fci - e_rhf", "output": "results/h2.json",
+                     "json_pointer": "/e_corr", "units": "Hartree"}],
+        "numeric_checks": [{"name": "fci_below_rhf", "output": "results/h2.json", "json_pointer": "/e_fci",
+                            "condition": "le", "reference_pointer": "/e_rhf"}],
+        "reproduction": ["uv sync --frozen", "python h2_energy.py --config configs/h2.json"],
+    }
+    d.update(overrides)
+    return json.dumps(d, indent=2)
 GOOD_TEST = "from h2_energy import energy\n\n\ndef test_energy():\n    assert energy() < 0\n"
 BAD_TEST = "from h2_energy import energy\n\n\ndef test_energy():\n    assert energy() > 0\n"
 
@@ -43,6 +71,7 @@ def make_repo(root: Path) -> Path:
     (repo / "data" / "validated.json").write_text("{}\n")
     (repo / "tests" / "__init__.py").write_text("")
     (repo / "conftest.py").write_text("")
+    (repo / "pyproject.toml").write_text("[project]\nname = \"h2\"\nversion = \"0\"\n")
     git(repo, "init", "-q", "-b", "main")
     git(repo, "add", "-A")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")

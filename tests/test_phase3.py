@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from phase2_fakes import make_page
-from phase3_fakes import BAD_TEST, GOOD_CODE, GOOD_TEST, SECTIONS, code_review, git, make_impl_deps
+from phase3_fakes import BAD_TEST, CONFIG, GOOD_CODE, GOOD_TEST, SECTIONS, code_review, experiment_def, git, make_impl_deps
 from research_autopilot.implementation import routing
 from research_autopilot.implementation.backends.base import classify_error_text, pid_alive
 from research_autopilot.implementation.classify import classify
@@ -16,8 +16,9 @@ from research_autopilot.implementation.orchestrator import implement
 from research_autopilot.implementation.reviewer import scan_diff
 from research_autopilot.implementation.worktree import LockHeld, WorktreeManager, matches_any, parse_scope
 
-GOOD = {"files": {"h2_energy.py": GOOD_CODE, "tests/test_h2.py": GOOD_TEST}}
-FAILING = {"files": {"h2_energy.py": GOOD_CODE, "tests/test_h2.py": BAD_TEST}}
+EXP = {".autopilot/experiment.json": experiment_def(), "configs/h2.json": CONFIG}
+GOOD = {"files": {"h2_energy.py": GOOD_CODE, "tests/test_h2.py": GOOD_TEST, **EXP}}
+FAILING = {"files": {"h2_energy.py": GOOD_CODE, "tests/test_h2.py": BAD_TEST, **EXP}}
 
 
 def codes(m):
@@ -81,7 +82,7 @@ def test_implements_commits_on_task_branch_and_leaves_main_untouched(tmp_path):
     assert git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
     assert m.task.branch.startswith("autopilot/inu-900-")
     assert git(repo, "rev-parse", m.task.branch) == m.implementation_commit
-    assert sorted(m.changed_files) == ["h2_energy.py", "tests/test_h2.py"]
+    assert sorted(m.changed_files) == [".autopilot/experiment.json", "configs/h2.json", "h2_energy.py", "tests/test_h2.py"]
     assert not any(e.args[:1] == ["push"] or e.args[:1] == ["merge"] for e in m.git_audit)
     assert all(e.exit_code == 0 or e.args[0] == "rev-parse" for e in m.git_audit)
     # Phase 4 handoff
@@ -186,10 +187,14 @@ def test_max_two_revisions(tmp_path):
 
 
 def test_escalation_after_repeated_same_failure_without_extra_attempts(tmp_path):
+    from research_autopilot.implementation.classify import Rules
     deps, _, rec, _, _ = make_impl_deps(tmp_path, [FAILING, FAILING, GOOD])
+    deps.rules = Rules(steps_medium=99, steps_high=99, scope_globs_medium=99, scope_globs_high=99,
+                       complexity_high_keywords=[], complexity_medium_keywords=[])  # start at the lightweight tier
     m = implement(deps, handoff_path=Path(rec.handoff_path))
     assert m.state is RunState.COMPLETED
     tiers = [a.choice.tier for a in m.attempts]
+    assert tiers[0] == "lightweight"
     assert tiers[0] == tiers[1] and routing.TIER_ORDER.index(tiers[2]) == routing.TIER_ORDER.index(tiers[1]) + 1
     assert m.attempts[2].escalation_reason and len(m.attempts) == 3
 
@@ -232,7 +237,7 @@ def test_protected_path_change_is_blocked(tmp_path):
 @pytest.mark.parametrize("status", ["quota_exhausted", "rate_limited", "process_error"])
 def test_codex_to_claude_fallback_preserves_work(tmp_path, status):
     partial = {"status": status, "files": {"h2_energy.py": GOOD_CODE}, "error": "usage limit"}
-    deps, _, rec, _, _ = make_impl_deps(tmp_path, [partial], claude=[{"files": {"tests/test_h2.py": GOOD_TEST}}])
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [partial], claude=[{"files": {"tests/test_h2.py": GOOD_TEST, **EXP}}])
     m = implement(deps, handoff_path=Path(rec.handoff_path))
     assert m.state is RunState.COMPLETED, m.block_reasons
     a = m.attempts[0]
@@ -241,7 +246,7 @@ def test_codex_to_claude_fallback_preserves_work(tmp_path, status):
     # Claude resumed from Git state: Codex's file was still there and was handed over in the prompt
     claude_prompt = deps.backends["claude"].calls[0].prompt
     assert "h2_energy.py" in claude_prompt and "CURRENT STATE OF THE WORKTREE" in claude_prompt
-    assert sorted(m.changed_files) == ["h2_energy.py", "tests/test_h2.py"]
+    assert "h2_energy.py" in m.changed_files and "tests/test_h2.py" in m.changed_files
     assert any("before-fallback" in p.name for p in Path(m.artifact_paths["manifest"]).parent.iterdir())
 
 

@@ -21,6 +21,29 @@ Hard rules (violations are detected automatically and stop the run):
 - Write or update automated tests that check the acceptance criteria where they are testable.
 - Keep the change minimal and focused on the task; respect NON-GOALS.
 - Finish with a short summary: what you changed, how it is tested, anything you could not verify.
+
+Experiment definition (required): create or update `.autopilot/experiment.json`, matching the JSON schema in
+EXPERIMENT DEFINITION SCHEMA. It tells the experiment runner exactly how to run the code, without guessing:
+- execution.argv is a structured argv (launcher `python`, `python3` or `uv run`), never a shell string;
+  paths are relative to the repository; no absolute paths, no `..`, no `python -c`.
+- list config / data inputs (mark files that carry scientific parameters with "scientific": true),
+  dependency files that exist in the repository, required environment variable NAMES only (never values),
+  expected outputs with format / units / how to validate them, evaluation metrics and numeric checks
+  that encode the acceptance criteria.
+- resources (cpu, memory_gb, gpu, walltime_minutes): give a value, "required" or "estimated", the rationale
+  and a confidence level. Do not invent hard requirements; mark estimates as estimates.
+- Do not run the actual research calculation; only implement it and make it runnable.
+"""
+
+REPAIR_RULES = """REPAIR MODE. The experiment runner reported a failure of the previously approved commit (FAILURE REPORT below).
+Fix the implementation so the experiment can run, under these additional hard rules:
+- Allowed: fixing imports, file paths, output formats, exception handling, coding bugs in the specified algorithm,
+  environment configuration that does not change the science.
+- Forbidden (the run is stopped if detected): changing the molecule / geometry / basis set, the computed target,
+  scientifically meaningful convergence criteria, evaluation metrics or objective, acceptance criteria,
+  scientific invariants or the research purpose; editing files marked "scientific" in the experiment definition;
+  weakening numeric checks or removing required outputs in `.autopilot/experiment.json`.
+- If the failure cannot be fixed without such a change, change nothing and explain why in your final message.
 """
 
 REVIEWER_RULES = """\
@@ -57,8 +80,13 @@ def _task_block(task: ImplementationTask) -> dict:
 
 
 def implementer_prompt(task: ImplementationTask, attempt: int, revision_requests: list[str],
-                       resume_context: dict | None = None) -> str:
-    parts = [IMPLEMENTER_RULES, "TASK (JSON):", json.dumps(_task_block(task), ensure_ascii=False, indent=2)]
+                       resume_context: dict | None = None, repair_context: dict | None = None) -> str:
+    from research_autopilot.implementation.experiment import definition_schema
+
+    parts = [IMPLEMENTER_RULES, "TASK (JSON):", json.dumps(_task_block(task), ensure_ascii=False, indent=2),
+             "EXPERIMENT DEFINITION SCHEMA:", json.dumps(definition_schema(), ensure_ascii=False)]
+    if repair_context:
+        parts += [REPAIR_RULES, "FAILURE REPORT (JSON):", json.dumps(repair_context, ensure_ascii=False, indent=2)]
     if resume_context:
         parts += ["CURRENT STATE OF THE WORKTREE (work already done by a previous attempt; continue from it):",
                   json.dumps(resume_context, ensure_ascii=False, indent=2)]

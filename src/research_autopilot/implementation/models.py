@@ -196,12 +196,12 @@ class CodeReviewResult(BaseModel):
 
 
 FailureCategory = Literal[
-    "tests", "lint", "typecheck", "no_changes", "review_findings", "invariant_violation",
-    "scope_violation", "dangerous_change",
+    "tests", "lint", "typecheck", "no_changes", "review_findings", "experiment_spec", "invariant_violation",
+    "scope_violation", "dangerous_change", "science_change",
 ]
 
 # Categories where escalating to a stronger model is allowed if they persist.
-ESCALATABLE: set[str] = {"tests", "lint", "typecheck", "no_changes", "review_findings"}
+ESCALATABLE: set[str] = {"tests", "lint", "typecheck", "no_changes", "review_findings", "experiment_spec"}
 
 
 class ReviewOutcome(BaseModel):
@@ -260,7 +260,7 @@ class BlockReason(BaseModel):
         "not_approved", "handoff_invalid", "spec_changed", "repository_invalid", "scope_missing",
         "concurrent_run", "budget_exceeded", "time_exceeded", "revision_limit", "review_blocked",
         "invariant_violation", "unapproved_change", "backend_unavailable", "auth_error", "fallback_unavailable",
-        "connector_error", "transient_error",
+        "connector_error", "transient_error", "experiment_spec_invalid", "repair_not_allowed",
     ]
     message: str
 
@@ -296,6 +296,14 @@ class ImplementationManifest(BaseModel):
     git_audit: list[GitAuditEntry] = Field(default_factory=list)
     events: list[ManifestEvent] = Field(default_factory=list)
     artifact_paths: dict[str, str] = Field(default_factory=dict)
+    experiment_spec_id: str | None = None
+    # Phase 4 -> 3 repair lineage (None / 0 for an original implementation run)
+    parent_run_id: str | None = None
+    failure_report_id: str | None = None
+    repair_round: int = 0
+    # Budget used by earlier runs of the same chain; budgets are never reset by a repair.
+    inherited_usage: Usage = Field(default_factory=Usage)
+    inherited_cost_usd: float = 0.0
 
     @property
     def revisions_used(self) -> int:
@@ -328,3 +336,7 @@ class Phase4Handoff(BaseModel):
     plan: ExecutionPlan
     manifest_path: str
     sources: list[SourceRef]
+    experiment_spec_id: str | None = None
+    experiment_spec_path: str | None = None
+    parent_run_id: str | None = None
+    failure_report_id: str | None = None

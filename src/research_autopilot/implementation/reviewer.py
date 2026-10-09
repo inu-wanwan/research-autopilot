@@ -108,8 +108,19 @@ def deterministic_report(task: ImplementationTask, repo: RepoConfig, wt: Worktre
 
 def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choice: ModelChoice,
            runner: ReviewerRunner, log_dir: Path, fallback: tuple[ModelChoice, ReviewerRunner] | None = None,
-           on_event: Callable[[str], None] = lambda m: None) -> ReviewOutcome:
+           on_event: Callable[[str], None] = lambda m: None,
+           extra_checks: Callable[[], list[CheckResult]] | None = None,
+           science_guard: Callable[[], list[str]] | None = None,
+           extra_instructions: str = "") -> ReviewOutcome:
     det, diff = deterministic_report(task, repo, wt)
+    if extra_checks is not None:
+        det.checks.extend(extra_checks())
+
+    guard = science_guard() if science_guard is not None else []
+    if guard:
+        return ReviewOutcome(verdict="blocked", reason="scientific specification would change: " + "; ".join(guard),
+                             categories=["science_change"], deterministic=det, llm=None, reviewer=None,
+                             revision_requests=[])
 
     if not det.scope_ok:
         cats = []
@@ -132,13 +143,15 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
     failed = [c for c in det.checks if not c.ok and not c.skipped]
     if failed:
         # Deterministic failures alone decide; no LLM approval can override them.
-        cats = [c.name if c.name in ("tests", "lint", "typecheck") else "tests" for c in failed]
+        cats = [c.name if c.name in ("tests", "lint", "typecheck", "experiment_spec") else "tests" for c in failed]
         return ReviewOutcome(verdict="revise", reason="automated checks failed: " + ", ".join(c.name for c in failed),
                              categories=sorted(set(cats)), deterministic=det, llm=None, reviewer=None,
                              revision_requests=[f"`{' '.join(c.command or [])}` failed:\n{c.output_tail[-1500:]}"
                                                 for c in failed])
 
     prompt = reviewer_prompt(task, diff, [c.model_dump(mode="json") for c in det.checks], det.changed_files)
+    if extra_instructions:
+        prompt = extra_instructions + "\n\n" + prompt
     usage, cost = Usage(), 0.0
     cost_known = True
     parsed, used = None, None
