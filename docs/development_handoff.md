@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 3（Autonomous Implementer & Code Reviewer、Phase 4 連携の追加仕様を含む）を実装完了。Mac で実際の Codex / Claude CLI による統合テスト済み。Eagle には反映していない。
+Phase 4（Autonomous Experiment Runner & Scientific Analyst）を実装完了。Mac で、LocalBackend による実ジョブ、実際の Codex による修正、実 LLM の Analyst / Reviewer まで検証済み。Eagle と TSUBAME は未実施（指示どおり）。
 
 ## Current Task
 
-Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport の追加仕様を含む）
+Phase 4 の実装・テスト・統合テスト
 
 ## Status
 
-完了。受け入れ条件は下表のとおり。`phase3/implementer` ブランチは未 merge・未 push（ユーザーの指示待ち）。
+完了。受け入れ条件は下表のとおり。`phase4/experiment-runner` は未 merge・未 push（指示どおり停止）。
 
 ## Last Updated
 
@@ -30,11 +30,33 @@ Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport
 
 ## Git Branch / Commit
 
-- Branch: `phase3/implementer`（`main` @ `7ccaf51` から分岐。未 merge・未 push）
-  - Phase 3 の commit：仕様書（`a22c40e`）→ Phase 2 handoff の拡張（`cc9ed9d`）→ 本体（`c18a60e`）→ ExperimentSpec / FailureReport（`d5a1efa`）→ flow / CLI（`84626b0`）→ 分類ルールの調整とドキュメント（`0dff1cf`）→ この handoff の commit
-- `main` / `origin/main` は `7ccaf51` のまま
+- Branch: `phase4/experiment-runner`（`main` @ `6110c8f` から分岐。Phase 3 は main に統合済み）
+  - `1ba8950` 仕様書と psutil → `a2a7c00` 本体 → `aabbd5c` flow / CLI → `48aae58` 運用ドキュメント → この handoff の commit
+- `main` / `origin/main` は `6110c8f` のまま
 
 ## Completed Work
+
+### Phase 4 実装（2026-10-10 / Claude Code）
+
+- 仕様書は `docs/phase_specs/phase4.md`。
+  - 既存の supervisor はなかったので、自前の shim と台帳を作った。
+  - LLM はユーザーが設定した単価の範囲で使う。
+  - Mac では安全側の上限を使う。
+  - 実行承認は Phase 3 のゲートを再利用する。
+- `src/research_autopilot/experiments/`：
+  - `models.py`：JobSpec / JobHandle / JobStatus / Allocation / ValidationResult / TriageDecision / AnalysisResult / ExperimentProposal / ScientificReviewResult / ScopeAssessment / ReviewedExperimentProposal / ExperimentManifest / Phase5Handoff（すべて schema 1.0）
+  - `resources.py`：ホストの検出、見積もり、ResourceManager、スレッド数の設定
+  - `environment.py`：git archive による checkout、キャッシュした venv と freeze による来歴
+  - `shim.py`：切り離して動く supervisor（heartbeat、RSS の計測、上限の強制、stdout / stderr を分離）
+  - `backends/`：local（台帳、冪等な submit、照合）、slurm（sbatch / sacct / squeue / scancel。設定がなければ blocked）、fake
+  - `validator.py`、`triage.py`
+  - `analyst.py`：Agents SDK。単価が設定されていないモデルは呼ばない
+  - `scope.py`、`orchestrator.py`、`flow.py`、`factory.py`
+- 共用部分の拡張：
+  - `implementation.orchestrator.check_execution_approval`（Phase 3 のゲートを外から使えるようにした）
+  - DB に `experiment_runs` / `experiment_jobs` / `experiment_proposals` を追加
+- CLI は `research-agent experiment run|resume|list|show|proposals`。deployment は `run-experiment/manual`。設定は `.env.example` の `RA_EXP_*`。
+- ドキュメント：`docs/operations/phase4_experiments.md`（Phase 5 handoff の schema、失敗時の振り分け、Eagle への反映手順）。
 
 ### Phase 3 実装（2026-10-10 / Claude Code）
 
@@ -156,12 +178,12 @@ Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport
 
 ## Remaining Work
 
-- `phase3/implementer` のレビューと、merge / push の判断（ユーザー）。
-- Eagle への反映（今回はスコープ外。`phase3_implementation.md` §8）：worker への Codex / Claude CLI の導入と認証方式（未検証）、研究リポジトリの volume、登録ファイル。
-- 実データでの Phase 3：実際の研究タスクの Notion 本文に Repository / Allowed files を書き、Phase 2 を apply モードで実行する必要がある。
-- Codex を API 課金で使う場合の単価設定（今はサブスクリプションなので費用は unknown）。
-- Phase 2 の Planner / Reviewer は単価未設定のまま API を呼んでいる（Phase 3 の費用方針とは不整合。ユーザーに判断を仰ぐ）。
-- Phase 4（Experiment Runner）は未着手。入力は `phase4_handoffs/` と `experiment_specs/`、出力は FailureReport。
+- `phase4/experiment-runner` のレビューと merge の判断（ユーザー）。
+- Eagle への反映（`phase4_experiments.md` §7）：`RA_EXP_*` の上限と予約、volume、WSL2 の `.wslconfig`、Docker の再起動で shim が止まる問題への対応方針。
+- TSUBAME：SlurmConfig（partition / account / 転送方法 / 規約の確認）と SSH の実行方法を人間が決める。
+- Phase 5：決定論的な Approval Policy Gate、Notion / Linear への登録、自律ループ（未着手）。
+- 承認方式の見直し（Phase 3 のときからの持ち越し。ユーザーは「後で調整」と発言）。
+- Phase 2 の Planner / Reviewer の単価：`RA_MODEL_PRICING` に terra / sol が設定されたので、Phase 2 の費用推定も有効になる。
 
 ## Changed Files
 
@@ -169,6 +191,43 @@ Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport
 - 変更：`pyproject.toml`, `uv.lock`（httpx を追加）、`README.md`、`AGENTS.md`（構成図）、`docs/README.md`（構成図・役割表）、本ファイル
 
 ## Tests and Verification
+
+### Phase 4（2026-10-10、MacBook）
+
+**自動テスト**：`uv run pytest` で **269 passed**（Phase 1〜3 の 218 件と Phase 4 の 51 件）。Phase 4 のテストは FakeComputeBackend / Fake Analyst / Fake Reviewer を使い、Phase 3 の run（fakes）から作った実際の ExperimentSpec で実行した。LocalBackend のテストは**本物のプロセス**で行った：submit / status / cancel / collect、メモリと wall time の上限の強制、重複 submit、起動前のクラッシュ（never_started → 再投入）、pid 保存前のクラッシュ（引き取り）、shim の強制終了（LOST）、秘密値がディスクに残らないこと。Slurm は fake executor で確認した。
+
+**実環境の統合テスト**（scratchpad の `ra-h2-research`）：
+
+- Linear / Notion は変更していない。Phase 2 の承認は fakes で用意した。
+- 実験のバリエーションは、実際の Phase 3 orchestrator に台本どおりに書く実装者を組み合わせて作った。
+- LocalBackend、shim、venv（PySCF）、validator、Phase 3 での修正（実際の Codex）は本物を使った。
+
+| テスト | 結果 |
+|---|---|
+| 並列実行と依存順序 | h2-a と h2-b が同時刻に実行（21:20:48 → 21:21:12）、両方の完了後に h2-combine（21:21:14〜）。3件とも検証に合格し、RHF −1.11676 / FCI −1.13728 / 相関 −0.02052 Ha。venv は1回だけ作られ、成果物は 444 と sha256 つきで保存 |
+| わざと失敗させた実験 → Phase 3 での修正 → 再実行 | exit 0 なのに `results/h2.json` がないことを implementation_failure と判定 → FailureReport → 実際の Codex（gpt-5.6-terra）が別ブランチで修正（`0122372` → `81d1cd9`）→ 新しい spec で再実行し合格。往復1回、実行ディレクトリは別 |
+| ワーカーの再起動からの復旧 | 25 秒かかるジョブの実行中に orchestrator を SIGKILL → shim とジョブは動き続けた → 別のプロセスで resume すると台帳を照合して running を確認し、引き取って完了（投入は1回だけ） |
+| 実 LLM Analyst（gpt-5.6-terra） | 事実（metrics と run を根拠として記載）、推論、限界、未解決点を分けて出力し、提案は0件を選んだ。計画にある「cc-pVDZ」の不整合（テスト用の Fake の計画に由来）を未解決点として指摘した。$0.0203 |
+| 実 LLM Scientific Reviewer（gpt-5.6-sol）＋ ScopeAssessment（Analyst が提案しなかったので、手書きの下書き2件で実施） | 範囲内の再計算案：revise（受け入れ基準に参照値との許容差が入っていない）→ requires_human=true。基底を変える案：reject（STO-3G の不変条件に反する）→ 決定論的なチェックでも invariant の変更を検出。合計 $0.0210 |
+
+**Fake でのみ確認したこと**：資源超過による再試行、インフラ障害の再試行と上限、2往復の上限、NaN / 破損 / 数値チェックの不合格の振り分け、提案の重複防止と件数・連鎖の深さの上限、Analyst が提案を出したときの Reviewer の流れ（実 LLM では Analyst が提案を出さなかったため）、Slurm の全操作。
+
+### Phase 4 Acceptance（指示 §10 / §12）
+
+| 項目 | 判定 |
+|---|---|
+| schema の検証、ComputeBackend の5操作、重複 submit、worker の再起動 | Passed（Fake と実プロセス） |
+| 資源の検出と上限、独立した実験の並列と依存の直列 | Passed（実環境と Fake） |
+| 成果物の破損、NaN / Inf、科学的制約違反、再試行 | Passed（Fake と validator の実データ） |
+| Phase 3 での修正と2往復の上限 | Passed（実際の Codex で1往復、上限は Fake） |
+| 予算（LLM は単価が必須、上限あり） | Passed（Fake と実際の費用記録） |
+| 提案の審査と重複防止、ScopeAssessment の専用テスト | Passed（Fake ＋ 実 Reviewer 2件） |
+| Reviewer が accept しても Phase 4 は承認しない（`pending_phase5_policy`） | Passed |
+| ReviewedExperimentProposal の JSON roundtrip と Phase 5 handoff | Passed |
+| LocalBackend の実ジョブ（正常、並列、依存、失敗 → 修正 → 再実行、worker の再起動） | Passed（実環境） |
+| 実 LLM と Fake の区別 | 上の表のとおり |
+| TSUBAME | Fake Slurm まで（接続していない） |
+| Phase 1〜3 の regression | Passed（269 件） |
 
 ### Phase 3（2026-10-10、MacBook）
 
@@ -307,6 +366,6 @@ Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport
 
 ## Exact Next Actions
 
-1. ユーザー：`phase3/implementer` をレビューし、merge / push の方針を決める。
-2. ユーザー：Phase 2 の Planner / Reviewer の API 費用方針を決める（単価を設定するか）。
-3. Phase 4 に着手するときは、要件定義を受け取って `docs/phase_specs/phase4.md` を作る。インターフェースは `docs/operations/phase3_implementation.md` §6 を参照する。
+1. ユーザー：`phase4/experiment-runner` をレビューし、merge と push を判断する。
+2. ユーザー：Eagle への反映方針（Docker の中で実行するか、ホストの worker で実行するか、上限と予約）と、TSUBAME の設定を決める。
+3. Phase 5 に着手するときは、要件定義を受け取って `docs/phase_specs/phase5.md` を作る。入力は `phase5_handoff.json` と ReviewedExperimentProposal（`phase4_experiments.md` §5）。
