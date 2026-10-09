@@ -88,3 +88,12 @@ deployments:
     description: Phase 4 -> 3 repair from a FailureReport (-p report_path=...).
     tags: [phase3, repair]
     work_pool: *research_local
+
+  - name: manual
+    entrypoint: src/research_autopilot/experiments/flow.py:run_experiment_flow
+    version: "{{ $GIT_SHA }}"
+    description: >-
+      Phase 4: run / monitor / validate / analyze the ExperimentSpecs of completed Phase 3 runs
+      (-p phase3_run_ids='["<run>"]' or -p resume_run_id=<run>). Never approves proposals.
+    tags: [phase4, experiment]
+    work_pool: *research_local

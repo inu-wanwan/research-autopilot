@@ -27,6 +27,8 @@ impl_app = typer.Typer(no_args_is_help=True, help="Inspect Phase 3 implementatio
 app.add_typer(runs_app, name="runs")
 app.add_typer(db_app, name="db")
 app.add_typer(impl_app, name="impl-runs")
+exp_app = typer.Typer(no_args_is_help=True, help="Phase 4 experiments")
+app.add_typer(exp_app, name="experiment")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 
@@ -148,6 +150,66 @@ def impl_show(run_id: str) -> None:
         typer.echo("not found", err=True)
         raise typer.Exit(1)
     typer.echo(m.model_dump_json(indent=2))
+
+
+EXP_EXIT = {"completed": 0, "blocked": 2, "failed": 5}
+
+
+@exp_app.command("run")
+def experiment_run(phase3_run: list[str] = typer.Option(..., "--phase3-run", help="Completed Phase 3 run id (repeatable)"),
+                   local: bool = typer.Option(False, "--local")) -> None:
+    """Run the ExperimentSpecs of completed Phase 3 runs (never approves follow-up proposals)."""
+    _exp(phase3_run_ids=phase3_run, resume_run_id=None, local=local)
+
+
+@exp_app.command("resume")
+def experiment_resume(run_id: str, local: bool = typer.Option(False, "--local")) -> None:
+    """Reconcile the job ledger after a restart and continue an experiment run."""
+    _exp(phase3_run_ids=None, resume_run_id=run_id, local=local)
+
+
+def _exp(phase3_run_ids, resume_run_id, local: bool) -> None:
+    if local:
+        from research_autopilot.experiments.factory import build_exp_deps
+        from research_autopilot.experiments.flow import summary_markdown
+        from research_autopilot.experiments.orchestrator import run_experiment
+
+        m = run_experiment(build_exp_deps(), phase3_run_ids=phase3_run_ids, resume_run_id=resume_run_id)
+        typer.echo(summary_markdown(m))
+        raise typer.Exit(EXP_EXIT.get(m.state.value, 1))
+    from research_autopilot.experiments.flow import run_experiment_flow
+
+    out = run_experiment_flow(phase3_run_ids=phase3_run_ids, resume_run_id=resume_run_id)
+    typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+    raise typer.Exit(EXP_EXIT.get(out["state"], 1))
+
+
+@exp_app.command("list")
+def experiment_list(task: str | None = typer.Option(None, "--task")) -> None:
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    for r in store.list_experiments(task):
+        typer.echo(f"{r['created_at']:%Y-%m-%d %H:%M:%S} {r['task_id']:<10} {r['state']:<10} {r['experiment_run_id']}")
+
+
+@exp_app.command("show")
+def experiment_show(run_id: str) -> None:
+    m = Store(load_settings().resolved_database_url()).get_experiment(run_id)
+    if m is None:
+        typer.echo("not found", err=True)
+        raise typer.Exit(1)
+    typer.echo(m.model_dump_json(indent=2))
+
+
+@exp_app.command("proposals")
+def experiment_proposals(task: str | None = typer.Option(None, "--task")) -> None:
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    for p in store.list_proposals(task):
+        sa_ = p["scope_assessment"]
+        typer.echo(f"{p['proposal']['proposal_id']} {p['proposal']['draft']['title'][:50]!r} "
+                   f"review={(p['review'] or {}).get('verdict')} within_scope={sa_['within_scope']} "
+                   f"human={sa_['requires_human_decision']} status={p['approval_status']}")
 
 
 @runs_app.command("list")

@@ -481,6 +481,8 @@ def _analyze_and_propose(deps: ExpDeps, m: ExperimentManifest, run_dir: Path) ->
                                for p in existing],
         "max_proposals": s.max_proposals_per_run,
     }
+    if m.llm_cost_known >= s.max_llm_cost_usd_per_run:
+        raise _Block(f"LLM budget exhausted before analysis (${m.llm_cost_known:.4f})")
     try:
         run = deps.analyst.analyze(payload)
     except LlmBudgetError as exc:
