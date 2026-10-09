@@ -56,6 +56,7 @@ def load_phase3_settings(env: dict[str, str] | None = None) -> Phase3Settings:
     for var, (field, conv) in simple.items():
         if (raw := env.get(var, "").strip()):
             data[field] = conv(raw)
+    data["worktrees_dir"] = Path(data["worktrees_dir"]).expanduser()
     if "RA_IMPL_FALLBACK_BACKEND" in env:
         data["fallback_backend"] = env["RA_IMPL_FALLBACK_BACKEND"].strip() or None
     for backend in ("codex", "claude"):

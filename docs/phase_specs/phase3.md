@@ -92,3 +92,42 @@ Phase 2 の見出し対応表に Repository / Allowed files / Non-goals / Inputs
 ## 9. Non-goals
 
 Phase 4 の Experiment Runner、TSUBAME / Slurm での実行、長時間の研究計算、実験結果の科学的解釈、Phase 5 の常時自律ループ、Linear–Notion Mirror の再実装、未承認の main への merge / push、Eagle へのデプロイ。
+
+---
+
+## 10. 追加仕様（2026-10-10 ユーザー提示、Phase 4 連携。このセクションの正本はユーザーのプロンプト）
+
+### 10.1 ExperimentSpec（schema 1.0）
+
+- Phase 3 が完了したときに、Phase 4 が追加の LLM 推論なしで実験を起動できる構造化仕様を作る。
+- 含める情報：
+  - 識別：task、Phase 2 run、Phase 3 run、リポジトリ、固定 commit
+  - 実行：argv、作業ディレクトリ、入力、環境変数名、依存関係の定義、初期化、再現手順
+  - 資源：CPU / RAM / GPU / wall time と並列化の可否、ジョブ間の依存。確定値か推定値か、根拠、信頼度を区別する
+  - 出力：パス、形式、必須かどうか、単位、検証方法
+  - 検証：acceptance criteria、scientific invariants、評価指標、数値検証条件、整合性の確認方法
+- 実装上の扱い：
+  - Implementer がリポジトリの `.autopilot/experiment.json` に実行定義を書く。このパスはシステムが定めたもので、常に変更範囲に含める。
+  - Phase 3 が固定 commit に対して決定論的に検証する。argv は構造化されていてシェルを経由しないこと、パスは相対で `..` を含まないこと、参照ファイルが commit に存在すること、秘密値を含まないこと、を確認する。
+  - 検証に通らなければ修正要求として差し戻し、修正の上限を超えたら blocked にする。
+- acceptance criteria と scientific invariants は、TaskSpec（Notion 由来）から逐語的に転記する。LLM の出力は使わない。
+
+### 10.2 FailureReport（schema 1.0）と Phase 4 → 3 の修正
+
+- エラー分類：`infrastructure_failure` / `environment_failure` / `implementation_failure` / `numerical_failure` / `scientific_validation_failure` / `resource_exceeded` / `unknown`。
+- 自動修正を許可するのは、implementation と environment の失敗だけ。さらに次をすべて満たす必要がある：
+  - 要約やログに科学的な条件（収束、基底、構造、指標など）が出てこない
+  - 要求された修正範囲が、元の承認範囲に含まれ、科学的な入力ファイルに触れない
+  - invariants が元の仕様と一致する
+  - 往復回数が上限を超えていない
+- numerical / scientific_validation / unknown の失敗は人間の判断に回す。infrastructure / resource_exceeded は Phase 4 の担当とする。
+- 修正の進め方：
+  - 失敗した commit から新しいブランチを切る。元の commit・ブランチ・成果物は保持する。
+  - 科学に関わる部分を守る：scientific とされた入力ファイル、評価指標、数値チェック、必須の出力は変えさせない。
+  - 既存の Code Reviewer で再評価する。
+  - pass したら新しい commit と ExperimentSpec（`supersedes_spec_id` で元を参照）を作り、FailureReport と結び付けて保存する。
+- 回数と予算：
+  - Phase 3 内部の修正は最大2回（従来どおり）。
+  - Phase 3 ↔ 4 の差し戻しは最大2往復。依頼に書かれた回数と、記録されているチェーンの回数の大きい方で判定する。
+  - 同じ FailureReport は二度処理しない（DB の一意制約）。
+  - 予算は元の run からチェーン全体で累積し、修正によってリセットしない。

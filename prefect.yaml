@@ -72,3 +72,19 @@ deployments:
     parameters:
       mode: dry_run
     work_pool: *research_local
+
+  - name: manual
+    entrypoint: src/research_autopilot/implementation/flow.py:implement_task_flow
+    version: "{{ $GIT_SHA }}"
+    description: >-
+      Phase 3 implementation of an approved (Phase 2 apply-mode) task in an isolated worktree of a registered
+      research repository. Never merges or pushes. -p task_id=INU-123 or -p resume_run_id=<run>.
+    tags: [phase3, implementation]
+    work_pool: *research_local
+
+  - name: manual
+    entrypoint: src/research_autopilot/implementation/flow.py:repair_task_flow
+    version: "{{ $GIT_SHA }}"
+    description: Phase 4 -> 3 repair from a FailureReport (-p report_path=...).
+    tags: [phase3, repair]
+    work_pool: *research_local

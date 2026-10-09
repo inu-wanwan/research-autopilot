@@ -21,8 +21,9 @@ class Rules(BaseModel):
     # implementation complexity
     steps_medium: int = 4
     steps_high: int = 8
-    scope_globs_medium: int = 3
-    scope_globs_high: int = 8
+    # scope weight = number of globs + 1 per recursive glob ("**")
+    scope_globs_medium: int = 4
+    scope_globs_high: int = 10
     complexity_high_keywords: list[str] = Field(default_factory=lambda: [
         "new algorithm", "novel", "optimiz", "parallel", "distributed", "gpu", "neural network", "training",
         "refactor", "architecture", "concurren", "新規アルゴリズム", "アルゴリズム", "最適化", "並列", "学習", "設計変更",
@@ -50,8 +51,17 @@ def load_rules(path: Path | None) -> Rules:
 
 
 def _hits(text: str, words: list[str]) -> list[str]:
+    """ASCII keywords match on word starts (so 'cli' does not hit 'client'); others as substrings."""
     t = text.lower()
-    return sorted({w for w in words if w.lower() in t})
+    found = set()
+    for w in words:
+        wl = w.lower()
+        if wl.isascii():
+            if re.search(r"(?<![a-z0-9])" + re.escape(wl), t):
+                found.add(w)
+        elif wl in t:
+            found.add(w)
+    return sorted(found)
 
 
 def _max(a: Level, b: Level) -> Level:
@@ -71,7 +81,7 @@ def classify(*, specification: str | None, plan_text: str, invariants: str | Non
     elif n_steps >= r.steps_medium:
         impl = _max(impl, "medium"); reasons.append(f"impl: {n_steps} plan steps >= {r.steps_medium}")
     wide = [g for g in scope_globs if "**" in g or g.strip() in ("*", ".")]
-    n_scope = len(scope_globs) + 2 * len(wide)
+    n_scope = len(scope_globs) + len(wide)
     if n_scope >= r.scope_globs_high:
         impl = _max(impl, "high"); reasons.append(f"impl: wide file scope ({len(scope_globs)} globs, {len(wide)} recursive)")
     elif n_scope >= r.scope_globs_medium:
