@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 4（Autonomous Experiment Runner & Scientific Analyst）を実装完了。Mac で、LocalBackend による実ジョブ、実際の Codex による修正、実 LLM の Analyst / Reviewer まで検証済み。Eagle と TSUBAME は未実施（指示どおり）。
+Phase 5（Approval-Gated Autonomous Research Workflow）を実装完了。Mac のローカル環境で、実際の Notion / Linear / LLM / Codex / LocalBackend / Prefect を使い、テスト用タスク INU-279 を E2E で完走した（Done）。Eagle と TSUBAME は未実施（Phase 5 の後にまとめて行う方針）。
 
 ## Current Task
 
-Phase 4 の実装・テスト・統合テスト
+Phase 5 の実装・テスト・ローカルでの受け入れ
 
 ## Status
 
-完了。受け入れ条件は下表のとおり。`phase4/experiment-runner` は未 merge・未 push（指示どおり停止）。
+完了。受け入れ条件は下表のとおり。`phase5/autopilot` は未 merge・未 push（指示どおり停止）。
 
 ## Last Updated
 
@@ -30,11 +30,32 @@ Phase 4 の実装・テスト・統合テスト
 
 ## Git Branch / Commit
 
-- Branch: `phase4/experiment-runner`（`main` @ `6110c8f` から分岐。Phase 3 は main に統合済み）
-  - `1ba8950` 仕様書と psutil → `a2a7c00` 本体 → `aabbd5c` flow / CLI → `48aae58` 運用ドキュメント → この handoff の commit
-- `main` / `origin/main` は `6110c8f` のまま
+- Branch: `phase5/autopilot`（`main` @ `9bc1c17` から分岐）。commit は `d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → この handoff の commit
+- `main` / `origin/main` は `9bc1c17`（Phase 4 まで）
 
 ## Completed Work
+
+### Phase 5 実装（2026-10-10 / Claude Code）
+
+- 仕様書は `docs/phase_specs/phase5.md`。
+- ユーザーとの合意事項（いずれも 2026-10-10）：
+  - 承認：最初は「Linear の Status ＋ Prefect のフォーム」で合意したが、その後 **Linear の Status だけで承認する方式に変更**。承認者は登録したユーザー ID で確認する（後述）。
+  - Linear に workflow state（Awaiting Approval / Approved / Revision Requested）を追加。
+  - Notion への書き込みはテスト用ページに限る。
+  - 予算は API $5 / 計算 4 CPU 時間。
+- `src/research_autopilot/autopilot/`：
+  - `models`：ResearchAuthorization / ApprovalPolicy / ParameterDomain / ApprovalRequest / ApprovalDecision / ResearchTaskProposal / OutboxItem / WorkflowRun / CompletionReview / CompletionAssessment
+  - `policy`：決定論的な Approval Policy Gate
+  - `approvals`：承認の検証。linear / linear+form モード
+  - `linear_ops`：書き込みのガード（承認用の状態への遷移を禁止、[TEST] 限定モード、自分の書き込みの監査）
+  - `outbox`：分散書き込み。マーカーで既存の書き込みを取り込み、dead-letter あり
+  - `completion`、`notes`、`budget`
+  - `engine`：状態遷移、polling、重複の検出、通知の重複防止
+  - `flows`（autopilot-poll / approval-confirm）、`factory`、`settings`
+- 共用部分の拡張：`LinearWriter`（コメント、Issue の作成、history）、`NotionWriter`（Tasks / Notes のページ）、`config.load_dotenv`（CLI が `.env` を直接読む）、`NotificationEvent.details`、Phase 5 用の DB テーブル7つ。
+- 安全性の修正：Coding Agent / Reviewer / 検証コマンドに渡す環境変数から認証情報を取り除くようにした（`implementation.backends.base.sanitized_env`）。それまでは LINEAR_API_KEY などが Codex / Claude のプロセスに渡っていた。
+- CLI：`research-agent autopilot poll|status|approve|cancel|resume`。deployment：`autopilot-poll/scheduled`（inactive で作成）、`approval-confirm/manual`。
+- ドキュメント：`docs/operations/phase5_autopilot.md`（承認の検証、設定、上限、復旧、Eagle への一括反映と rollback の手順）。
 
 ### Phase 4 実装（2026-10-10 / Claude Code）
 
@@ -178,12 +199,13 @@ Phase 4 の実装・テスト・統合テスト
 
 ## Remaining Work
 
-- `phase4/experiment-runner` のレビューと merge の判断（ユーザー）。
-- Eagle への反映（`phase4_experiments.md` §7）：`RA_EXP_*` の上限と予約、volume、WSL2 の `.wslconfig`、Docker の再起動で shim が止まる問題への対応方針。
-- TSUBAME：SlurmConfig（partition / account / 転送方法 / 規約の確認）と SSH の実行方法を人間が決める。
-- Phase 5：決定論的な Approval Policy Gate、Notion / Linear への登録、自律ループ（未着手）。
-- 承認方式の見直し（Phase 3 のときからの持ち越し。ユーザーは「後で調整」と発言）。
-- Phase 2 の Planner / Reviewer の単価：`RA_MODEL_PRICING` に terra / sol が設定されたので、Phase 2 の費用推定も有効になる。
+- `phase5/autopilot` のレビューと merge / push の判断（ユーザー）。
+- **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker 上での Codex / Claude CLI の認証、volume、上限と予約、Autopilot 専用の Linear ID（承認者を Linear 単独で確定するため）。
+- ntfy の設定（`RA_NOTIFY_URL` / `RA_NOTIFY_TOPIC`）。今は通知がログに出るだけ。
+- 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。
+- Completion Reviewer が、合格基準の根拠に「出力ファイルが存在する」チェックの名前を使わず、基準が unverifiable になる場合がある（INU-279 の1つ目の基準）。プロンプトかチェック名の対応づけを改善する余地がある。
+- テストデータ：INU-279（Done）、INU-271〜273、INU-270、Notion のテストページ、Notes「[AP] [TEST] …」、ラベル `autopilot` を残すかどうか（ユーザー判断）。
+- Mac の検証用環境：PostgreSQL を `127.0.0.1:5433` で公開する override（scratchpad 内）で再起動したままになっている。不要なら override を外して `up -d postgres` する。
 
 ## Changed Files
 
@@ -191,6 +213,46 @@ Phase 4 の実装・テスト・統合テスト
 - 変更：`pyproject.toml`, `uv.lock`（httpx を追加）、`README.md`、`AGENTS.md`（構成図）、`docs/README.md`（構成図・役割表）、本ファイル
 
 ## Tests and Verification
+
+### Phase 5（2026-10-10、MacBook）
+
+**自動テスト**：`uv run pytest` で **315 passed**（Phase 1〜4 は 269 件、Phase 5 は 46 件）。Phase 5 のテストは Fake の Notion / Linear（API key の actor がユーザーと同じになる、実際の挙動を再現）と Fake の Planner / Implementer / Runner / Analyst を使い、Phase 2 / 3 / 4 は実際の orchestrator を通した。
+
+Fake の E2E で確認したこと：
+
+- 初回の委任承認のあと、途中の承認0回で Done まで完走し、範囲内の追加実験が自動で登録・実行された（inherited authorization、depth 1）。
+- 次のケースは、承認待ちで止まり、正しい人間の操作でだけ再開した：範囲外の提案、invariants の変更、acceptance の緩和、上限の超過、予算の超過、判定できない場合。
+- 次の操作では再開しなかった：bot による変更、権限のない actor、Autopilot 自身の書き込み、要求より前の遷移、仕様を編集したあとの古い承認、フォームと Linear の不一致。
+- Notion は成功して Linear が失敗した場合の照合（重複なし）、Notes の書き込みに失敗したときに Done にならないこと、検証の失敗や根拠の捏造で Done にならないこと、仮説が否定されても成功として扱うこと、提案の上限、似た提案は人間の確認に回すこと、polling の排他、クラッシュ後の再開、dead-letter、dry-run、test-only モード。
+
+**実データでの E2E**（Mac。実際の Notion / Linear はテスト用タスク INU-279 のみ。実際の Phase 2 LLM、Codex、LocalBackend 上の PySCF、Analyst / Completion Reviewer、Prefect）：
+
+| 段階 | 結果 |
+|---|---|
+| 発見と初回の委任承認 | `autopilot poll` で発見 → Linear を Awaiting Approval に（Autopilot が書き込み）→ ユーザーが Approved に → **Linear の Status 変更だけで検証を通過**（actor id `ead20c4c…` が登録した承認者と一致、非 bot、要求の後、自分の書き込みではない） |
+| Phase 2 | 実際の Planner / Reviewer が計画を承認し、Linear を In Progress に |
+| Phase 3 | 実際の Codex（gpt-5.6-sol、2回の試行）、Code Reviewer が pass、commit `18cd7d6` |
+| Phase 4 | 実際の PySCF で検証に合格（RHF −1.11676 / FCI −1.13728 / 相関 −0.02052 Ha）。Analyst は提案0件。LLM の費用 $0.023 |
+| 完了 | Completion Reviewer（$0.010）→ 科学的リスクが high のため人間の確認を求めた（基準1は unverifiable、基準2は met）→ ユーザーが Approved に → Notes に書き込み、Linear にコメント、Done |
+| 結果の反映 | Linear の INU-279 は Done で、コメントに Notes の URL、run、commit、基準の判定。Notion Notes に、Summary から Provenance までの10見出しのページ |
+| 承認の回数 | 2回（初回の委任と、high リスクのための完了確認）。途中で追加の承認はなし |
+| Prefect の承認フォーム（参考） | ローカル Compose の worker 上で、suspend（worker を占有しない）→ API で resume → PostgreSQL に記録、まで実際に確認した。UI v2 では Resume の場所が見つからなかったため、既定のモードを linear に変更した |
+
+**実データで確認していないこと**：依存関係のある複数タスク、追加の提案の自動登録と再実行（Fake では確認済み）、ntfy の実際の送信、Eagle と TSUBAME。
+
+### Phase 5 Acceptance（指示 §9）
+
+| 項目 | 判定 |
+|---|---|
+| 登録 → polling → Phase 2 → 3 → 4 → Notes → Linear Done の E2E | Passed（実データ：INU-279。Fake も） |
+| 承認不要の実装・実験で途中の承認が0回、範囲内の追加実験の自動登録と再実行 | Passed（Fake）。実データでは途中の承認0回（high リスクの完了確認を除く）。追加実験は提案が出なかったため未確認 |
+| 範囲外・invariants・評価基準・費用・判定不能で Awaiting Approval に止まり、正しい人間の操作だけで再開 | Passed（Fake ＋ 実データの承認2回） |
+| bot / 古い承認 / 偽の操作では再開しない | Passed（Fake） |
+| 部分的な成功、重複登録、重複通知、polling の競合、依存の順序、上限、予算、worker の再起動、API の障害、長時間の実験からの復旧、Phase 3 での修正の上限 | Passed（Fake ＋ Phase 4 の実データテストで確認済みの復旧機構） |
+| 成果物の不足、科学的な検証の失敗、Reviewer の未確定、Notes の書き込み失敗で Done にしない | Passed（Fake） |
+| 仮説を否定する結果を成功として扱う | Passed（Fake） |
+| Fake と実データの区別。Eagle 未デプロイ、TSUBAME 未接続 | 上の表のとおり（どちらも PASS としていない） |
+| Phase 1〜4 の regression | Passed（315 件） |
 
 ### Phase 4（2026-10-10、MacBook）
 
@@ -366,6 +428,6 @@ Phase 4 の実装・テスト・統合テスト
 
 ## Exact Next Actions
 
-1. `phase4/experiment-runner` はユーザーの許可を得て main に merge 済み（push は未実施）。
-2. Eagle への反映と TSUBAME の設定は、**Phase 5 の完了後にまとめて行う**（2026-10-10 ユーザー決定）。それまでは Mac のローカル検証だけで進める。
-3. Phase 5 に着手するときは、要件定義を受け取って `docs/phase_specs/phase5.md` を作る。入力は `phase5_handoff.json` と ReviewedExperimentProposal（`phase4_experiments.md` §5）。
+1. ユーザー：`phase5/autopilot` をレビューし、merge / push を判断する。
+2. ユーザー：ntfy の topic を決めて `.env` に設定する（任意）。
+3. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。
