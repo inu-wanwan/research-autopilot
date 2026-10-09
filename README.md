@@ -3,6 +3,7 @@
 研究者が定義・承認した研究タスクを、複数のエージェントが実装・実験・解析まで自律的に進めるシステム。
 
 - **Phase 1（自律実行・監視基盤）**：研究室サーバー（Eagle）上の self-hosted Prefect 3（Server / UI、Process Worker、PostgreSQL）を Docker Compose で動かし、MacBook とスマートフォンから Tailscale 経由で監視する。
+- **Phase 3（Implementer / Code Reviewer）**：承認済みタスクを登録済みの研究リポジトリの専用 worktree で Codex（fallback は Claude Code）に実装させ、決定論的な検証と独立した LLM Reviewer で確認したうえで、固定 commit と ExperimentSpec を Phase 4 に渡す。Phase 4 からの FailureReport による修正にも対応する。運用は [`docs/operations/phase3_implementation.md`](docs/operations/phase3_implementation.md)。
 - **Phase 2（Task Manager / Orchestrator）**：Notion（仕様の正本）と Linear（実行状態の正本）からタスクを取得し、決定論的なゲートを通過したタスクについて Planner / Reviewer エージェント（OpenAI Agents SDK）で実行計画を作る。CLI は `research-agent`。運用は [`docs/operations/phase2_planning.md`](docs/operations/phase2_planning.md)。
 
 - 開発ルール：[`AGENTS.md`](AGENTS.md)

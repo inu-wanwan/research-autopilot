@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 2（Task Manager / Orchestrator）実装完了。MacBook のローカル Compose と実際の Notion / Linear / OpenAI で統合テスト済み。研究室サーバー（Eagle）への反映はまだ。
+Phase 3（Autonomous Implementer & Code Reviewer、Phase 4 連携の追加仕様を含む）を実装完了。Mac で実際の Codex / Claude CLI による統合テスト済み。Eagle には反映していない。
 
 ## Current Task
 
-Phase 2 の実装・テスト・統合テスト
+Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport の追加仕様を含む）
 
 ## Status
 
-完了。AC は下表のとおり。Eagle での反映（worker の作り直しが必要）が残っている。
+完了。受け入れ条件は下表のとおり。`phase3/implementer` ブランチは未 merge・未 push（ユーザーの指示待ち）。
 
 ## Last Updated
 
@@ -30,14 +30,34 @@ Phase 2 の実装・テスト・統合テスト
 
 ## Git Branch / Commit
 
-- `phase2/task-manager` を `main` に merge し、push 済み（ユーザー許可あり）。主な commit：
-  - `140a1ef` Phase 2 仕様書
-  - `a611732` 実装（Task Manager、agents、orchestrator、CLI、テスト）
-  - `ae61351` compose / prefect.yaml の配線とドキュメント
-  - `1f20b04` プレースホルダーだけの仕様を不足と判定する修正
-  - この handoff の commit
+- Branch: `phase3/implementer`（`main` @ `7ccaf51` から分岐。未 merge・未 push）
+  - `3e3…` 以降の Phase 3 の commit：仕様書 → Phase 2 handoff の拡張（`cc9ed9d`）→ 本体（`c18a60e`）→ ExperimentSpec / FailureReport（`d5a1efa`）→ flow / CLI（`84626b0`）→ 分類ルールの調整とドキュメント（`0dff1cf`）→ この handoff の commit
+- `main` / `origin/main` は `7ccaf51` のまま
 
 ## Completed Work
+
+### Phase 3 実装（2026-10-10 / Claude Code）
+
+- 仕様書は `docs/phase_specs/phase3.md`。§10 は Phase 4 連携の追加仕様。ユーザーと合意した事項：
+  - 実行承認：apply モードの handoff ＋ Linear が In Progress
+  - リポジトリ：登録ファイル ＋ Notion の Repository / Allowed files
+  - 費用：サブスクリプションの CLI は回数・時間・トークン数で制御し、従量課金の API は単価と予算上限が必須
+  - Claude の実動作テスト：可
+- Phase 2 への後方互換な拡張：見出しに Repository / Allowed files / Non-goals / Inputs を追加。`TaskSpec` と `ExecutionHandoff` に省略可能なフィールドと `phase2_mode` を追加。
+- `src/research_autopilot/implementation/`：
+  - `orchestrator.py`：承認ゲート、リース、worktree、試行ループ、修正・昇格・fallback、予算、manifest、復旧、`repair()`
+  - `backends/`：codex.py（`codex exec --json`、stdin を閉じる）、claude.py（`claude -p --output-format json`、`--max-budget-usd`）、review_runners.py（read-only の独立セッション。`--output-schema` / `--json-schema` を使う）
+  - `worktree.py`：ブランチ `autopilot/<task>-<run8>`、ロック、diff と commit、Git 監査ログ、main は保護、生成物は除外
+  - `reviewer.py`：scope / 保護パス / 危険な変更 / pytest / lint / typecheck / syntax / experiment_spec の検証と、LLM レビュー（pass / revise / blocked）
+  - `classify.py` と `routing.py`：ルールによる難易度・科学的リスクの分類、tier の選択、昇格
+  - `experiment.py`：ExperimentDefinition / ExperimentSpec（1.0）と、固定 commit に対する検証
+  - `failure.py`：FailureReport（1.0）と修正の可否を決めるポリシー
+  - `flow.py`：Prefect flow `implement-task` / `repair-task`
+  - `factory.py`
+- 永続化：`implementation_runs`（`failure_report_id` は unique、`parent_run_id`）、JSON の manifest / spec / handoff。
+- CLI：`research-agent implement`（`--task` / `--handoff` / `--resume`）、`repair <report>`、`impl-runs list|show`。
+- 設定：`config/research_repos.example.toml`（実ファイル `config/research_repos.toml` は Git 管理外）、`.env.example` の `RA_IMPL_*` と `RA_*_MODEL_*`、`prefect.yaml` の deployment 2つ。
+- ドキュメント：`docs/operations/phase3_implementation.md`（Phase 4 インターフェースの仕様を含む）。
 
 ### Phase 2 実装（2026-10-10 / Claude Code）
 
@@ -136,16 +156,12 @@ Phase 2 の実装・テスト・統合テスト
 
 ## Remaining Work
 
-- **Eagle への反映**（`phase2_planning.md` §5）：
-  - サーバーの `.env` に Phase 2 の変数を設定する
-  - `createdb research_autopilot` を実行する
-  - worker イメージを作り直し、worker を再作成する（**実行中の run がないことを確認し、ユーザーの承認を得てから**）
-  - `research-agent db init`、MacBook から `prefect deploy --all`
-  - Eagle の worker で plan-task の check-only を確認する
-- テストデータの後片付け（ユーザー判断）：INU-273 は apply テストで In Progress になっている（Notion のテストページも Mirror で同じになる）。INU-271 / 272 / 273 と Notion のテストページ、ラベル `autopilot` を残すかどうか。
-- `RA_MODEL_PRICING` に gpt-5.6-terra / sol の単価を設定する（未設定のあいだ、推定料金は n/a になる）。
-- Phase 1 の残り：本番値での zombie 検出の実測、ntfy、バックアップの保存先と定期実行。
-- 研究タスクを Autopilot の対象にするには、Linear に `autopilot` ラベルを付け、Notion の本文に Purpose / Implementation / Acceptance criteria を書く必要がある（既存タスクは見出しがばらばらで、多くが insufficient_spec になる）。
+- `phase3/implementer` のレビューと、merge / push の判断（ユーザー）。
+- Eagle への反映（今回はスコープ外。`phase3_implementation.md` §8）：worker への Codex / Claude CLI の導入と認証方式（未検証）、研究リポジトリの volume、登録ファイル。
+- 実データでの Phase 3：実際の研究タスクの Notion 本文に Repository / Allowed files を書き、Phase 2 を apply モードで実行する必要がある。
+- Codex を API 課金で使う場合の単価設定（今はサブスクリプションなので費用は unknown）。
+- Phase 2 の Planner / Reviewer は単価未設定のまま API を呼んでいる（Phase 3 の費用方針とは不整合。ユーザーに判断を仰ぐ）。
+- Phase 4（Experiment Runner）は未着手。入力は `phase4_handoffs/` と `experiment_specs/`、出力は FailureReport。
 
 ## Changed Files
 
@@ -153,6 +169,70 @@ Phase 2 の実装・テスト・統合テスト
 - 変更：`pyproject.toml`, `uv.lock`（httpx を追加）、`README.md`、`AGENTS.md`（構成図）、`docs/README.md`（構成図・役割表）、本ファイル
 
 ## Tests and Verification
+
+### Phase 3（2026-10-10、MacBook）
+
+**自動テスト**：`uv run pytest` で **218 passed**（Phase 1 は 25、Phase 2 は 98、Phase 3 は 95）。Phase 3 のテストは Fake Backend / Fake Reviewer と、使い捨ての Git リポジトリで実行した。Phase 2 の handoff は、Phase 2 の orchestrator を apply モードで実際に動かして作った。
+
+**実 CLI による統合テスト**：使い捨ての研究リポジトリ `ra-h2-research`（scratchpad 内、PySCF 2.14 / pytest / ruff / mypy を含む venv）で実施。
+
+- Linear / Notion は変更していない（追加仕様の制約）。Phase 2 の apply と、承認ゲートでの Linear / Notion の確認は Fake で代用した。
+- Codex / Claude / reviewer / git / 検証コマンドは本物を使った。
+
+| テスト | 結果 |
+|---|---|
+| 使えるモデルの確認 | Codex：gpt-5.6-luna / terra / sol、Claude：haiku-4-5 / sonnet-5-5 / opus-5-5。いずれも実際に応答した |
+| 実際の Codex で実装（H2/STO-3G） | **completed**。試行1は ruff 違反で revise → 試行2で全検証を通過し、実際の reviewer（gpt-5.6-sol、high）が pass。commit `297a656`、main は変更なし、223秒、63万トークン（費用は unknown） |
+| ExperimentSpec | 構造化された argv、資源の推定値と根拠、単位つきの出力、numeric_checks 5件、scientific な入力 `configs/h2.json`、invariants は Notion から逐語転記 |
+| （範囲外の追加確認）生成されたスクリプトを固定 commit で実行 | RHF −1.11676 / FCI −1.13728 / 相関 −0.02052 Hartree（H2/STO-3G、0.74 Å の既知値と一致） |
+| Codex の quota 到達（**模擬**）→ 実際の Claude に fallback | **completed**。切り替え後、実際の reviewer が「0.74 Å の invariant が保証されていない」を検出して revise → Claude（sonnet-5-5）が直して pass。Claude の費用は $0.18 + $0.11 |
+| FailureReport（implementation_failure、出力形式の不足）→ 実際の Codex で修正 | **completed**。試行1で pass。新しい commit `4bf73ed`、元のブランチ `297a656` は保持、scope は h2_energy.py / tests/** / experiment.json のみ、configs/h2.json は保護、新しい spec は元の spec を `supersedes_spec_id` で参照、予算は元の run から引き継ぎ（63万トークン） |
+| 統合テストの不備で起きた blocked（記録） | 修正テストの1回目は、テストスクリプトの Fake Linear が Todo のままだったため、承認ゲートが正しく blocked にした。同じ report_id の再送は重複防止で再実行されないので、別 ID で再実行した |
+| Prefect UI | Mac CLI → ローカル Compose の Prefect に flow run `implement-INU-273` と artifact `impl-inu-273` が記録された（INU-273 の handoff は Phase 3 より前のものなので blocked / not_approved。Linear / Notion は読み取りのみ） |
+
+**Fake だけで確認したこと（実 CLI では未確認）**：
+
+- 実際の quota / レート制限の検出（判定ロジックは文字列パターン。実際に quota に到達した場合の出力は未確認）
+- Claude で quota に到達した場合
+- 旧プロセスの停止確認
+- crash からの復旧（`--resume`）
+- 予算超過
+- 往復回数の上限
+- 重複 report（実 CLI の文脈でも1件は重複防止が働いた）
+- 科学的入力を変更する修正の拒否
+
+### Phase 3 Acceptance Criteria
+
+| # | 条件 | 判定 | 根拠 |
+|---|---|---|---|
+| 1 | Phase 2 の handoff から実行できる | Passed | 実 CLI テスト、単体テスト |
+| 2 | タスク単位の独立した worktree | Passed | 実際の研究リポジトリに3本のタスクブランチ、main は変更なし |
+| 3 | 難易度と科学的リスクを別々に評価 | Passed | 単体テスト。実際の H2 は medium / high（調整後） |
+| 4 | Implementer と Reviewer のモデル選択 | Passed | 単体テスト。実際は Implementer が terra / sol、Reviewer が sol |
+| 5 | Codex CLI で実際にコードを生成 | Passed | 実 CLI |
+| 6 | 静的検証と独立した LLM Reviewer | Passed | 実 CLI（ruff 違反の検出、sol によるレビュー） |
+| 7 | 問題を検出して修正フローに戻す | Passed | 実 CLI（lint、invariant 違反）、単体テスト |
+| 8 | 修正は最大2回 | Passed | 単体テスト |
+| 9 | Codex → Claude の fallback | Passed（quota は模擬） | Claude は実際に動作した。quota の検出は Fake と文字列判定 |
+| 10 | main を無断で変更しない | Passed | 実 CLI、単体テスト、監査ログ |
+| 11 | 予算超過・権限不足で停止 | Passed（Fake） | 単体テスト |
+| 12 | manifest から復旧 | Passed（Fake） | 単体テスト（crash → resume）。実 CLI では未確認 |
+| 13 | Prefect UI で履歴を確認 | Passed | ローカル Prefect API に flow run と artifact |
+| 14 | Phase 4 向けの固定 commit と artifact | Passed | 実 CLI（spec と handoff） |
+| 15 | 既存のテストがすべて通る | Passed | 218 passed |
+
+| 追加仕様の条件 | 判定 |
+|---|---|
+| ExperimentSpec の生成 | Passed（実 CLI ＋ 単体テスト） |
+| Phase 4 が追加推論なしで起動条件を取得 | Passed（spec だけで、argv / env / inputs / resources / outputs / validation が揃う。範囲外の追加確認で実際に実行できた） |
+| 固定 commit との整合 | Passed（commit に対して cat-file で検証） |
+| FailureReport から修正を依頼 | Passed（実 CLI ＋ 単体テスト） |
+| 科学仕様を守る修正だけを自動承認 | Passed（Fake：分類・scope・science guard。実 CLI では許可されたケースのみ確認） |
+| 修正後に Reviewer が再評価 | Passed（実 CLI） |
+| 修正前の成果物を保持 | Passed（実 CLI ＋ 単体テスト） |
+| 差し戻し回数と予算上限 | Passed（Fake） |
+| Phase 2 との後方互換 | Passed（単体テスト：古い handoff が読める、`phase2_mode` がなければ blocked） |
+| 既存の全テストが成功 | Passed |
 
 ### Phase 2（2026-10-10、MacBook）
 
@@ -227,6 +307,6 @@ Phase 2 の実装・テスト・統合テスト
 
 ## Exact Next Actions
 
-1. ユーザー：Eagle への反映を承認する。承認後、`docs/operations/phase2_planning.md` §5 の手順で反映し、check-only で動作を確認する。
-2. ユーザー：テスト用の Issue と Notion ページの扱い、モデル単価（`RA_MODEL_PRICING`）を決める。
-3. 次の Phase：Phase 3 の要件定義を受け取り、`docs/phase_specs/phase3.md` を作ってから着手する。Phase 3 の入力は `handoffs/<task>/<plan_id>.json`（`ExecutionHandoff`）。
+1. ユーザー：`phase3/implementer` をレビューし、merge / push の方針を決める。
+2. ユーザー：Phase 2 の Planner / Reviewer の API 費用方針を決める（単価を設定するか）。
+3. Phase 4 に着手するときは、要件定義を受け取って `docs/phase_specs/phase4.md` を作る。インターフェースは `docs/operations/phase3_implementation.md` §6 を参照する。
