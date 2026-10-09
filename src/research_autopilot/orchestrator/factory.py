@@ -1,0 +1,38 @@
+"""Build real dependencies from settings (credentials from the environment)."""
+
+from research_autopilot.config import Settings
+from research_autopilot.orchestrator.core import Deps
+from research_autopilot.planning.agents import OpenAIPlanner, OpenAIReviewer
+from research_autopilot.storage.db import Store
+from research_autopilot.tasks.linear import LinearClient
+from research_autopilot.tasks.manager import TaskManager
+from research_autopilot.tasks.notion import NotionClient
+
+
+class ConfigurationError(Exception):
+    pass
+
+
+def build_deps(settings: Settings, on_retry=None) -> Deps:
+    missing = [name for name, value in [
+        ("NOTION_API_TOKEN", settings.notion_api_token),
+        ("NOTION_TASKS_DATA_SOURCE_ID", settings.notion_tasks_data_source_id),
+        ("LINEAR_API_KEY", settings.linear_api_key),
+        ("LINEAR_PROJECT_ID", settings.linear_project_id),
+        ("OPENAI_API_KEY", settings.openai_api_key),
+    ] if not value]
+    if missing:
+        raise ConfigurationError("missing settings: " + ", ".join(missing))
+    notion = NotionClient(settings.notion_api_token.get_secret_value(), settings.notion_tasks_data_source_id,
+                          on_retry=on_retry)
+    linear = LinearClient(settings.linear_api_key.get_secret_value(), settings.linear_project_id,
+                          on_retry=on_retry)
+    # The Agents SDK reads OPENAI_API_KEY from the environment itself.
+    return Deps(
+        manager=TaskManager(notion, linear, settings),
+        linear=linear,
+        planner=OpenAIPlanner(settings.planner_model, tracing=settings.agents_tracing),
+        reviewer=OpenAIReviewer(settings.reviewer_model, tracing=settings.agents_tracing),
+        store=Store(settings.resolved_database_url()),
+        settings=settings,
+    )

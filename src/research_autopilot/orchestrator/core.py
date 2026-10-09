@@ -1,0 +1,263 @@
+"""Orchestrator core: deterministic control flow around the Task Manager and agents.
+
+Steps (docs/phase_specs/phase2.md §6):
+ 1. fetch task (Linear + Notion)          5. replan (<= max_replans)
+ 2. deterministic gates                   6. final gate re-check against fresh data
+ 3. Planner                               7. apply mode: Linear -> In Progress
+ 4. Reviewer (every plan)                 8./9. persist record, write Phase 3 handoff
+
+This module has no Prefect dependency so it can be unit-tested with fakes;
+``orchestrator.flow`` wraps it in a Prefect flow.
+"""
+
+from dataclasses import dataclass
+from typing import Literal
+
+from research_autopilot.config import Settings
+from research_autopilot.models import (
+    BlockedCode,
+    BlockedReason,
+    CostSummary,
+    DecisionStatus,
+    ExecutionHandoff,
+    LinearUpdateResult,
+    PlanRunRecord,
+    RunEvent,
+    WorkflowDecision,
+    new_id,
+    utcnow,
+)
+from research_autopilot.planning.agents import Planner, Reviewer
+from research_autopilot.planning.loop import LoopOutcome, run_planning
+from research_autopilot.storage.artifacts import handoff_path, run_record_path, write_json
+from research_autopilot.storage.db import Store
+from research_autopilot.tasks import gates
+from research_autopilot.tasks.errors import (
+    ConnectorError,
+    NotFoundError,
+    TransientConnectorError,
+)
+from research_autopilot.tasks.manager import LinearGateway, TaskBundle, TaskManager
+
+Mode = Literal["dry_run", "apply", "check_only"]
+
+
+class WriteNotPermitted(Exception):
+    """apply mode requested without RA_LINEAR_WRITE_ENABLED=true."""
+
+
+@dataclass
+class Deps:
+    manager: TaskManager
+    linear: LinearGateway
+    planner: Planner
+    reviewer: Reviewer
+    store: Store
+    settings: Settings
+
+
+def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
+              mode: Mode = "dry_run", flow_run_id: str | None = None) -> PlanRunRecord:
+    if (task_id is None) == (not next_task):
+        raise ValueError("specify exactly one of task_id or next_task")
+    if mode == "apply" and not deps.settings.linear_write_enabled:
+        raise WriteNotPermitted("apply mode requires RA_LINEAR_WRITE_ENABLED=true")
+
+    record = PlanRunRecord(
+        plan_run_id=new_id(), task_id=task_id, flow_run_id=flow_run_id, mode=mode,
+        started_at=utcnow(), planner_model=deps.planner.model, reviewer_model=deps.reviewer.model,
+    )
+    deps.store.init_schema()
+    try:
+        record.decision = _run(deps, record, task_id, next_task, mode)
+    except Exception as exc:
+        record.events.append(RunEvent(kind="error", message=f"unexpected {type(exc).__name__}: {exc}"))
+        raise
+    finally:
+        _finish(deps, record)
+    return record
+
+
+# ---------------------------------------------------------------- steps
+
+
+def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool, mode: Mode) -> WorkflowDecision:
+    s = deps.settings
+    try:
+        bundle = _select_next(deps, record) if next_task else deps.manager.load(task_id)
+    except _NoCandidate as nc:
+        return _decision(record, DecisionStatus.BLOCKED, nc.reasons, "no eligible task in scope")
+    except ConnectorError as exc:
+        return _connector_failure(record, exc)
+
+    record.task_id = bundle.issue.identifier
+    record.linear_snapshot, record.notion_snapshot, record.task_spec = bundle.issue, bundle.page, bundle.spec
+    approval = gates.human_approval(bundle.issue, bundle.page, s)
+
+    reasons = list(bundle.reasons)
+    if lease := deps.store.active_lease(bundle.issue.identifier):
+        reasons.append(_concurrent(lease))
+    if (status := gates.classify(reasons)) is not None:
+        return _decision(record, status, reasons, "deterministic gates failed", bundle, approval)
+    if mode == "check_only":
+        return _decision(record, DecisionStatus.READY, [], "all deterministic gates passed (check only; no plan generated)",
+                         bundle, approval)
+
+    if not deps.store.acquire_lease(bundle.issue.identifier, record.plan_run_id, s.lease_ttl_seconds):
+        return _decision(record, DecisionStatus.BLOCKED, [_concurrent(deps.store.active_lease(bundle.issue.identifier))],
+                         "another run holds this task", bundle, approval)
+    record.events.append(RunEvent(kind="lease", message=f"acquired lease on {bundle.issue.identifier}"))
+    try:
+        outcome = run_planning(bundle.spec, deps.planner, deps.reviewer, s, record)
+        if outcome.status is not DecisionStatus.READY:
+            return _decision(record, outcome.status, outcome.reasons, _loop_rationale(outcome), bundle, approval, outcome)
+
+        # Final check against fresh data: state, approval, dependencies and the
+        # spec itself may have changed while the agents were running.
+        try:
+            fresh = deps.manager.load(bundle.issue.identifier)
+        except ConnectorError as exc:
+            return _connector_failure(record, exc, bundle, approval, outcome)
+        changed = list(fresh.reasons)
+        if fresh.page and bundle.page and fresh.page.last_edited_time != bundle.page.last_edited_time:
+            changed.append(BlockedReason(code=BlockedCode.STATE_CHANGED,
+                                         message="Notion spec was edited during planning; re-run to plan against the new spec"))
+        if changed:
+            for r in changed:
+                r.details.setdefault("detected", "final_recheck")
+            return _decision(record, gates.classify(changed), changed,
+                             "task changed while planning; final re-check failed", fresh, approval, outcome)
+
+        decision = _decision(record, DecisionStatus.READY, [], "deterministic gates passed and Reviewer approved the plan",
+                             fresh, approval, outcome)
+        decision.linear_update = _update_linear(deps, record, fresh, mode)
+        if decision.linear_update.action == "failed":
+            transient = "transient" in (decision.linear_update.error or "")
+            decision.status = DecisionStatus.TRANSIENT_FAILURE if transient else DecisionStatus.BLOCKED
+            decision.reasons.append(BlockedReason(
+                code=BlockedCode.TRANSIENT_ERROR if transient else BlockedCode.CONNECTOR_ERROR,
+                message=f"plan approved but Linear status update failed: {decision.linear_update.error}"))
+            decision.rationale = "plan approved; Linear update failed"
+            return decision
+        record.handoff_path = str(write_json(
+            handoff_path(s.state_dir, fresh.issue.identifier, outcome.plan.plan_id),
+            ExecutionHandoff(
+                task_id=fresh.issue.identifier, plan_id=outcome.plan.plan_id, plan_run_id=record.plan_run_id,
+                decision_id=decision.decision_id, sources=decision.sources,
+                purpose=bundle.spec.purpose, scientific_invariants=bundle.spec.scientific_invariants,
+                acceptance_criteria=bundle.spec.acceptance_criteria,
+                artifact_requirements=bundle.spec.artifact_requirements,
+                plan=outcome.plan.plan, review=outcome.review.review, human_approval=approval,
+                approvals_needed=outcome.plan.plan.approvals_needed,
+                open_questions=outcome.plan.plan.open_questions,
+            )))
+        return decision
+    finally:
+        deps.store.release_lease(bundle.issue.identifier, record.plan_run_id)
+
+
+class _NoCandidate(Exception):
+    def __init__(self, reasons: list[BlockedReason]) -> None:
+        self.reasons = reasons
+
+
+def _select_next(deps: Deps, record: PlanRunRecord) -> TaskBundle:
+    """First candidate (priority, then creation order) that passes every gate."""
+    skipped = []
+    for identifier in deps.manager.next_candidates():
+        bundle = deps.manager.load(identifier)
+        reasons = list(bundle.reasons)
+        if lease := deps.store.active_lease(identifier):
+            reasons.append(_concurrent(lease))
+        if not reasons:
+            record.events.append(RunEvent(kind="select", message=f"selected {identifier}"))
+            return bundle
+        skipped.append({"task_id": identifier, "codes": sorted({r.code.value for r in reasons})})
+        record.events.append(RunEvent(kind="select", message=f"skipped {identifier}: {skipped[-1]['codes']}"))
+    raise _NoCandidate([BlockedReason(
+        code=BlockedCode.NOT_FOUND,
+        message=f"no candidate with label {deps.settings.scope_label!r} in state type "
+                f"{deps.settings.approved_state_type!r} passed the gates",
+        details={"skipped": skipped})])
+
+
+def _update_linear(deps: Deps, record: PlanRunRecord, bundle: TaskBundle, mode: Mode) -> LinearUpdateResult:
+    s, issue = deps.settings, bundle.issue
+    if mode != "apply":
+        result = LinearUpdateResult(action="skipped_dry_run", from_state=issue.state_name, to_state=s.in_progress_state_name)
+    elif issue.state_name == s.in_progress_state_name:
+        result = LinearUpdateResult(action="noop", from_state=issue.state_name, to_state=issue.state_name)
+    else:
+        try:
+            state_id, state_type = deps.linear.team_state_id(issue.team_id, s.in_progress_state_name)
+            if state_type != "started":
+                # Never move a task to completed/canceled from here.
+                raise ValueError(f"target state {s.in_progress_state_name!r} has type {state_type}, expected 'started'")
+            new_state = deps.linear.set_state(issue.id, state_id)
+            result = LinearUpdateResult(action="updated", from_state=issue.state_name, to_state=new_state)
+        except TransientConnectorError as exc:
+            result = LinearUpdateResult(action="failed", from_state=issue.state_name, error=f"transient: {exc}")
+        except (ConnectorError, ValueError) as exc:
+            result = LinearUpdateResult(action="failed", from_state=issue.state_name, error=str(exc))
+    deps.store.audit_linear(record.plan_run_id, issue.identifier, result)
+    record.events.append(RunEvent(kind="linear", message=f"{result.action}: {result.from_state} -> {result.to_state}"))
+    return result
+
+
+# ---------------------------------------------------------------- helpers
+
+
+def _concurrent(lease: dict | None) -> BlockedReason:
+    return BlockedReason(code=BlockedCode.CONCURRENT_RUN, message="another plan run holds this task",
+                         details={"plan_run_id": (lease or {}).get("plan_run_id")})
+
+
+def _connector_failure(record, exc: ConnectorError, bundle=None, approval=None, outcome=None) -> WorkflowDecision:
+    record.events.append(RunEvent(kind="error", message=str(exc)))
+    if isinstance(exc, TransientConnectorError):
+        return _decision(record, DecisionStatus.TRANSIENT_FAILURE,
+                         [BlockedReason(code=BlockedCode.TRANSIENT_ERROR, message=str(exc))],
+                         "external API temporarily unavailable; safe to retry", bundle, approval, outcome)
+    code = BlockedCode.NOT_FOUND if isinstance(exc, NotFoundError) else BlockedCode.CONNECTOR_ERROR
+    return _decision(record, DecisionStatus.BLOCKED, [BlockedReason(code=code, message=str(exc))],
+                     "external API error that retrying will not fix", bundle, approval, outcome)
+
+
+def _loop_rationale(outcome: LoopOutcome) -> str:
+    return {
+        DecisionStatus.BLOCKED: "planning/review did not produce an approved plan",
+        DecisionStatus.TRANSIENT_FAILURE: "LLM API temporarily unavailable; safe to retry",
+    }.get(outcome.status, outcome.status.value)
+
+
+def _decision(record: PlanRunRecord, status: DecisionStatus, reasons: list[BlockedReason], rationale: str,
+              bundle: TaskBundle | None = None, approval=None, outcome: LoopOutcome | None = None) -> WorkflowDecision:
+    sources = []
+    if bundle is not None:
+        sources.append(bundle.issue.source_ref())
+        if bundle.page is not None:
+            sources.append(bundle.page.source_ref())
+    return WorkflowDecision(
+        status=status, task_id=record.task_id, reasons=reasons, rationale=rationale, sources=sources,
+        fetched_at=min((x.fetched_at for x in sources), default=None),
+        plan_id=outcome.plan.plan_id if outcome and outcome.plan else None,
+        plan_run_id=record.plan_run_id, flow_run_id=record.flow_run_id, human_approval=approval,
+        reviewer_verdict=outcome.review.review.verdict if outcome and outcome.review else None,
+    )
+
+
+def _finish(deps: Deps, record: PlanRunRecord) -> None:
+    calls = record.llm_calls
+    costs = [c.estimated_cost_usd for c in calls if c.ok]
+    complete = all(c.ok and c.estimated_cost_usd is not None for c in calls)
+    record.cost = CostSummary(
+        input_tokens=sum(c.input_tokens for c in calls),
+        output_tokens=sum(c.output_tokens for c in calls),
+        estimated_cost_usd=(round(sum(x for x in costs if x is not None), 6) if complete else None) if calls else 0.0,
+        cost_complete=complete,
+    )
+    record.finished_at = utcnow()
+    path = run_record_path(deps.settings.state_dir, record.task_id, record.plan_run_id)
+    record.artifact_path = str(path)
+    write_json(path, record)
+    deps.store.save_run(record)
