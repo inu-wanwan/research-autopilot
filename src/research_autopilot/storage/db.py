@@ -54,6 +54,20 @@ linear_audit = sa.Table(
 )
 
 
+implementation_runs = sa.Table(
+    "implementation_runs", metadata,
+    sa.Column("phase3_run_id", sa.String(36), primary_key=True),
+    sa.Column("task_id", sa.String(64), index=True, nullable=False),
+    sa.Column("phase2_plan_run_id", sa.String(36)),
+    sa.Column("flow_run_id", sa.String(36)),
+    sa.Column("state", sa.String(16), nullable=False),
+    sa.Column("implementation_commit", sa.String(64)),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("record", sa.JSON, nullable=False),
+)
+
+
 def _aware(dt: datetime) -> datetime:
     # SQLite returns naive datetimes; everything is stored in UTC.
     return dt if dt.tzinfo else dt.replace(tzinfo=utcnow().tzinfo)
@@ -84,6 +98,17 @@ class Store:
             return True
         except IntegrityError:
             return False
+
+    def reclaim_or_acquire_lease(self, key: str, owner_id: str, ttl_seconds: int) -> bool:
+        """Like acquire_lease, but an existing lease held by the same owner (a
+        resumed run) is refreshed instead of refused."""
+        current = self.active_lease(key)
+        if current and current["plan_run_id"] == owner_id:
+            with self.engine.begin() as conn:
+                conn.execute(task_leases.update().where(task_leases.c.task_id == key).values(
+                    expires_at=utcnow() + timedelta(seconds=ttl_seconds)))
+            return True
+        return self.acquire_lease(key, owner_id, ttl_seconds)
 
     def active_lease(self, task_id: str) -> dict | None:
         with self.engine.connect() as conn:
@@ -143,5 +168,34 @@ class Store:
         q = sa.select(linear_audit).order_by(linear_audit.c.id)
         if task_id:
             q = q.where(linear_audit.c.task_id == task_id)
+        with self.engine.connect() as conn:
+            return [dict(r) for r in conn.execute(q).mappings()]
+
+    # -------------------------------------------------- Phase 3 implementation runs
+
+    def save_implementation(self, manifest) -> None:
+        values = dict(task_id=manifest.task_id, phase2_plan_run_id=manifest.phase2_plan_run_id,
+                      flow_run_id=manifest.flow_run_id, state=manifest.state.value,
+                      implementation_commit=manifest.implementation_commit, created_at=manifest.created_at,
+                      updated_at=manifest.updated_at, record=manifest.model_dump(mode="json"))
+        with self.engine.begin() as conn:
+            updated = conn.execute(implementation_runs.update().where(
+                implementation_runs.c.phase3_run_id == manifest.phase3_run_id).values(**values)).rowcount
+            if not updated:
+                conn.execute(implementation_runs.insert().values(phase3_run_id=manifest.phase3_run_id, **values))
+
+    def get_implementation(self, run_id: str):
+        from research_autopilot.implementation.models import ImplementationManifest
+
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(implementation_runs.c.record).where(
+                implementation_runs.c.phase3_run_id == run_id)).first()
+        return ImplementationManifest.model_validate(row[0]) if row else None
+
+    def list_implementations(self, task_id: str | None = None, limit: int = 20) -> list[dict]:
+        q = sa.select(*[c for c in implementation_runs.c if c.name != "record"]).order_by(
+            implementation_runs.c.created_at.desc()).limit(limit)
+        if task_id:
+            q = q.where(implementation_runs.c.task_id == task_id)
         with self.engine.connect() as conn:
             return [dict(r) for r in conn.execute(q).mappings()]
