@@ -8,6 +8,7 @@ Research Autopilot の開発ドキュメント置き場です。共通開発ル�
 docs/
 ├── README.md                # このファイル（docs の運用ルール）
 ├── development_handoff.md   # Phase 共通の引き継ぎ記録
+├── phase1_technical_design.md # Phase 1 公式資料調査と実装設計
 └── phase_specs/             # Phase 別の仕様書（各 Phase の実装依頼時に作成）
     ├── phase1.md
     ├── phase2.md
@@ -23,6 +24,7 @@ docs/
 | ファイル | 役割 | 誰が変更するか |
 |---|---|---|
 | `phase_specs/phaseN.md` | Phase N の仕様の正本（ローカル SSOT） | ユーザー、またはユーザーの承認を得たエージェント |
+| `phase1_technical_design.md` | Phase 1 の公式資料調査、設計判断、実装契約 | ユーザーが調査・設計を依頼したエージェント |
 | `development_handoff.md` | 進捗・状態・次の作業の記録。仕様の正本ではない | 作業中のエージェント |
 
 ## 運用ルール

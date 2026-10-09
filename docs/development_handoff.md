@@ -14,26 +14,41 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-なし（引き継ぎ基盤の整備のみ完了。Phase 1 は未着手）
+Phase 1（技術調査・設計レビュ完了、機能実装は未着手）
 
 ## Current Task
 
-開発基盤・引き継ぎ基盤の構築、パッケージ名の統一、`.gitignore` 追加、初回 commit
+Phase 1 の Prefect 3 / Docker Compose / PostgreSQL / Tailscale 技術調査と実装設計
 
 ## Status
 
-完了（Phase 1 の仕様提供待ち）
+設計文書完了。機能実装・Docker 起動・Tailscale 設定は行っていない。
 
 ## Last Updated
 
-2026-10-09 / Claude Code
+2026-10-10 / Codex
 
 ## Git Branch / Commit
 
-- Branch: `main`
-- Commit: 初回 commit（ハッシュは `git log` を参照）。この記録は初回 commit に含まれる。
+- Branch: `phase1/technical-design`
+- Base commit: `0d3a438 Initial commit: project scaffold and agent handoff infrastructure`
+- Phase 1 設計文書の commit: この記録を含む設計 commit（hash は `git log` を参照）
 
 ## Completed Work
+
+### Phase 1 技術調査・設計（2026-10-10 / Codex）
+
+- ユーザーが提供した Claude Code 向け指示の Section 3〜8 から Phase 1 要件（FR-01〜05、NFR、AC-01〜10）を読み取った。
+- ユーザー指示により `docs/phase_specs/phase1.md` は追加していない。実装に必要な要件は `docs/phase1_technical_design.md` 内の「Phase 1 実装契約」に収録した。
+- Prefect、Tailscale、Docker、PostgreSQL の現行公式ドキュメントを調査し、公式 URL とともに `docs/phase1_technical_design.md` に記録した。
+- 確認済み事実、設計上の推奨、未確認 / 制約を区別した。
+- Phase 1 の最小構成を `postgres` + 単一 process `prefect-server` + Process `prefect-worker` の3サービスとし、Redis 追加条件を明示した。
+- container 内 Worker API URL、browser 用 UI API URL、MacBook 用 API URL、host-local URL を分離した。
+- Tailscale Serve + localhost port bind + grants + Prefect Basic Auth を推奨し、Funnel と public port publish を使わない設計とした。
+- retry と exactly-once の違い、PostgreSQL metadata と result storage の違い、container restart と in-flight Run recovery の違いを明記した。
+- Compose 実装契約、障害モード、冪等性、通知分離、backup / restore、テストマトリクス、要件トレーサビリティを設計した。
+
+### 開発基盤（2026-10-09 / Claude Code）
 
 - リポジトリの現状を確認。
 - `AGENTS.md`（共通開発ルール）、`CLAUDE.md`（`@AGENTS.md` のみ）、`docs/README.md`、`docs/development_handoff.md` を作成。
@@ -59,23 +74,29 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Work In Progress
 
-なし
+なし。Phase 1 機能実装はまだ開始していない。
 
 ## Remaining Work
 
-- Phase 1 の仕様書 `docs/phase_specs/phase1.md` の提供（ユーザー）
+- `docs/phase1_technical_design.md` の実装順序に従い Phase 1 を実装する。
+- ローカルで pytest、Flow、Compose build / health / restart / persistence、backup / restore rehearsal を検証する。
+- 研究室サーバー / Tailscale / スマートフォンの実環境で AC-03〜07 の該当範囲を検証する。
+- AC-01〜10 を Passed / Failed / Not Tested で報告する。
 
 ## Changed Files
 
-- `AGENTS.md`, `CLAUDE.md`, `docs/README.md`, `docs/development_handoff.md`（新規）
-- `.gitignore`（新規）
-- `src/researchautopilot/__init__.py` → `src/research_autopilot/__init__.py`（移動、出力文字列のみ変更）
-- `pyproject.toml`, `uv.lock`（プロジェクト名・script の変更）
+- `docs/phase1_technical_design.md`（新規）
+- `docs/README.md`（設計文書を一覧に追加）
+- `docs/development_handoff.md`（本引き継更新）
+- Python / Docker / Prefect 機能ファイルの変更はなし。
 
 ## Tests and Verification
 
-- pytest は未実行（`tests/` にテストが存在しない）。
-- 実行して確認したこと：
+- 2026-10-10 作業開始時: `uv run pytest` を実行。pytest 自体は起動したが `collected 0 items`、exit code 5。既存 test なしの基準状態であり、成功とは報告しない。
+- `git diff --check`: 成功（whitespace error なし）。
+- 公式 URL: Prefect / Tailscale / Docker / PostgreSQL の各ページを Web 調査時に閲覧し、本文の根拠と照合。自動 link checker は未実行。
+- Docker / Compose / Tailscale / Prefect Flow: ユーザー指示により実裌・実行していない。
+- 2026-10-09 に実行済みと記録されていること:
   - `uv sync`：成功（`researchautopilot` がアンインストールされ `research-autopilot` がインストールされた）。
   - `uv run research-autopilot`：`Hello from research-autopilot!` を出力。
   - `uv run python -c "import research_autopilot, research_autopilot.flows"`：成功。
@@ -84,10 +105,16 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 ## Known Issues / Blockers
 
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。仕様はローカル（`docs/phase_specs/`）で提供される必要がある。
-2. **Phase 1 の仕様書が未提供**。
-3. `data/` の扱い（大きな計算結果を Git 管理外にするか等）は未決定。現状 `.gitignore` では除外していない。
+2. **Phase 1 の SSOT ファイルがない**: `docs/phase_specs/phase1.md` は存在しない。ただし、2026-10-10 のユーザー指示で添付要件の読み取りと仕様ファイル非追加が明示された。実装に必要な契約は `docs/phase1_technical_design.md` に収録済み。
+3. **実環境情報が未確認**: 研究室 server OS / CPU、Docker / Compose version、tailnet FQDN / grants 対象、backup 保存先、notification endpoint は未確認。placeholder でローカル実装可能だが、実機 AC は Not Tested とする。
+4. **in-flight Run の自動復旧は保証できない**: container restart と Run resume は別問題。heartbeat Automation で `Crashed` を検出し、外部副作用を確認後に手動 retry する設計。
+5. `data/` の扱い（大きな計算結果を Git 管理外にするか等）は未決定。Phase 1 で研究成果物 storage を推測して追加しない。
 
 ## Exact Next Actions
 
-1. ユーザー：Phase 1 の要件定義を提供し、`docs/phase_specs/phase1.md` として格納する。
-2. エージェント：`AGENTS.md` §4 の手順（git 状態確認 → この記録 → `phase1.md` を読む）に従い、作業ブランチ（例：`phase1/<topic>`）を切ってから Phase 1 に着手する。仕様書がない間は実装を始めない。
+1. `git status` / branch / log とこのファイルを確認する。Phase 1 実装の要件・構成・値・制約・テストは `docs/phase1_technical_design.md` を単一の実装入力として読む。
+2. `docs/phase1_technical_design.md` §15 の順で、まず exact version / environment schema と3-service Compose（PostgreSQL、単一 process Prefect Server、Process Worker）を実装する。Redis は現在の最小構成に追加しない。
+3. 正常 / 異常 / retry / timeout / atomic idempotent side-effect Flow、HTTP notification adapter、pytest を実装する。
+4. `uv run pytest`、`docker compose config`、build、health、deployment、restart / persistence、backup / restore rehearsal を実行し、実行した結果だけを記録する。
+5. Tailscale と研究室 server への変更はユーザーの明示的な本番作業指示の範囲で行う。実環境がなければ AC-03〜07 の該当項目を Not Tested とする。
+6. 意味のある実装単位ごとに test と commit を行い、各単位でこの引き継記録を更新する。
