@@ -22,7 +22,7 @@ Phase 5 の実装・テスト・ローカルでの受け入れ
 
 ## Status
 
-完了。受け入れ条件は下表のとおり。`phase5/autopilot` は未 merge・未 push（指示どおり停止）。
+完了し、この実装段階はクローズした（2026-10-10）。`phase5/autopilot` はユーザーの許可を得て main に merge し、push した。Phase 1〜5 の実装はすべて `origin/main` にある。次は Eagle への一括反映（Phase 2〜5 と TSUBAME）。ユーザーの指示を待つ。
 
 ## Last Updated
 
@@ -30,8 +30,8 @@ Phase 5 の実装・テスト・ローカルでの受け入れ
 
 ## Git Branch / Commit
 
-- Branch: `phase5/autopilot`（`main` @ `9bc1c17` から分岐）。commit は `d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → この handoff の commit
-- `main` / `origin/main` は `9bc1c17`（Phase 4 まで）
+- `main` = `origin/main`（Phase 5 を merge 済み。`9bc1c17..51d493e` に続いて、この handoff の commit）
+- Phase 5 の commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
 
@@ -199,7 +199,6 @@ Phase 5 の実装・テスト・ローカルでの受け入れ
 
 ## Remaining Work
 
-- `phase5/autopilot` のレビューと merge / push の判断（ユーザー）。
 - **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker 上での Codex / Claude CLI の認証、volume、上限と予約、Autopilot 専用の Linear ID（承認者を Linear 単独で確定するため）。
 - ntfy の設定（`RA_NOTIFY_URL` / `RA_NOTIFY_TOPIC`）。今は通知がログに出るだけ。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。
@@ -428,6 +427,6 @@ Fake の E2E で確認したこと：
 
 ## Exact Next Actions
 
-1. ユーザー：`phase5/autopilot` をレビューし、merge / push を判断する。
-2. ユーザー：ntfy の topic を決めて `.env` に設定する（任意）。
-3. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。
+1. ユーザー：ntfy の topic を決めて `.env` に設定する（任意）。
+2. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。Autopilot 専用の Linear ID の導入もあわせて検討する。
+3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
