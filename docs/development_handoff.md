@@ -366,6 +366,6 @@ Phase 4 の実装・テスト・統合テスト
 
 ## Exact Next Actions
 
-1. ユーザー：`phase4/experiment-runner` をレビューし、merge と push を判断する。
-2. ユーザー：Eagle への反映方針（Docker の中で実行するか、ホストの worker で実行するか、上限と予約）と、TSUBAME の設定を決める。
+1. `phase4/experiment-runner` はユーザーの許可を得て main に merge 済み（push は未実施）。
+2. Eagle への反映と TSUBAME の設定は、**Phase 5 の完了後にまとめて行う**（2026-10-10 ユーザー決定）。それまでは Mac のローカル検証だけで進める。
 3. Phase 5 に着手するときは、要件定義を受け取って `docs/phase_specs/phase5.md` を作る。入力は `phase5_handoff.json` と ReviewedExperimentProposal（`phase4_experiments.md` §5）。
