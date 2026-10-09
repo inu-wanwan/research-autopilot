@@ -56,6 +56,10 @@ uv run prefect deployment run autopilot-poll/scheduled     # 手動で起動す�
 
 blocked や dead_letter になったら ntfy に通知が届く（同じ通知は二度送らない）。Prefect UI では、artifact `autopilot-status` で run の状態、blocked の理由、承認待ち、outbox を確認できる。
 
+### Research Notes の結果レポート
+
+結果ページは、「結論」「計算結果」「検証状況」「注意点」「次のアクション」と、折りたたみの「参照・再現情報」で構成する。表の数値は表示用に丸めるが、未丸め値と詳細な検証・監査情報は PostgreSQL / ExperimentManifest / JSON artifacts に残る。主要 artifact は repo-relative path で示し、worker の一時絶対パスや checksum は本文に展開しない。既存の結果ページは自動更新せず、この形式は新しく作成する Notes に適用される。
+
 ## 5. 上限と予算（初期値）
 
 研究タスクの同時実行は1件。1回の実験からの新しい提案は最大3件、連鎖の深さは3、保留できる提案は5件。予算は root タスクとそのすべての追加実験の累計で、API $5、計算 4 CPU 時間（`RA_AUTOPILOT_BUDGET_*`）。超過したら BUDGET 承認を求める（承認すると予算は2倍になる）。再試行・fallback・修正で予算がリセットされることはない。

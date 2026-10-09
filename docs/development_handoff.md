@@ -22,7 +22,7 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 
 ## Status
 
-作業中（2026-10-10）。Notes 作成時のステータス「採用」・分類「結果」と、追加提案の Linear Issue を API 認証ユーザー本人へ割り当てる変更は実装・テスト済み。結果ページの可読性はユーザーとレイアウトを相談してから変更する。
+実装・関連テスト完了（2026-10-10）。Notes の既定プロパティ、Linear の担当者、結果ページの Human Report 化、JSON field / unit 検証の不整合修正まで作業ブランチに実装済み。ユーザーのレビュー待ち。
 
 ## Last Updated
 
@@ -40,7 +40,12 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 - Research Notes 作成時に、ステータスを「採用」、分類（multi-select）を「結果」に設定するよう変更。
 - Autopilot が追加提案の Linear Issue を作成するとき、Linear API の `viewer` を担当者に設定するよう変更。
 - コネクタテストを2件追加。関連テスト 58 件、全テスト 317 件が成功。
-- 結果 Notes 本文の可読性改善は、レイアウトをユーザーと相談中。
+- 結果 Notes を「結論 / 計算結果（表）/ 検証状況 / 注意点 / 次のアクション / 折りたたみの参照・再現情報」に変更。数値・単位・判定・参照は structured data から決定論的に生成し、レポート用 LLM 呼び出しは追加していない。
+- 詳細 evidence、checksum、job ID、一時絶対パスは本文から除外し、PostgreSQL / ExperimentManifest / JSON artifacts に保持する。主要 artifact は repo-relative path で表示する。
+- `OutputFile.units` のフィールド名を Validator が JSON Pointer として扱えなかった不整合を修正。フィールドの存在、数値型、有限値と宣言単位を検証し、metric の宣言単位も passing evidence として記録する。
+- Completion Reviewer へ引用可能な passing evidence 識別子を明示し、存在しない・言い換えた evidence は従来どおり最終ゲートで `unverifiable` に落とす。
+- INU-279 の実測値を structured fixture にし、表示丸めと元精度の分離、単位、重複排除、判定の維持、監査情報への追跡、一時パス非表示を検証。
+- 関連テスト：Notes / Phase 4 / Phase 5 E2E / connectors の81件、Completion / Linear approval の23件が成功。全テストはユーザー指示により再実行していない（直前の小変更前ベースラインは317件成功）。
 
 ### Phase 5 実装（2026-10-10 / Claude Code）
 
@@ -202,14 +207,14 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 
 ## Work In Progress
 
-- 結果 Notes 本文のレイアウトについてユーザー判断待ち。現状は同じ階層の10セクションが縦に並び、結論・主要数値・合否が埋もれる。
+なし（ユーザーレビュー待ち）。
 
 ## Remaining Work
 
 - **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker 上での Codex / Claude CLI の認証、volume、上限と予約、Autopilot 専用の Linear ID（承認者を Linear 単独で確定するため）。
 - ntfy の設定（`RA_NOTIFY_URL` / `RA_NOTIFY_TOPIC`）。今は通知がログに出るだけ。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。
-- Completion Reviewer が、合格基準の根拠に「出力ファイルが存在する」チェックの名前を使わず、基準が unverifiable になる場合がある（INU-279 の1つ目の基準）。プロンプトかチェック名の対応づけを改善する余地がある。
+- 既存の INU-279 Notes は旧形式のままで、今回の Human Report 形式への backfill と実 LLM Completion Reviewer での再判定は未実施（本番 Notes を無断更新しない方針）。新規 run では passing evidence の正確な識別子を Reviewer に提示する。
 - テストデータ：INU-279（Done）、INU-271〜273、INU-270、Notion のテストページ、Notes「[AP] [TEST] …」、ラベル `autopilot` を残すかどうか（ユーザー判断）。
 - Mac の検証用環境：PostgreSQL を `127.0.0.1:5433` で公開する override（scratchpad 内）で再起動したままになっている。不要なら override を外して `up -d postgres` する。
 

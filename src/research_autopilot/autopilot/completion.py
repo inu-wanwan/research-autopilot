@@ -63,20 +63,25 @@ def assess(manifest: ExperimentManifest, acceptance: list[str], scientific_risk:
 
 COMPLETION_INSTRUCTIONS = """\
 You are the Completion Reviewer of Research Autopilot. Decide, for each predefined acceptance criterion of the
-task (quoted verbatim), whether the validated results show it is met. Cite as evidence ONLY names of validation
-checks with status "pass" or metric names from the provided results. If a criterion cannot be established from
-the validated results, use "unverifiable" (or "not_met" if the results contradict it). Also state whether the
-hypothesis was supported, refuted or inconclusive -- a refuted hypothesis is a valid result. Respond in the
-language of the task.
+task (quoted verbatim), whether the validated results show it is met. The payload contains `allowed_evidence`.
+Copy evidence identifiers EXACTLY from that list; do not paraphrase check names or invent aliases. A criterion
+about an output field and unit may be met only when the corresponding existence, format/finite, field-unit or
+metric checks are present and passing. If a criterion cannot be established from those validated results, use
+"unverifiable" (or "not_met" if the results contradict it). Also state whether the hypothesis was supported,
+refuted or inconclusive -- a refuted hypothesis is a valid result. Respond in the language of the task.
 """
 
 
 def review_payload(task: dict, manifest: ExperimentManifest, analysis_summary: str | None) -> dict:
+    allowed = sorted({c.name for j in manifest.jobs if j.validation for c in j.validation.checks if c.status == "pass"}
+                     | {name for j in manifest.jobs if j.validation for name in j.validation.metrics}
+                     | {f"metric:{name}" for j in manifest.jobs if j.validation for name in j.validation.metrics})
     return {
         "task": task,
         "validated_results": [{"experiment": j.experiment_id, "status": j.validation.status, "metrics": j.validation.metrics,
                                "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in j.validation.checks]}
                               for j in manifest.jobs if j.validation],
+        "allowed_evidence": allowed,
         "analysis_summary": analysis_summary,
     }
 

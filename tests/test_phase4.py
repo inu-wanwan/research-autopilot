@@ -47,6 +47,10 @@ def test_runs_validates_analyzes_and_hands_off(tmp_path):
     assert m.state is ExperimentState.COMPLETED, m.block_reason
     (job,) = m.jobs
     assert job.validation.status == "pass" and job.validation.metrics == {"correlation_energy": -0.0205}
+    unit_checks = [c for c in job.validation.checks if c.kind == "units"]
+    assert {c.name for c in unit_checks if c.status == "pass"} >= {
+        "units:results/h2.json:e_rhf", "units:results/h2.json:e_fci", "metric_units:correlation_energy"}
+    assert next(c for c in unit_checks if c.name == "units:results/h2.json:e_rhf").value == pytest.approx(-1.1168)
     assert job.validation.fully_verified is False  # prose acceptance criteria stay not_verified
     assert {c.kind for c in job.validation.checks if c.status == "not_verified"} >= {"acceptance_criterion", "scientific_invariant"}
     art = job.collect.artifacts[0]
@@ -75,6 +79,17 @@ def test_exit_zero_without_outputs_is_not_success(tmp_path):
     assert m.state is ExperimentState.BLOCKED
     assert m.jobs[0].validation.status == "fail"
     assert m.jobs[0].triage.error_class.value == "implementation_failure"
+
+
+def test_missing_declared_json_field_never_passes_units_validation(tmp_path):
+    bad = json.dumps({"e_fci": -1.1373, "e_corr": -0.0205})
+    deps, runs, *_ = make_exp(tmp_path, compute=FakeComputeBackend([
+        {"state": "succeeded", "exit_code": 0, "outputs": {"results/h2.json": bad}}
+    ]))
+    deps.impl_deps = None
+    manifest = run_experiment(deps, phase3_run_ids=runs)
+    check = next(c for c in manifest.jobs[0].validation.checks if c.name == "units:results/h2.json:e_rhf")
+    assert check.status == "fail" and manifest.state is ExperimentState.BLOCKED
 
 
 @pytest.mark.parametrize("content,klass", [

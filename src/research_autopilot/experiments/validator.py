@@ -101,15 +101,17 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
             checks.append(ValidationCheck(name=f"finite:{out.path}", kind="finite", status="fail" if bad else "pass",
                                           detail=f"non-finite values at {bad[:5]}" if bad else "no NaN/Inf"))
             for field, unit in out.units.items():
-                ptr = field if field.startswith("/") else None
-                if ptr is None:
-                    checks.append(ValidationCheck(name=f"units:{out.path}:{field}", kind="units", status="not_verified",
-                                                  detail=f"declared unit {unit}; field name is not a JSON pointer"))
-                    continue
+                # OutputFile.units permits top-level field names ("e_fci") as well as JSON pointers ("/e_fci").
+                ptr = field if field.startswith("/") else "/" + field.replace("~", "~0").replace("/", "~1")
                 try:
-                    _pointer(doc, ptr)
-                    checks.append(ValidationCheck(name=f"units:{out.path}:{field}", kind="units", status="pass",
-                                                  detail=f"field present; declared unit {unit}"))
+                    raw = _pointer(doc, ptr)
+                    numeric = not isinstance(raw, bool) and isinstance(raw, (int, float)) and math.isfinite(float(raw))
+                    checks.append(ValidationCheck(
+                        name=f"units:{out.path}:{field}", kind="units", status="pass" if numeric else "fail",
+                        detail=(f"numeric finite field; declared unit {unit}" if numeric else
+                                f"field is not a finite number; declared unit {unit}"),
+                        value=float(raw) if numeric else None,
+                    ))
                 except (KeyError, IndexError, ValueError, TypeError):
                     checks.append(ValidationCheck(name=f"units:{out.path}:{field}", kind="units", status="fail",
                                                   detail=f"field with declared unit {unit} missing"))
@@ -133,6 +135,10 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
             metrics[m.name] = val
             checks.append(ValidationCheck(name=f"metric:{m.name}", kind="metric",
                                           status="pass" if math.isfinite(val) else "fail", detail=m.definition, value=val))
+            if m.units:
+                checks.append(ValidationCheck(name=f"metric_units:{m.name}", kind="units",
+                                              status="pass" if math.isfinite(val) else "fail",
+                                              detail=f"metric extracted; declared unit {m.units}", value=val))
 
     for c in spec.validation.numeric_checks:
         doc = loaded.get(c.output)

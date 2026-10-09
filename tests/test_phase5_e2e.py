@@ -31,10 +31,11 @@ def test_full_e2e_with_zero_mid_run_approvals_and_auto_followup(tmp_path):
     assert r.stage is WorkflowStage.DONE, (r.blocked_reason, r.events[-3:])
     assert linear.issues["INU-900"].state_name == "Done"
     assert len(r.approval_request_ids) == 1  # only the initial delegation; 0 mid-run approvals
-    # Notes written with provenance, Linear comment with links
+    # Concise Notes written with a folded reference section; Linear comment keeps the link.
     (note,) = writer.notes.values()
     text = str(note["blocks"])
-    assert "Provenance" in text and r.experiment_run_ids[0] in text and r.commits[0][:12] in text
+    assert "参照・再現情報" in text and r.experiment_run_ids[0] in text and r.commits[0][:12] in text
+    assert "計算結果" in text and "検証状況" in text
     assert any("Notion Notes" in body for _, body in linear.comments)
     # Auto follow-up proposal registered in Notion + Linear (Todo, autopilot label, linked both ways)
     (child_id,) = linear.created

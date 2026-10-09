@@ -38,6 +38,15 @@
 - Done になるのは複数の条件をすべて満たした場合だけ。仮説が否定されても、検証として成立していれば成功とする。
 - Mac での検証では本番の研究 Issue に書き込まない。
 
+### Human Report（2026-10-10 ユーザー追加仕様）
+
+- Research Notes 本文は人間向けの簡潔なレポートとし、「結論」「計算結果」「検証状況」「注意点」「次のアクション」（不要なら省略）の順にする。末尾に折りたたみの「参照・再現情報」を置く。
+- 数値・単位・検証判定・artifact references は、既存の ExperimentManifest / ValidationResult / CompletionAssessment から決定論的に構築する。レポート整形専用の LLM 呼び出しは追加しない。
+- 計算結果は Notion の表で表示し、表示値だけを可読な桁数に丸める。未丸め値、詳細 evidence、checksum、job ID、実行環境、ログ、retry history は PostgreSQL / JSON artifacts / ExperimentManifest に保持し、本文へ展開しない。
+- 主要 artifact は永続 URI がなければ repo-relative path と run / commit で追跡可能にする。ローカル一時ディレクトリの絶対パスを主要リンクとして表示しない。
+- 仮説の支持・不支持と、タスクの実行・自動完了可否を区別する。元の `met` / `unverifiable` / `not_met` は変更しない。
+- JSON output の `units` はスキーマどおりトップレベルのフィールド名または JSON Pointer として検証し、フィールド欠落・非数値・非有限値を成功扱いしない。Completion Reviewer が使える evidence は実在する passing check / metric の正確な識別子に限定する。
+
 ## 9. Acceptance
 
 ユーザーの指示 §9 に従う。Fake を使った unit / integration / E2E テストと、実際の CLI / LLM / LocalBackend / Prefect を使った統合テストは区別して報告する。Eagle は未デプロイ、TSUBAME は未接続であり、これらを PASS とは扱わない。

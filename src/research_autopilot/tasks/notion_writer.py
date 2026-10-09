@@ -39,6 +39,20 @@ def bullet(text: str) -> dict:
     return {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rt(text)}}
 
 
+def table(headers: list[str], rows: list[list[str]]) -> dict:
+    def row(cells: list[str]) -> dict:
+        return {"object": "block", "type": "table_row", "table_row": {"cells": [_rt(cell) for cell in cells]}}
+
+    return {"object": "block", "type": "table", "table": {
+        "table_width": len(headers), "has_column_header": True, "has_row_header": False,
+        "children": [row(headers), *[row(values) for values in rows]],
+    }}
+
+
+def toggle(title: str, children: list[dict]) -> dict:
+    return {"object": "block", "type": "toggle", "toggle": {"rich_text": _rt(title), "children": children}}
+
+
 def section(title: str, body: str | list[str]) -> list[dict]:
     if isinstance(body, list):
         return [heading(title), *[bullet(x) for x in body]] if body else [heading(title), paragraph("-")]

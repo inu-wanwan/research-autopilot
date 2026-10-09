@@ -1,0 +1,86 @@
+{
+  "manifest": {
+    "experiment_run_id": "exp-inu-279",
+    "task_id": "INU-279",
+    "phase3_run_id": "phase3-inu-279",
+    "state": "completed",
+    "flow_run_id": "flow-inu-279",
+    "jobs": [
+      {
+        "experiment_id": "h2-sto3g",
+        "spec_id": "spec-inu-279",
+        "commit": "18cd7d61234567890abcdef",
+        "attempt": 1,
+        "job_key": "job-inu-279",
+        "collect": {
+          "job_key": "job-inu-279",
+          "artifacts": [
+            {
+              "path": "results/h2.json",
+              "stored_path": "/private/tmp/claude-test/scratchpad/p5-real/results/h2.json",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size_bytes": 128
+            }
+          ],
+          "missing": [],
+          "stdout_path": "/private/tmp/stdout.log",
+          "stderr_path": "/private/tmp/stderr.log"
+        },
+        "validation": {
+          "experiment_id": "h2-sto3g",
+          "job_key": "job-inu-279",
+          "status": "pass",
+          "fully_verified": false,
+          "checks": [
+            {"name": "exists:results/h2.json", "kind": "output_exists", "status": "pass", "detail": "128 bytes sha256=aaaaaaaaaaaa"},
+            {"name": "format:results/h2.json", "kind": "format", "status": "pass", "detail": "json"},
+            {"name": "finite:results/h2.json", "kind": "finite", "status": "pass", "detail": "no NaN/Inf"},
+            {"name": "units:results/h2.json:e_rhf", "kind": "units", "status": "pass", "detail": "numeric finite field; declared unit Hartree", "value": -1.1167593073964255},
+            {"name": "units:results/h2.json:e_fci", "kind": "units", "status": "pass", "detail": "numeric finite field; declared unit Hartree", "value": -1.137283834488502},
+            {"name": "units:results/h2.json:e_corr", "kind": "units", "status": "pass", "detail": "numeric finite field; declared unit Hartree", "value": -0.020524527092076417},
+            {"name": "metric:correlation_energy", "kind": "metric", "status": "pass", "detail": "FCI minus RHF", "value": -0.020524527092076417},
+            {"name": "check:fci_below_rhf", "kind": "numeric_check", "status": "pass", "detail": "FCI <= RHF"},
+            {"name": "acceptance:output", "kind": "acceptance_criterion", "status": "not_verified", "detail": "completion review required"}
+          ],
+          "metrics": {"correlation_energy": -0.020524527092076417}
+        }
+      }
+    ],
+    "analysis": {
+      "summary": "H2 の RHF・FCI 計算を実行し、FCI エネルギーが RHF より約0.0205 Hartree低いことを確認した。",
+      "observed_facts": [],
+      "inferences": [],
+      "hypotheses": [],
+      "hypothesis_evaluation": "supported",
+      "uncertainties": [],
+      "anomalies": [],
+      "limitations": ["基底関数・結合長の直接検証記録、RHF 収束診断、PySCF バージョン、再実行による再現性確認は含まれていない。"],
+      "open_questions": ["出力 JSON の各フィールドと単位を明示的に検証し、未達判定の原因を確認する。"],
+      "proposals": []
+    }
+  },
+  "assessment": {
+    "auto_done": false,
+    "reasons": [
+      "acceptance criteria not established: output fields and units",
+      "scientific risk is high: human review required before Done"
+    ],
+    "deterministic_ok": true,
+    "criteria": [
+      {
+        "criterion": "results/h2.json に RHF、FCI、相関エネルギー（Hartree）が出力されている",
+        "status": "unverifiable",
+        "evidence": [],
+        "note": "not established"
+      },
+      {
+        "criterion": "FCI ≤ RHF",
+        "status": "met",
+        "evidence": ["check:fci_below_rhf"],
+        "note": ""
+      }
+    ],
+    "hypothesis_outcome": "supported",
+    "scientific_risk": "high"
+  }
+}
