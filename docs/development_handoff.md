@@ -14,27 +14,58 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 1（技術調査・設計レビュ完了、機能実装は未着手）
+Phase 1（実装完了・ローカル検証済み。研究室サーバー / Tailscale / スマートフォンでの検証は未実施）
 
 ## Current Task
 
-Phase 1 の Prefect 3 / Docker Compose / PostgreSQL / Tailscale 技術調査と実装設計
+Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検証
 
 ## Status
 
-設計文書完了。機能実装・Docker 起動・Tailscale 設定は行っていない。
+ローカル（MacBook）で実装と検証が完了。本番環境（研究室サーバー）での構築と AC-03〜06 の実機検証が残っている。
 
 ## Last Updated
 
-2026-10-10 / Codex
+2026-10-10 / Claude Code
 
 ## Git Branch / Commit
 
-- Branch: `phase1/technical-design`
-- Base commit: `0d3a438 Initial commit: project scaffold and agent handoff infrastructure`
-- Phase 1 設計文書の commit: この記録を含む設計 commit（hash は `git log` を参照）
+- Branch: `phase1/implementation`（`phase1/technical-design` @ `f60c748` から分岐。未 merge・未 push）
+- Commits:
+  - `78ed6a9` phase1: add Phase 1 spec from user-provided requirements
+  - `4f3bae6` phase1: add smoke flows, idempotent side effect, HTTP notifications and tests
+  - `fdd1e22` phase1: add Docker Compose stack, worker image, deployments and zombie automation
+  - `0c36ac7` phase1: add operations docs (deployment, monitoring, recovery) and README
+  - この handoff 更新の commit（hash は `git log` を参照）
 
 ## Completed Work
+
+### Phase 1 実装（2026-10-10 / Claude Code）
+
+- `docs/phase_specs/phase1.md` を作成した（ユーザー指示「phase1 の要件は claude 側で作成」による）。ユーザー提示の Phase 1 指示 §1, §3〜§8, §10 を整理したもので、要件の追加や変更はしていない。
+  - なお `docs/phase1_technical_design.md` §1 の「phase1.md は存在しない」という記述は Codex の文書なので書き換えていない。現在はこのファイルが存在する。
+- Python（`src/research_autopilot/`）
+  - `flows/smoke_test.py`：次の5つの flow。各 flow に completed / failed / crashed の通知 hook を付けた。
+    - `smoke-success`：冪等な副作用付き
+    - `smoke-failure`：`TransientError` に限り最大2回 retry（指数 backoff + jitter）
+    - `smoke-timeout`：task timeout 2秒
+    - `approval-demo`：通知してから `pause_flow_run`
+    - `smoke-sleep`：復旧訓練用
+  - `idempotency.py`：`apply_once`。tmp ファイルを書いてから `os.link` でアトミックに作成し、payload が食い違えば検出する。
+  - `notifications/`：型付きの `NotificationEvent`（例外メッセージは入れず型名だけ）、ntfy 互換の `HttpNotifier`（timeout 5秒、5xx と通信エラーのみ最大2回 retry）、`LoggingNotifier`（未設定時）、`safe_send`（例外を外に出さない）、Prefect hook。
+  - 依存に `httpx>=0.28.1` を追加（直接 import しているため）。
+- インフラ
+  - `infra/compose.yaml`
+    - `postgres:16.15`：named volume、host にポートを出さない
+    - `prefecthq/prefect:3.8.8-python3.12` の単一プロセス server：`127.0.0.1:4200` のみ、Basic auth、CSRF 有効
+    - process worker：`research-local` pool、`--limit 1`、`--with-healthcheck`、非 root、docker.sock なし
+    - 共通：healthcheck、`depends_on: service_healthy`、`restart: unless-stopped`、ログのローテーション
+  - `infra/Dockerfile`：uv 0.12.18 を使い、`uv sync --frozen --no-dev` でコードを `/opt/research-autopilot` に焼き込む。uid 10001 で実行する。
+  - `infra/automations/crash-zombie-flow-runs.yaml`：heartbeat が 540 秒途絶えた run を Crashed にする。
+  - `prefect.yaml`：5つの deployment。version は `GIT_SHA`。スケジュールは inactive で登録する。
+  - `.env.example`、`.dockerignore` を追加。
+- テスト（`tests/`、25件）：冪等性（逐次、16スレッド同時、payload の食い違い、不正な ID）、通知（payload、token の秘匿、retry、4xx を再送しない、失敗の隔離、設定の validation）、flow（成功、重複実行、retry 後の失敗、retry での回復、timeout、通知失敗が state に影響しないこと、sleep）。
+- ドキュメント：`README.md`、`docs/operations/{deployment,monitoring,recovery}.md`。`docs/README.md` と `AGENTS.md` の構成図を更新した。
 
 ### Phase 1 技術調査・設計（2026-10-10 / Codex）
 
@@ -74,47 +105,76 @@ Phase 1 の Prefect 3 / Docker Compose / PostgreSQL / Tailscale 技術調査と�
 
 ## Work In Progress
 
-なし。Phase 1 機能実装はまだ開始していない。
+なし。
 
 ## Remaining Work
 
-- `docs/phase1_technical_design.md` の実装順序に従い Phase 1 を実装する。
-- ローカルで pytest、Flow、Compose build / health / restart / persistence、backup / restore rehearsal を検証する。
-- 研究室サーバー / Tailscale / スマートフォンの実環境で AC-03〜07 の該当範囲を検証する。
-- AC-01〜10 を Passed / Failed / Not Tested で報告する。
+- 研究室サーバーでの構築と、AC-03 / 04 / 05 / 07 の実機検証（手順は `docs/operations/deployment.md`）。
+- Tailscale の設定（Serve、grants）と、MacBook・スマートフォンからの確認、未承認経路の負の確認（AC-06。手順は `docs/operations/monitoring.md`）。
+- 本番値（heartbeat 180 秒 / 検出窓 540 秒）での zombie 検出の実測。
+- 実際の ntfy エンドポイントでの通知確認。
+- バックアップの保存先・定期実行・保持世代・暗号化の決定（`docs/operations/recovery.md` §5）。
+- `phase1/implementation` のレビューと merge（ユーザー判断）。
 
 ## Changed Files
 
-- `docs/phase1_technical_design.md`（新規）
-- `docs/README.md`（設計文書を一覧に追加）
-- `docs/development_handoff.md`（本引き継更新）
-- Python / Docker / Prefect 機能ファイルの変更はなし。
+- 新規：`docs/phase_specs/phase1.md`, `src/research_autopilot/idempotency.py`, `src/research_autopilot/flows/smoke_test.py`, `src/research_autopilot/notifications/{__init__,events,http,hooks}.py`, `tests/{conftest,test_idempotency,test_notifications,test_smoke_flows}.py`, `infra/{compose.yaml,Dockerfile}`, `infra/automations/crash-zombie-flow-runs.yaml`, `prefect.yaml`, `.env.example`, `.dockerignore`, `docs/operations/{deployment,monitoring,recovery}.md`
+- 変更：`pyproject.toml`, `uv.lock`（httpx を追加）、`README.md`、`AGENTS.md`（構成図）、`docs/README.md`（構成図・役割表）、本ファイル
 
 ## Tests and Verification
 
-- 2026-10-10 作業開始時: `uv run pytest` を実行。pytest 自体は起動したが `collected 0 items`、exit code 5。既存 test なしの基準状態であり、成功とは報告しない。
-- `git diff --check`: 成功（whitespace error なし）。
-- 公式 URL: Prefect / Tailscale / Docker / PostgreSQL の各ページを Web 調査時に閲覧し、本文の根拠と照合。自動 link checker は未実行。
-- Docker / Compose / Tailscale / Prefect Flow: ユーザー指示により実裌・実行していない。
-- 2026-10-09 に実行済みと記録されていること:
-  - `uv sync`：成功（`researchautopilot` がアンインストールされ `research-autopilot` がインストールされた）。
-  - `uv run research-autopilot`：`Hello from research-autopilot!` を出力。
-  - `uv run python -c "import research_autopilot, research_autopilot.flows"`：成功。
-  - `.venv/` が無視されていることを `git check-ignore` で確認。
+すべて 2026-10-10 に MacBook（arm64、Docker 29.8.1）で実行した。Compose は project 名 `ra-verify` でローカルに起動し、`.env` はローカル用の乱数で作った（Git 管理外）。
+
+| コマンド / 操作 | 結果 |
+|---|---|
+| `uv run pytest` | 25 passed |
+| `uv run python -m research_autopilot.flows.smoke_test success/failure/timeout`（一時的な SQLite サーバー） | Completed / Failed（3回試行）/ TimedOut |
+| `docker compose ... config -q`、`build`、`up -d` | 3サービスとも healthy |
+| `lsof -iTCP:4200` / `:5432`、LAN IP からの curl | 4200 は 127.0.0.1 のみ、5432 は host に出ていない、LAN IP からは到達不可 |
+| `GET /api/admin/version`（認証なし / 誤り / 正しい値）、`/api/health` | 401 / 401 / 200、health は 200 |
+| Mac から `prefect deploy --all --no-prompt` → `deployment run --watch` | 登録成功。worker が実行し、success は Completed、retry-check は Failed（ログに Retry 1/2・2/2・exhausted）、timeout-check は TimedOut |
+| `deployment inspect` | version=GIT_SHA、schedule は cron `0 9 * * *` Asia/Tokyo で `active: False`、pull step は `/opt/research-autopilot` |
+| 通知（host 上のモック HTTP 受信器） | completed / failed（error: TransientError）/ approval_required が届き、Bearer token が一致、本文に例外メッセージなし |
+| approval-demo | Paused → `resume_flow_run` → Completed（completed 通知あり） |
+| `restart prefect-server prefect-worker`、`restart postgres`、`down` → `up -d` | いずれも run 数・状態の内訳が一致（6 runs） |
+| worker を `docker kill`（heartbeat 30秒、一時的な 90 秒 automation） | 約100秒後に run が Running → Crashed。コンテナは exited のまま（restart policy の対象外） |
+| コンテナ内で worker プロセスを SIGKILL | 自動で再起動（RestartCount=1）、healthy に戻り、新しい run も Completed |
+| `pg_dump -Fc` → 使い捨てコンテナへ `pg_restore --exit-on-error` → 稼働スタックへ in-place 復元 | どちらも 8 runs / 115 logs / 5 deployments で一致。復元後の新しい run も Completed |
+| `git diff --check`、秘密情報らしき文字列の grep | 問題なし |
+
+実施していないこと：研究室サーバー、Tailscale、スマートフォン、ブラウザでの UI ログイン操作、実際の ntfy サーバー、本番値での zombie 検出。
+
+### Acceptance Criteria
+
+| ID | 判定 | 根拠 |
+|---|---|---|
+| AC-01 | **Passed** | `uv run pytest` 25 passed |
+| AC-02 | **Passed** | MacBook で正常系・異常系の flow を実行（ローカルの一時サーバーとローカル Compose の両方） |
+| AC-03 | **Not Tested** | 研究室サーバーでは未実施。MacBook の Compose では3サービスとも healthy を確認（ローカル模擬） |
+| AC-04 | **Not Tested** | 研究室サーバーでは未実施。ローカル Compose の worker が登録済み deployment を実行することは確認済み |
+| AC-05 | **Not Tested** | MacBook → 研究室サーバーの経路は未実施。MacBook CLI → ローカル Compose の登録・起動は確認済み |
+| AC-06 | **Not Tested** | Tailscale とスマートフォンは未実施 |
+| AC-07 | **Not Tested**（本番）／ローカルでは確認済み | ローカル Compose で server / worker / postgres の再起動と down → up の後も履歴が残った。研究室サーバーでは未実施 |
+| AC-08 | **Passed** | ローカル Compose の worker で retry（2回）・失敗ログ（DB に保存され API で取得）・failed 通知（モック受信器）を確認。実際の ntfy では未確認 |
+| AC-09 | **Passed** | `test_idempotency.py`（16スレッド同時）、`test_duplicate_runs_apply_side_effect_once` |
+| AC-10 | **Not Tested**（本番）／ローカルでは確認済み | 文書の手順で、ローカルで構築・バックアップ・リハーサル復元・in-place 復元を再現した。研究室サーバーでの再現は未実施 |
 
 ## Known Issues / Blockers
 
-1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。仕様はローカル（`docs/phase_specs/`）で提供される必要がある。
-2. **Phase 1 の SSOT ファイルがない**: `docs/phase_specs/phase1.md` は存在しない。ただし、2026-10-10 のユーザー指示で添付要件の読み取りと仕様ファイル非追加が明示された。実装に必要な契約は `docs/phase1_technical_design.md` に収録済み。
-3. **実環境情報が未確認**: 研究室 server OS / CPU、Docker / Compose version、tailnet FQDN / grants 対象、backup 保存先、notification endpoint は未確認。placeholder でローカル実装可能だが、実機 AC は Not Tested とする。
-4. **in-flight Run の自動復旧は保証できない**: container restart と Run resume は別問題。heartbeat Automation で `Crashed` を検出し、外部副作用を確認後に手動 retry する設計。
-5. `data/` の扱い（大きな計算結果を Git 管理外にするか等）は未決定。Phase 1 で研究成果物 storage を推測して追加しない。
+1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
+2. **実環境の情報が未確認**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、tailnet の FQDN と grants の対象、バックアップの保存先、通知エンドポイント。イメージは amd64 / arm64 の両方があることを確認済み。
+3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
+4. **`docker kill` / `docker stop` した worker は自動で再起動しない**（Docker の仕様。ローカルで確認済み）。運用者が `up -d` で起動する。
+5. **worker ごと落ちた run は hook 通知が飛ばない**：Crashed への変更は automation が行うため。必要なら Prefect automation の通知 action を追加する（Phase 1 では未実装）。
+6. `data/` の扱いは未決定。Phase 1 では研究成果物の storage を追加していない。
+7. `docs/phase1_technical_design.md` §1 と旧 handoff にある「phase1.md は存在しない」は古い記述（現在は存在する）。設計書は Codex の文書なので変更していない。
+8. ローカル検証用のスタック `ra-verify`（コンテナ、ボリューム `ra-verify_pgdata` / `ra-verify_worker-state`）とローカルの `.env` が MacBook に残っている。不要になったら `docker compose -p ra-verify --env-file .env -f infra/compose.yaml down -v` で削除する（ローカル検証データのみ）。
 
 ## Exact Next Actions
 
-1. `git status` / branch / log とこのファイルを確認する。Phase 1 実装の要件・構成・値・制約・テストは `docs/phase1_technical_design.md` を単一の実装入力として読む。
-2. `docs/phase1_technical_design.md` §15 の順で、まず exact version / environment schema と3-service Compose（PostgreSQL、単一 process Prefect Server、Process Worker）を実装する。Redis は現在の最小構成に追加しない。
-3. 正常 / 異常 / retry / timeout / atomic idempotent side-effect Flow、HTTP notification adapter、pytest を実装する。
-4. `uv run pytest`、`docker compose config`、build、health、deployment、restart / persistence、backup / restore rehearsal を実行し、実行した結果だけを記録する。
-5. Tailscale と研究室 server への変更はユーザーの明示的な本番作業指示の範囲で行う。実環境がなければ AC-03〜07 の該当項目を Not Tested とする。
-6. 意味のある実装単位ごとに test と commit を行い、各単位でこの引き継記録を更新する。
+1. ユーザー：`phase1/implementation` をレビューし、merge と push の方針を決める。
+2. ユーザー / 管理者：研究室サーバーの OS / CPU、Docker と Compose のバージョンを確認し、`docs/operations/deployment.md` §2 の手順で構築する（`.env` は本番専用の乱数で作る）。
+3. 管理者：`docs/operations/monitoring.md` §2 の Tailscale 設定（Serve、grants）を行い、`.env` の `PREFECT_SERVER_UI_API_URL` と `PREFECT_UI_URL` を実際の FQDN にして `up -d` で反映する。
+4. MacBook から `deployment.md` §3 の profile を設定し、`prefect deploy --all` と `deployment run` を実行する（AC-05）。スマートフォンから UI を確認する（AC-06）。§3 の負の確認も行う。
+5. サーバーで `recovery.md` の復旧訓練とバックアップのリハーサルを行い（AC-07、AC-10）、結果をこのファイルの AC 表に反映する。
+6. 通知エンドポイントとバックアップ保存先が決まったら `.env` と recovery.md §5 に反映する。
