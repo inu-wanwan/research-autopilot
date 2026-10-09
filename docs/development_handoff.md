@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 1（実装完了。ローカル検証済み、研究室サーバー・Tailscale・スマートフォンでの確認もユーザーが実施済み）
+Phase 2 の事前設定（完了）。Phase 2 本体（Task Manager / Orchestrator）は未着手。Phase 1 は完了（AC-01〜10 すべて Passed）。
 
 ## Current Task
 
-Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検証
+Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限・接続確認
 
 ## Status
 
-完了。AC-01〜10 はすべて Passed（AC-03〜07・AC-10 は 2026-10-10 にユーザーが研究室サーバーで確認したという報告に基づく）。細かい残作業は Remaining Work を参照。
+完了。接続確認はすべて PASS（Notion、Linear の読み取りと書き込み、OpenAI）。Phase 2 の実装を始められる状態。本体の実装は別の指示を待つ。
 
 ## Last Updated
 
@@ -30,15 +30,21 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Git Branch / Commit
 
-- Branch: `main`（`phase1/implementation` を fast-forward で merge し、`origin/main` @ `e623fcb` に push 済み。ユーザー許可あり）
-- Commits:
-  - `78ed6a9` phase1: add Phase 1 spec from user-provided requirements
-  - `4f3bae6` phase1: add smoke flows, idempotent side effect, HTTP notifications and tests
-  - `fdd1e22` phase1: add Docker Compose stack, worker image, deployments and zombie automation
-  - `0c36ac7` phase1: add operations docs (deployment, monitoring, recovery) and README
-  - この handoff 更新の commit（hash は `git log` を参照）
+- Branch: `phase2/prerequisites`（`main` @ `b5eb9be` から分岐。未 merge・未 push）
+  - `0e3d0e6` phase2: add placeholders for Notion / Linear / OpenAI settings in .env.example
+  - この記録を含む docs の commit（hash は `git log` を参照）
+- `main` は `origin/main` より1 commit 先行（`b5eb9be`、サーバー検証の記録。未 push）
 
 ## Completed Work
+
+### Phase 2 事前設定（2026-10-10 / Claude Code + ユーザー）
+
+- 詳細と結果は `docs/operations/phase2_prerequisites.md`。
+- `.env.example` に `NOTION_API_TOKEN` / `NOTION_TASKS_DATA_SOURCE_ID` / `LINEAR_API_KEY` / `LINEAR_PROJECT_ID` / `OPENAI_API_KEY` を追加した。秘密でない ID 2つは確認済みの値を記入。
+- ユーザーが Mac の `.env` に秘密の値を設定した。`LINEAR_PROJECT_ID` はユーザーの承認を得て、正式な UUID に置き換えた。
+- 接続確認：Notion PASS、Linear 読み取り PASS、Linear 書き込み PASS（テスト用 issue INU-270 だけを変更し、元に戻した）、OpenAI PASS（クレジット追加後）。
+- Phase 2 の仕様（Notion ページ、INU-265）を API で読めることを確認した。`docs/phase_specs/phase2.md` はまだ作っていない（Phase 2 の実装依頼時に作る）。
+- 新しい機能、依存、Compose の変更はしていない。worker も再起動していない。
 
 ### Phase 1 実装（2026-10-10 / Claude Code）
 
@@ -109,11 +115,10 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Remaining Work
 
-- 本番値（heartbeat 180 秒 / 検出窓 540 秒）での zombie 検出の実測（`recovery.md` §3 の復旧訓練）。
-- 実際の ntfy エンドポイントでの通知確認。
-- バックアップの保存先・定期実行・保持世代・暗号化の決定（`docs/operations/recovery.md` §5）。
-- 研究室サーバーの OS / CPU、Docker / Compose のバージョンをこの記録に残す。
-- smoke-success のスケジュールを有効にするかどうか（現在は inactive。ユーザー判断）。
+- Phase 2 本体の実装（別の指示を待つ）。着手時に `docs/phase_specs/phase2.md` を作る。
+- 研究室サーバーの `.env` に Phase 2 の5変数を設定し、`infra/compose.yaml` の `prefect-worker.environment` に渡す設定を追加する（Phase 2 のコードが使い始める時点で。worker の再作成はユーザーの承認が必要）。
+- Phase 1 の残り：本番値での zombie 検出の実測、ntfy の設定、バックアップの保存先と定期実行、サーバーの OS / CPU の記録、smoke-success のスケジュールを有効にするかの判断。
+- Phase 2 で決めること：使うモデル、統合テスト用の Notion / Linear sandbox、OpenAI の予算上限、INU-270 の扱い。
 
 ## Changed Files
 
@@ -180,6 +185,7 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Exact Next Actions
 
-1. ユーザー：Remaining Work のうち、zombie 検出の本番値での実測と ntfy の設定を行う（任意。Phase 1 の AC はすべて Passed）。
-2. ユーザー：バックアップの保存先と定期実行を決め、`recovery.md` §5 に反映する。
-3. 次の Phase：Phase 2 の要件定義を受け取ってから `docs/phase_specs/phase2.md` を作り、`AGENTS.md` §4 の手順で着手する。仕様が無いうちは実装しない。
+1. ユーザー：`phase2/prerequisites` と `main`（未 push の `b5eb9be`）の merge と push を判断する。
+2. ユーザー：OpenAI の Limits で予算とアラートを設定する（推奨）。Notion integration の capabilities が Read content だけになっているかを確認する（推奨）。
+3. ユーザー：Phase 2 本体の実装指示を出す。
+4. エージェント：Phase 2 に着手するときは、まず Notion の Phase 2 ページ（`3f469893cf8f817f9f7ef768fd99c9d3`）と提示された要件から `docs/phase_specs/phase2.md` を作り、`AGENTS.md` §4 の手順で進める。接続情報は `docs/operations/phase2_prerequisites.md` を参照する。

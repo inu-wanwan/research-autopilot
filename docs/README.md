@@ -12,7 +12,8 @@ docs/
 ├── operations/              # 運用手順（Phase 1 で作成）
 │   ├── deployment.md        #   構築・デプロイ・更新
 │   ├── monitoring.md        #   監視・Tailscale・通知
-│   └── recovery.md          #   障害復旧・バックアップ / リストア
+│   ├── recovery.md          #   障害復旧・バックアップ / リストア
+│   └── phase2_prerequisites.md #   Phase 2 外部サービス事前設定と接続確認
 └── phase_specs/             # Phase 別の仕様書（各 Phase の実装依頼時に作成）
     ├── phase1.md
     ├── phase2.md
