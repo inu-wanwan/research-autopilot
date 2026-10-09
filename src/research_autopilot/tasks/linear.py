@@ -142,11 +142,16 @@ class LinearWriter(LinearClient):
             raise ConnectorResponseError("linear", "commentCreate returned success=false")
         return data["commentCreate"]["comment"]["id"]
 
+    def viewer_id(self) -> str:
+        data = self._gql("{ viewer { id } }")
+        return data["viewer"]["id"]
+
     def create_issue(self, team_id: str, title: str, description: str, state_id: str, label_ids: list[str]) -> tuple[str, str, str]:
+        assignee_id = self.viewer_id()
         data = self._gql(
             "mutation($in: IssueCreateInput!) { issueCreate(input: $in) { success issue { id identifier url } } }",
             {"in": {"teamId": team_id, "projectId": self.project_id, "title": title, "description": description,
-                    "stateId": state_id, "labelIds": label_ids}})
+                    "stateId": state_id, "labelIds": label_ids, "assigneeId": assignee_id}})
         if not data["issueCreate"]["success"]:
             raise ConnectorResponseError("linear", "issueCreate returned success=false")
         i = data["issueCreate"]["issue"]

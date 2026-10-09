@@ -14,6 +14,10 @@ from research_autopilot.tasks.notion import API, NOTION_VERSION, PROP_CATEGORY, 
 
 NOTES_TITLE = "名前"
 NOTES_CREATED = "作成日"
+NOTES_STATUS = "ステータス"
+NOTES_CATEGORY = "分類"
+NOTES_ADOPTED = "採用"
+NOTES_RESULT = "結果"
 PROP_PARENT = "親タスク"
 MAX_TEXT = 1900  # Notion rich_text limit is 2000 chars per element
 
@@ -81,7 +85,12 @@ class NotionWriter:
             self._call("PATCH", f"/pages/{page_id}", json={"properties": props})
 
     def create_note(self, title: str, blocks: list[dict]) -> tuple[str, str]:
-        props = {NOTES_TITLE: {"title": _rt(title)}, NOTES_CREATED: {"date": {"start": date.today().isoformat()}}}
+        props = {
+            NOTES_TITLE: {"title": _rt(title)},
+            NOTES_CREATED: {"date": {"start": date.today().isoformat()}},
+            NOTES_STATUS: {"status": {"name": NOTES_ADOPTED}},
+            NOTES_CATEGORY: {"multi_select": [{"name": NOTES_RESULT}]},
+        }
         page = self._call("POST", "/pages", json={"parent": {"type": "data_source_id", "data_source_id": self.notes_ds},
                                                   "properties": props, "children": blocks[:100]})
         return page["id"], page.get("url", "")

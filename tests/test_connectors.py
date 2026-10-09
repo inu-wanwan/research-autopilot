@@ -10,8 +10,9 @@ from research_autopilot.tasks.errors import (
     TransientConnectorError,
 )
 from research_autopilot.tasks.http import RetryPolicy
-from research_autopilot.tasks.linear import LinearClient
+from research_autopilot.tasks.linear import LinearClient, LinearWriter
 from research_autopilot.tasks.notion import NotionClient, normalize_page_id, notion_ids_in_text
+from research_autopilot.tasks.notion_writer import NotionWriter
 
 DS = "3b469893-cf8f-802d-9f86-000bb4bbb21a"
 PAGE = "3f469893-cf8f-817f-9f7e-f768fd99c9d3"
@@ -228,3 +229,35 @@ def test_linear_team_state_lookup():
     assert client.team_state_id("team-1", "In Progress") == ("s2", "started")
     with pytest.raises(ConnectorResponseError):
         client.team_state_id("team-1", "Doing")
+
+
+def test_notion_writer_creates_result_note_as_adopted():
+    def handler(request):
+        body = json.loads(request.content)
+        props = body["properties"]
+        assert props["ステータス"] == {"status": {"name": "採用"}}
+        assert props["分類"] == {"multi_select": [{"name": "結果"}]}
+        return httpx.Response(200, json={"id": "note-1", "url": "https://notion.so/note-1"})
+
+    writer = NotionWriter("secret", DS, "notes-ds", transport=httpx.MockTransport(handler), retry=NO_SLEEP)
+    assert writer.create_note("Result", [para("summary")]) == ("note-1", "https://notion.so/note-1")
+
+
+def test_linear_writer_assigns_created_issue_to_api_user():
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if "viewer" in body["query"]:
+            return httpx.Response(200, json={"data": {"viewer": {"id": "user-1"}}})
+        issue_input = body["variables"]["in"]
+        assert issue_input["assigneeId"] == "user-1"
+        return httpx.Response(200, json={"data": {"issueCreate": {
+            "success": True, "issue": {"id": "issue-1", "identifier": "INU-999", "url": "https://linear/INU-999"}
+        }}})
+
+    writer = LinearWriter("lin_api_secret", "proj", transport=httpx.MockTransport(handler), retry=NO_SLEEP)
+    created = writer.create_issue("team-1", "Follow-up", "details", "state-todo", ["label-autopilot"])
+    assert created == ("issue-1", "INU-999", "https://linear/INU-999")
+    assert len(calls) == 2

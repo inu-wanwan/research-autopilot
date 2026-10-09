@@ -13,6 +13,7 @@
 | Linear の workflow state | 今あるのは Backlog / Todo / In Progress / Done / Canceled / Duplicate。**Awaiting Approval、Approved、Revision Requested をユーザーが追加する**（ユーザー回答）。却下には既存の Canceled を使う。state が存在しない間は、承認待ちの処理は blocked（作成の依頼を通知する） |
 | Notion への書き込み | integration に Insert / Update content の権限をユーザーが付与する。実際に書き込むテストは **[TEST] タスクと、そこから生成された提案・Notes に限る**（ユーザー回答）。Notion の Status は書き換えない（mirror が担当）。Pending（checkbox）と Linear Issue ID は書いてよい |
 | Notes DB | `31769893-cf8f-807a-97d8-fc78171790c8`、data source `31769893-cf8f-80d7-8217-000b83f7f15f`。プロパティは 名前（title）、ステータス（status）、作成日（date）、分類（multi_select）、最終更新日 |
+| 結果の登録既定値 | Autopilot が Research Notes に結果を登録するときは、ステータスを「採用」、分類を「結果」にする。追加提案から Linear Issue を作成するときは、Linear API の認証ユーザー本人を担当者にする（2026-10-10 ユーザー決定） |
 | 初期予算 | 研究タスク1件あたり、追加実験を含めた累計で **API $5、計算 4 CPU 時間**（ユーザー回答）。ResearchAuthorization ごとに変更できる |
 | デプロイ | Eagle と TSUBAME は Phase 5 の完了後にまとめて行う（2026-10-10 ユーザー決定）。今回は Mac の隔離環境だけで検証する |
 

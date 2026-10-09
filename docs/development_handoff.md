@@ -18,22 +18,29 @@ Phase 5（Approval-Gated Autonomous Research Workflow）を実装完了。Mac �
 
 ## Current Task
 
-Phase 5 の実装・テスト・ローカルでの受け入れ
+Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の担当者、結果ページの可読性）
 
 ## Status
 
-完了し、この実装段階はクローズした（2026-10-10）。`phase5/autopilot` はユーザーの許可を得て main に merge し、push した。Phase 1〜5 の実装はすべて `origin/main` にある。次は Eagle への一括反映（Phase 2〜5 と TSUBAME）。ユーザーの指示を待つ。
+作業中（2026-10-10）。Notes 作成時のステータス「採用」・分類「結果」と、追加提案の Linear Issue を API 認証ユーザー本人へ割り当てる変更は実装・テスト済み。結果ページの可読性はユーザーとレイアウトを相談してから変更する。
 
 ## Last Updated
 
-2026-10-10 / Claude Code
+2026-10-10 / Codex
 
 ## Git Branch / Commit
 
-- `main` = `origin/main`（Phase 5 を merge 済み。`9bc1c17..51d493e` に続いて、この handoff の commit）
-- Phase 5 の commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
+- 作業ブランチ：`codex/phase5-note-linear-defaults`（`main` / `origin/main` の `ff53448` から作成）
+- Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 5 結果登録 UX 改善（2026-10-10 / Codex）
+
+- Research Notes 作成時に、ステータスを「採用」、分類（multi-select）を「結果」に設定するよう変更。
+- Autopilot が追加提案の Linear Issue を作成するとき、Linear API の `viewer` を担当者に設定するよう変更。
+- コネクタテストを2件追加。関連テスト 58 件、全テスト 317 件が成功。
+- 結果 Notes 本文の可読性改善は、レイアウトをユーザーと相談中。
 
 ### Phase 5 実装（2026-10-10 / Claude Code）
 
@@ -195,7 +202,7 @@ Phase 5 の実装・テスト・ローカルでの受け入れ
 
 ## Work In Progress
 
-なし。
+- 結果 Notes 本文のレイアウトについてユーザー判断待ち。現状は同じ階層の10セクションが縦に並び、結論・主要数値・合否が埋もれる。
 
 ## Remaining Work
 
