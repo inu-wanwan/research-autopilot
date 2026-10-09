@@ -17,8 +17,10 @@ import sys
 
 import typer
 
-from research_autopilot.config import load_settings
+from research_autopilot.config import load_dotenv, load_settings
 from research_autopilot.storage.db import Store
+
+load_dotenv()  # secrets stay in the process environment; nothing is printed
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Research Autopilot task planning CLI")
 runs_app = typer.Typer(no_args_is_help=True, help="Inspect plan-run history")

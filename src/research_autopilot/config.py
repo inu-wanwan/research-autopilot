@@ -73,6 +73,18 @@ def _bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE lines into os.environ without overriding existing variables.
+
+    Values are taken verbatim (JSON values such as RA_MODEL_PRICING need no shell quoting)."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip())
+
+
 def load_settings(env: dict[str, str] | None = None) -> Settings:
     env = dict(os.environ) if env is None else env
 
