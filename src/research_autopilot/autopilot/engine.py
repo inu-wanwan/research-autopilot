@@ -1,0 +1,556 @@
+"""Autopilot engine: deterministic state machine over Phase 2 -> 3 -> 4 -> proposals -> completion.
+
+``poll()`` is the scheduler tick (Prefect runs it every 5 minutes): it retries the outbox, checks pending
+approvals, then advances at most ``max_concurrent_tasks`` research task (default 1) until it waits
+or finishes. Every transition is persisted; a crashed poll resumes from the stored stage. A global
+lease prevents two pollers from working at once.
+"""
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from research_autopilot.autopilot import policy
+from research_autopilot.autopilot.approvals import ApprovalController
+from research_autopilot.autopilot.budget import chain_usage
+from research_autopilot.autopilot.completion import assess, review_payload
+from research_autopilot.autopilot.linear_ops import LinearOps, WriteRefused
+from research_autopilot.autopilot.models import (
+    ApprovalKind,
+    ApprovalRequest,
+    ApprovalStatus,
+    Budget,
+    OutboxItem,
+    OutboxState,
+    ResearchAuthorization,
+    ResearchTaskProposal,
+    WorkflowRun,
+    WorkflowStage,
+)
+from research_autopilot.autopilot.notes import notes_blocks, proposal_blocks
+from research_autopilot.autopilot.outbox import Outbox
+from research_autopilot.experiments.models import ExperimentState, ReviewedExperimentProposal
+from research_autopilot.experiments.orchestrator import ExpDeps, run_experiment
+from research_autopilot.experiments.scope import dedupe_key
+from research_autopilot.implementation.experiment import spec_lines
+from research_autopilot.implementation.models import RunState
+from research_autopilot.implementation.orchestrator import ImplDeps, implement
+from research_autopilot.models import DecisionStatus, utcnow
+from research_autopilot.notifications import safe_send
+from research_autopilot.notifications.events import EventKind, NotificationEvent
+from research_autopilot.orchestrator.core import Deps as PlanDeps
+from research_autopilot.orchestrator.core import plan_task
+from research_autopilot.storage import db
+
+TERMINAL = {WorkflowStage.DONE, WorkflowStage.CANCELLED, WorkflowStage.DEAD_LETTER}
+WAITING = {WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.AWAITING_APPROVAL}
+POLL_LEASE = "phase5:poll"
+
+
+@dataclass
+class AutopilotSettings:
+    max_concurrent_tasks: int = 1
+    max_stage_attempts: int = 3  # transient failures before dead-letter
+    default_budget: Budget = field(default_factory=Budget)
+    prefect_ui_url: str | None = None
+    linear_url: str = "https://linear.app"
+    dry_run: bool = False  # discover + evaluate only, no writes, no LLM
+
+
+@dataclass
+class AutopilotDeps:
+    settings: AutopilotSettings
+    plan: PlanDeps  # Phase 2 (its settings.linear_write_enabled must be true for apply)
+    impl: ImplDeps
+    exp: ExpDeps
+    linear: object  # LinearWriter or fake
+    notion_writer: object
+    ops: LinearOps
+    approvals: ApprovalController
+    outbox: Outbox
+    completion_reviewer: object | None
+    notifier: object | None = None  # Notifier; None -> notifications module default
+
+    @property
+    def store(self):
+        return self.plan.store
+
+
+# ---------------------------------------------------------------- scheduler
+
+
+def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
+    store = deps.store
+    store.init_schema()
+    if not store.acquire_lease(POLL_LEASE, "poller", 3 * 3600):
+        return {"skipped": "another poll is running"}
+    summary: dict = {"outbox": [], "approvals": [], "advanced": [], "discovered": []}
+    try:
+        for item in deps.outbox.pending():
+            if not deps.settings.dry_run:
+                summary["outbox"].append((item.key, deps.outbox.process(item).state.value))
+        for req in deps.approvals.pending():
+            summary["approvals"].append(_check_approval(deps, req))
+        active = [r for r in _runs(deps) if r.stage not in TERMINAL and r.stage not in WAITING
+                  and r.stage is not WorkflowStage.BLOCKED]
+        if only_task:
+            active = [r for r in active if r.task_id == only_task]
+        if not active:
+            candidates = deps.plan.manager.next_candidates()
+            if only_task:
+                candidates = [c for c in candidates if c == only_task]
+            known = {r.task_id for r in _runs(deps) if r.stage not in TERMINAL}
+            for tid in candidates:
+                if tid in known:
+                    continue
+                summary["discovered"].append(tid)
+                if deps.settings.dry_run:
+                    continue
+                active.append(_new_run(deps, tid))
+                break
+        for run in active[: deps.settings.max_concurrent_tasks]:
+            if deps.settings.dry_run:
+                continue
+            advance(deps, run)
+            summary["advanced"].append((run.task_id, run.stage.value, run.blocked_reason))
+    finally:
+        store.release_lease(POLL_LEASE, "poller")
+    return summary
+
+
+def _runs(deps: AutopilotDeps) -> list[WorkflowRun]:
+    return [WorkflowRun.model_validate(r) for r in deps.store.find(db.workflow_runs)]
+
+
+def _save(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    run.updated_at = utcnow()
+    deps.store.put(db.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage=run.stage.value)
+
+
+def _new_run(deps: AutopilotDeps, task_id: str) -> WorkflowRun:
+    origin = _proposal_origin(deps, task_id)
+    run = WorkflowRun(task_id=task_id, root_task_id=origin["root_task_id"] if origin else task_id,
+                      authorization_id=origin.get("authorization_id") if origin else None,
+                      chain_depth=origin.get("chain_depth", 0) if origin else 0,
+                      parent_task_id=origin.get("parent_task_id") if origin else None)
+    run.event("discovered", f"{task_id} (root {run.root_task_id}, depth {run.chain_depth})")
+    _save(deps, run)
+    return run
+
+
+def _proposal_origin(deps: AutopilotDeps, task_id: str) -> dict | None:
+    for rec in deps.store.find(db.outbox):
+        if rec.get("kind") == "proposal_task" and rec.get("linear_identifier") == task_id:
+            return rec["payload"]
+    return None
+
+
+# ---------------------------------------------------------------- state machine
+
+
+def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> WorkflowRun:
+    steps = {
+        WorkflowStage.DISCOVERED: _authorize,
+        WorkflowStage.PLANNING: _plan,
+        WorkflowStage.IMPLEMENTING: _implement,
+        WorkflowStage.EXPERIMENTING: _experiment,
+        WorkflowStage.PROPOSING: _propose,
+        WorkflowStage.COMPLETING: _complete,
+    }
+    for _ in range(max_steps):
+        fn = steps.get(run.stage)
+        if fn is None:
+            break
+        before = run.stage
+        try:
+            fn(deps, run)
+        except WriteRefused as exc:
+            _block(deps, run, f"write refused: {exc}")
+        except Exception as exc:  # noqa: BLE001 - transient or unexpected: retry, then dead-letter
+            run.attempts += 1
+            run.event("error", f"{before.value}: {type(exc).__name__}: {str(exc)[:300]}")
+            if run.attempts >= deps.settings.max_stage_attempts:
+                run.stage = WorkflowStage.DEAD_LETTER
+                run.blocked_reason = f"dead-lettered after {run.attempts} failures in {before.value}: {exc}"
+                _notify(deps, run, EventKind.FAILED, f"dead-letter:{run.run_id}", [run.blocked_reason])
+            _save(deps, run)
+            break
+        _save(deps, run)
+        if run.stage == before or run.stage in TERMINAL or run.stage in WAITING or run.stage is WorkflowStage.BLOCKED:
+            break
+    return run
+
+
+def _block(deps: AutopilotDeps, run: WorkflowRun, reason: str) -> None:
+    run.stage = WorkflowStage.BLOCKED
+    run.blocked_reason = reason
+    run.event("blocked", reason)
+    _notify(deps, run, EventKind.FAILED, f"blocked:{run.run_id}:{reason[:80]}", [reason])
+
+
+def _load_spec(deps: AutopilotDeps, task_id: str):
+    bundle = deps.plan.manager.load(task_id)
+    return bundle
+
+
+def _spec_hash_of(spec) -> str:
+    return policy.spec_hash(spec.purpose, spec_lines(spec.scientific_invariants), spec_lines(spec.acceptance_criteria),
+                            spec.specification, spec.title)
+
+
+def _authorization(deps: AutopilotDeps, run: WorkflowRun) -> ResearchAuthorization | None:
+    if run.authorization_id:
+        rec = deps.store.get(db.authorizations, run.authorization_id)
+        return ResearchAuthorization.model_validate(rec) if rec else None
+    for rec in reversed(deps.store.find(db.authorizations, root_task_id=run.root_task_id)):
+        a = ResearchAuthorization.model_validate(rec)
+        if not policy.check_authorization(a):
+            return a
+    return None
+
+
+def _authorize(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    bundle = _load_spec(deps, run.task_id)
+    if bundle.spec is None:
+        _block(deps, run, "no usable Notion spec: " + "; ".join(r.message for r in bundle.reasons))
+        return
+    auth = _authorization(deps, run)
+    if auth is not None and not policy.check_authorization(auth):
+        if run.chain_depth > 0:  # follow-up task: must stay within the root authorization
+            inv = spec_lines(bundle.spec.scientific_invariants)
+            acc = spec_lines(bundle.spec.acceptance_criteria)
+            if {policy._norm(x) for x in inv} != {policy._norm(x) for x in auth.scientific_invariants} or \
+                    any(policy._norm(a) not in {policy._norm(x) for x in acc} for a in auth.acceptance_criteria):
+                _block(deps, run, "follow-up task spec deviates from the root authorization")
+                return
+        run.authorization_id = auth.authorization_id
+        run.stage = WorkflowStage.PLANNING
+        run.event("authorized", f"using authorization {auth.authorization_id[:8]}")
+        return
+    # Explicit onboarding: the 'autopilot' label alone is not a blanket approval.
+    spec = bundle.spec
+    h = _spec_hash_of(spec)
+    draft = ResearchAuthorization(
+        root_task_id=run.root_task_id, approved_by="(pending)", approval_request_id="(pending)", spec_hash=h,
+        purpose=spec.purpose, research_target=spec.title, hypothesis=None,
+        scientific_invariants=spec_lines(spec.scientific_invariants), acceptance_criteria=spec_lines(spec.acceptance_criteria),
+        budget=deps.settings.default_budget)
+    req = deps.approvals.request(
+        kind=ApprovalKind.ONBOARDING, issue=bundle.issue, root_task_id=run.root_task_id, spec_hash=h,
+        title=f"Autopilot delegation for {run.task_id}: {spec.title}",
+        what_changes=["Autopilot will plan, implement (Codex/Claude), run and analyze experiments for this task",
+                      "and may register follow-up experiments only within the invariants / acceptance criteria below",
+                      f"parameter changes allowed without asking: {[d.name for d in draft.policy.parameter_domains]}"],
+        diff=[], budget_summary=f"API ${draft.budget.api_usd:.2f}, compute {draft.budget.compute_cpu_hours:g} CPU-h (cumulative)",
+        payload={"authorization_draft": draft.model_dump(mode="json")})
+    _wait(deps, run, req, WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.PLANNING)
+
+
+def _wait(deps: AutopilotDeps, run: WorkflowRun, req: ApprovalRequest, stage: WorkflowStage, resume: WorkflowStage) -> None:
+    run.stage = stage
+    run.waiting_for = req.request_id
+    run.resume_stage = resume.value
+    if req.request_id not in run.approval_request_ids:
+        run.approval_request_ids.append(req.request_id)
+    run.event("approval", f"waiting for {req.kind.value} approval {req.request_id[:8]}")
+
+
+def _budget_gate(deps: AutopilotDeps, run: WorkflowRun, auth: ResearchAuthorization) -> bool:
+    chain = [r.model_dump(mode="json") for r in _runs(deps) if r.root_task_id == run.root_task_id]
+    u = chain_usage(deps.store, chain)
+    problems = policy.evaluate_budget(auth, u.api_usd, u.cpu_hours, u.unknown_api_cost_calls)
+    if not problems:
+        return True
+    issue = deps.linear.get_issue(run.task_id)
+    req = deps.approvals.request(kind=ApprovalKind.BUDGET, issue=issue, root_task_id=run.root_task_id,
+                                 spec_hash=_spec_hash_of(_load_spec(deps, run.task_id).spec),
+                                 title=f"Budget approval for {run.task_id}", what_changes=problems, diff=[],
+                                 budget_summary=f"used API ${u.api_usd:.2f} / ${auth.budget.api_usd:.2f}, "
+                                                f"compute {u.cpu_hours:.2f} / {auth.budget.compute_cpu_hours:g} CPU-h",
+                                 dedupe=f"{run.run_id}:{run.stage.value}")
+    _wait(deps, run, req, WorkflowStage.AWAITING_APPROVAL, run.stage)
+    return False
+
+
+def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    auth = _authorization(deps, run)
+    if auth is None:
+        run.stage = WorkflowStage.DISCOVERED
+        return
+    if not _budget_gate(deps, run, auth):
+        return
+    issue = deps.linear.get_issue(run.task_id)
+    deps.ops._guard(issue)
+    rec = plan_task(deps.plan, task_id=run.task_id, mode="apply")
+    deps.store.record_linear_write(run.task_id, "In Progress", f"Phase 2 apply {rec.plan_run_id}")
+    d = rec.decision
+    run.plan_run_id, run.plan_id = rec.plan_run_id, d.plan_id
+    run.plan_version += 1
+    if d.status is DecisionStatus.READY:
+        run.stage = WorkflowStage.IMPLEMENTING
+        run.event("planned", f"plan {d.plan_id[:8]} approved by the Planner/Reviewer loop")
+    elif d.status is DecisionStatus.TRANSIENT_FAILURE:
+        raise RuntimeError("Phase 2 transient failure: " + "; ".join(r.message for r in d.reasons))
+    else:
+        _block(deps, run, f"Phase 2 {d.status.value}: " + "; ".join(r.message for r in d.reasons)[:400])
+
+
+def _implement(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    rec = deps.store.get_run(run.plan_run_id)
+    m = implement(deps.impl, handoff_path=Path(rec.handoff_path))
+    run.phase3_run_ids.append(m.phase3_run_id)
+    if m.state is RunState.COMPLETED:
+        run.commits.append(m.implementation_commit)
+        run.stage = WorkflowStage.EXPERIMENTING
+        run.event("implemented", f"commit {m.implementation_commit[:12]} (Phase 3 {m.phase3_run_id[:8]})")
+    else:
+        _block(deps, run, "Phase 3: " + "; ".join(b.message for b in m.block_reasons)[:400])
+
+
+def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    auth = _authorization(deps, run)
+    if not _budget_gate(deps, run, auth):
+        return
+    deps.exp.extra["chain_depth"] = run.chain_depth
+    m = run_experiment(deps.exp, phase3_run_ids=[run.phase3_run_ids[-1]])
+    run.experiment_run_ids.append(m.experiment_run_id)
+    for sp in m.specs.values():
+        if sp.identification.commit not in run.commits:
+            run.commits.append(sp.identification.commit)
+            run.phase3_run_ids.append(sp.identification.phase3_run_id)
+    if m.state is ExperimentState.COMPLETED:
+        run.stage = WorkflowStage.PROPOSING
+        run.event("experimented", f"experiment {m.experiment_run_id[:8]} validated; {len(m.reviewed_proposals)} proposal(s)")
+    else:
+        _block(deps, run, f"Phase 4 {m.state.value}: {m.block_reason}")
+
+
+def _propose(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    auth = _authorization(deps, run)
+    exp = deps.store.get_experiment(run.experiment_run_ids[-1])
+    bundle = _load_spec(deps, run.task_id)
+    chain = [r.model_dump(mode="json") for r in _runs(deps) if r.root_task_id == run.root_task_id]
+    u = chain_usage(deps.store, chain)
+    for i, pid in enumerate(exp.reviewed_proposals, start=1):
+        if pid in run.proposal_ids:
+            continue
+        rp = ReviewedExperimentProposal.model_validate_json(Path(exp.artifact_paths[f"proposal:{pid}"]).read_text())
+        pending = sum(1 for r in deps.approvals.pending() if r.kind is ApprovalKind.PROPOSAL and r.root_task_id == run.root_task_id)
+        decision = policy.evaluate_proposal(auth, rp, chain_depth=run.chain_depth + 1, proposals_from_experiment=i,
+                                            pending_proposals=pending, used_api_usd=u.api_usd, used_cpu_hours=u.cpu_hours,
+                                            unknown_api_cost_calls=u.unknown_api_cost_calls)
+        run.proposal_ids.append(pid)
+        dup = _duplicate_check(deps, run.root_task_id, rp.proposal.draft)
+        if dup == "exact":
+            run.event("proposal", f"{rp.proposal.draft.title[:60]!r}: skipped (same proposal already registered in this chain)")
+            continue
+        if dup == "similar" and decision.outcome == "auto":
+            decision = decision.model_copy(update={"outcome": "human", "categories": ["possible_duplicate"],
+                                                   "reasons": ["very similar to an existing task in this chain; human check"]})
+        run.event("proposal", f"{rp.proposal.draft.title[:60]!r}: {decision.outcome} ({'; '.join(decision.reasons)[:200]})")
+        if decision.outcome == "reject":
+            continue
+        d = rp.proposal.draft
+        tp = ResearchTaskProposal(
+            proposal_id=pid, root_task_id=run.root_task_id, parent_task_id=run.task_id, authorization_id=auth.authorization_id,
+            chain_depth=run.chain_depth + 1, title=("[TEST] " if bundle.issue.title.startswith("[TEST]") else "") + d.title,
+            purpose=d.purpose, implementation=d.implementation, acceptance_criteria=d.acceptance_criteria,
+            scientific_invariants=d.scientific_invariants, hypothesis=d.hypothesis, rationale=d.expected_information_value,
+            review_summary=f"{rp.review.verdict}: {rp.review.summary}", resources=d.estimated_resources,
+            evidence_artifacts=rp.proposal.source_artifacts, repository=bundle.spec.repository, file_scope=bundle.spec.file_scope,
+            policy=decision.outcome, policy_reasons=decision.reasons)
+        item = deps.outbox.enqueue(OutboxItem(key=f"proposal:{pid}", kind="proposal_task", payload={
+            **tp.model_dump(mode="json"), "blocks": proposal_blocks(tp), "pending": decision.outcome != "auto",
+            "content_key": dedupe_key(run.root_task_id, d), "shingles": sorted(_shingles(d)),
+            "category": bundle.page.category if bundle.page else None, "parent_page_id": bundle.page.page_id if bundle.page else None,
+            "linear_state": "Todo" if decision.outcome == "auto" else "Awaiting Approval",
+            "labels": [deps.plan.settings.scope_label],
+            "description": f"Autopilot follow-up of {run.task_id} ({decision.outcome}).\n" + "\n".join(f"- {r}" for r in decision.reasons)}))
+        item = deps.outbox.process(item) if item.state is not OutboxState.DONE else item
+        if item.state is not OutboxState.DONE:
+            raise RuntimeError(f"outbox {item.key} not completed: {item.last_error}")
+        if decision.outcome == "human":
+            child = deps.linear.get_issue(item.linear_identifier)
+            child_spec = _load_spec(deps, item.linear_identifier).spec
+            req = deps.approvals.request(
+                kind=ApprovalKind.PROPOSAL, issue=child, root_task_id=run.root_task_id,
+                spec_hash=_spec_hash_of(child_spec) if child_spec else _proposal_hash(tp),
+                title=f"Follow-up experiment needs approval: {d.title}", what_changes=[f"{c.name}: {c.from_value} -> {c.to_value} ({c.kind})" for c in d.parameter_changes],
+                diff=decision.reasons, budget_summary=f"chain used API ${u.api_usd:.2f}, compute {u.cpu_hours:.2f} CPU-h",
+                payload={"proposal_id": pid, "notion_page_id": item.notion_page_id})
+            run.approval_request_ids.append(req.request_id)
+    run.stage = WorkflowStage.COMPLETING
+
+
+def _shingles(d) -> set[str]:
+    text = policy._norm(f"{d.research_question} {d.hypothesis} {d.implementation}")
+    return {text[i:i + 3] for i in range(max(len(text) - 2, 1))}
+
+
+def _duplicate_check(deps: AutopilotDeps, root: str, d) -> str | None:
+    """'exact' = identical content already registered in this chain (skip);
+    'similar' = high character-trigram overlap (never auto-merged; a human decides)."""
+    key = dedupe_key(root, d)
+    mine = _shingles(d)
+    for rec in deps.store.find(db.outbox):
+        p = rec.get("payload", {})
+        if rec.get("kind") != "proposal_task" or p.get("root_task_id") != root:
+            continue
+        if p.get("content_key") == key:
+            return "exact"
+        other = set(p.get("shingles", []))
+        if other and len(mine & other) / max(len(mine | other), 1) >= 0.8:
+            return "similar"
+    return None
+
+
+def _proposal_hash(tp: ResearchTaskProposal) -> str:
+    return policy.spec_hash(tp.purpose, tp.scientific_invariants, tp.acceptance_criteria, tp.implementation, tp.title)
+
+
+def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    exp = deps.store.get_experiment(run.experiment_run_ids[-1])
+    bundle = _load_spec(deps, run.task_id)
+    acceptance = spec_lines(bundle.spec.acceptance_criteria)
+    impl = deps.store.get_implementation(run.phase3_run_ids[-1])
+    risk = impl.assessment.scientific_risk if impl and impl.assessment else None
+    approved_review = run.resume_stage == "completion_approved"
+    review = None
+    if deps.completion_reviewer is not None:
+        r = deps.completion_reviewer.review(review_payload(
+            {"task_id": run.task_id, "acceptance_criteria": acceptance, "purpose": bundle.spec.purpose}, exp,
+            exp.analysis.summary if exp.analysis else None))
+        review = r.output
+        run.event("completion_review", f"{getattr(r, 'model', '')} cost={getattr(r, 'cost_usd', None)}")
+    a = assess(exp, acceptance, risk, review)
+    pending = [x for x in deps.approvals.pending() if x.task_id == run.task_id]
+    if pending:
+        a.auto_done = False
+        a.reasons.append(f"{len(pending)} approval request(s) still pending for this task")
+    if not a.deterministic_ok:
+        _block(deps, run, "cannot complete: " + "; ".join(a.reasons))
+        return
+    if not a.auto_done and not approved_review:
+        issue = deps.linear.get_issue(run.task_id)
+        req = deps.approvals.request(kind=ApprovalKind.COMPLETION_REVIEW, issue=issue, root_task_id=run.root_task_id,
+                                     spec_hash=_spec_hash_of(bundle.spec), title=f"Review results of {run.task_id} before Done",
+                                     what_changes=["mark the task Done with the results below"], diff=a.reasons,
+                                     budget_summary="-", dedupe=run.experiment_run_ids[-1])
+        _wait(deps, run, req, WorkflowStage.AWAITING_APPROVAL, WorkflowStage.COMPLETING)
+        run.resume_stage = "completion_approved"
+        return
+    links = {"linear": f"{deps.settings.linear_url}/issue/{run.task_id}",
+             "prefect": f"{deps.settings.prefect_ui_url}/runs" if deps.settings.prefect_ui_url else "-"}
+    notes = deps.outbox.enqueue(OutboxItem(key=f"notes:{exp.experiment_run_id}", kind="notes", payload={
+        "title": f"[AP] {bundle.spec.title} — results", "blocks": notes_blocks(run.task_id, bundle.spec.title, exp, a, links, run.commits)}))
+    notes = deps.outbox.process(notes) if notes.state is not OutboxState.DONE else notes
+    if notes.state is not OutboxState.DONE:
+        raise RuntimeError(f"Notes write failed: {notes.last_error}")  # not Done; retried / dead-lettered
+    run.notes_page_id = notes.notion_page_id
+    body = "\n".join([f"Autopilot result for {run.task_id}: {a.hypothesis_outcome or 'n/a'}",
+                      f"Notion Notes: {deps.notion_writer.page_url(notes.notion_page_id)}",
+                      f"Experiment run: {exp.experiment_run_id}", f"Commits: {', '.join(c[:12] for c in run.commits)}",
+                      *[f"[{c.status}] {c.criterion}" for c in a.criteria]])
+    comment = deps.outbox.enqueue(OutboxItem(key=f"comment:{exp.experiment_run_id}", kind="linear_comment",
+                                             payload={"task_id": run.task_id, "body": body}))
+    comment = deps.outbox.process(comment) if comment.state is not OutboxState.DONE else comment
+    if comment.state is not OutboxState.DONE:
+        raise RuntimeError(f"Linear comment failed: {comment.last_error}")
+    deps.ops.set_state(deps.linear.get_issue(run.task_id), "Done", f"completion {exp.experiment_run_id}")
+    run.stage = WorkflowStage.DONE
+    run.event("done", f"hypothesis {a.hypothesis_outcome}; " + "; ".join(a.reasons))
+    _notify(deps, run, EventKind.COMPLETED, f"done:{run.run_id}",
+            [f"Notes: {deps.notion_writer.page_url(notes.notion_page_id)}", f"Linear: {links['linear']}",
+             f"Result: {a.hypothesis_outcome}; " + (exp.analysis.summary[:200] if exp.analysis else "")])
+
+
+# ---------------------------------------------------------------- approvals
+
+
+def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
+    issue = deps.linear.get_issue(req.task_id)
+    history = deps.linear.history(req.task_id)
+    bundle = _load_spec(deps, req.task_id)  # the task's *current* Notion spec (edits make the approval stale)
+    current = _spec_hash_of(bundle.spec) if bundle.spec else "unavailable"
+    result = deps.approvals.check(req, issue, history, current)
+    if result.decision is None:
+        return (req.request_id[:8], result.status.value, result.note)
+    _apply_decision(deps, req, result.decision.decision, result.decision.actor, issue)
+    return (req.request_id[:8], result.status.value, result.note)
+
+
+def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, decision: str, actor: str, issue) -> None:
+    run = next((r for r in _runs(deps) if r.waiting_for == req.request_id), None)
+    if req.kind is ApprovalKind.PROPOSAL:
+        if decision == "approve":
+            page = req.payload.get("notion_page_id")
+            if page:
+                deps.notion_writer.set_task_links(page, pending=False)  # Phase 2 approval gate: Pending=false
+            deps.ops.set_state(issue, "Todo", f"proposal approved ({req.request_id[:8]}) by {actor}")
+        return  # rejected / revision: the issue stays in the human-chosen state
+    if run is None:
+        return
+    if decision == "approve":
+        if req.kind is ApprovalKind.ONBOARDING:
+            draft = ResearchAuthorization.model_validate(req.payload["authorization_draft"])
+            auth = draft.model_copy(update={"approved_by": actor, "approval_request_id": req.request_id, "approved_at": utcnow()})
+            deps.store.put(db.authorizations, auth.authorization_id, auth.model_dump(mode="json"), root_task_id=auth.root_task_id)
+            run.authorization_id = auth.authorization_id
+        if req.kind is ApprovalKind.BUDGET:
+            auth = _authorization(deps, run)
+            new_budget = Budget(api_usd=auth.budget.api_usd * 2, compute_cpu_hours=auth.budget.compute_cpu_hours * 2)
+            auth = auth.model_copy(update={"budget": new_budget})
+            deps.store.put(db.authorizations, auth.authorization_id, auth.model_dump(mode="json"), root_task_id=auth.root_task_id)
+        if req.kind in (ApprovalKind.ONBOARDING, ApprovalKind.BUDGET):
+            deps.ops.set_state(issue, "Todo" if run.stage is WorkflowStage.AWAITING_AUTHORIZATION else "In Progress",
+                               f"approval {req.request_id[:8]} by {actor}")
+        resume = run.resume_stage
+        run.stage = WorkflowStage.COMPLETING if resume == "completion_approved" else WorkflowStage(resume)
+        if resume != "completion_approved":
+            run.resume_stage = None
+        run.waiting_for = None
+        run.event("approved", f"{req.kind.value} approved by {actor}")
+    elif decision == "reject":
+        run.stage = WorkflowStage.CANCELLED
+        run.waiting_for = None
+        run.event("rejected", f"{req.kind.value} rejected by {actor}")
+    else:
+        run.stage = WorkflowStage.BLOCKED
+        run.blocked_reason = f"revision requested by {actor}: edit the Notion spec / plan, then re-run"
+        run.waiting_for = None
+        run.event("revision", run.blocked_reason)
+    _save(deps, run)
+
+
+# ---------------------------------------------------------------- notifications
+
+
+def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str, details: list[str]) -> None:
+    if not deps.store.insert_new(db.notifications_sent, dedupe, {"kind": kind.value, "task": run.task_id}):
+        return  # already sent (no duplicate notifications)
+    safe_send(NotificationEvent(kind=kind, flow_name="autopilot", flow_run_name=run.task_id, state_name=run.stage.value,
+                                details=details), deps.notifier)
+
+
+def notify_approval(deps_store, notifier, req: ApprovalRequest, message: str, linear_url: str, form_url: str | None) -> None:
+    key = f"approval:{req.request_id}:{message[:40]}"
+    if not deps_store.insert_new(db.notifications_sent, key, {"kind": "approval", "task": req.task_id}):
+        return
+    safe_send(NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="autopilot", flow_run_name=req.task_id,
+                                state_name=f"{req.kind.value}:{req.status.value}",
+                                details=[f"Linear: {linear_url}/issue/{req.task_id}", f"Approval: {req.title}",
+                                         *[f"change: {x}" for x in req.what_changes[:5]],
+                                         *[f"diff: {x}" for x in req.diff_from_original[:5]],
+                                         f"budget: {req.budget_summary}", f"confirm: {form_url or '-'}", f"note: {message}"]),
+              notifier)
+
+
+def status_report(deps: AutopilotDeps) -> dict:
+    runs = _runs(deps)
+    return {"runs": [{"task": r.task_id, "stage": r.stage.value, "blocked": r.blocked_reason, "waiting_for": r.waiting_for,
+                      "commits": [c[:12] for c in r.commits]} for r in runs],
+            "pending_approvals": [{"id": a.request_id, "task": a.task_id, "kind": a.kind.value} for a in deps.approvals.pending()],
+            "outbox": [{"key": o.key, "state": o.state.value, "error": o.last_error} for o in deps.outbox.pending()]}
+
+
+__all__ = ["AutopilotDeps", "AutopilotSettings", "poll", "advance", "status_report", "json", "ApprovalStatus"]

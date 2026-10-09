@@ -117,3 +117,54 @@ def _to_issue(n: dict) -> LinearIssue:
         notion_page_ids=notion_ids, created_at=n["createdAt"], updated_at=n["updatedAt"],
         fetched_at=utcnow(),
     )
+
+
+class LinearWriter(LinearClient):
+    """Phase 5 write operations (comments, issue creation, history). Status changes are
+    restricted by the caller (autopilot.linear_ops) to non-approval states."""
+
+    def team_states(self, team_id: str) -> dict[str, tuple[str, str]]:
+        data = self._gql("query($id: String!) { team(id: $id) { states { nodes { id name type } } } }", {"id": team_id})
+        return {s["name"]: (s["id"], s["type"]) for s in data["team"]["states"]["nodes"]}
+
+    def label_ids(self, names: list[str]) -> list[str]:
+        data = self._gql("{ issueLabels(first: 250) { nodes { id name } } }")
+        by_name = {n["name"]: n["id"] for n in data["issueLabels"]["nodes"]}
+        missing = [n for n in names if n not in by_name]
+        if missing:
+            raise ConnectorResponseError("linear", f"labels not found: {missing}")
+        return [by_name[n] for n in names]
+
+    def create_comment(self, issue_id: str, body: str) -> str:
+        data = self._gql("mutation($i: String!, $b: String!) { commentCreate(input: {issueId: $i, body: $b}) { success comment { id } } }",
+                         {"i": issue_id, "b": body})
+        if not data["commentCreate"]["success"]:
+            raise ConnectorResponseError("linear", "commentCreate returned success=false")
+        return data["commentCreate"]["comment"]["id"]
+
+    def create_issue(self, team_id: str, title: str, description: str, state_id: str, label_ids: list[str]) -> tuple[str, str, str]:
+        data = self._gql(
+            "mutation($in: IssueCreateInput!) { issueCreate(input: $in) { success issue { id identifier url } } }",
+            {"in": {"teamId": team_id, "projectId": self.project_id, "title": title, "description": description,
+                    "stateId": state_id, "labelIds": label_ids}})
+        if not data["issueCreate"]["success"]:
+            raise ConnectorResponseError("linear", "issueCreate returned success=false")
+        i = data["issueCreate"]["issue"]
+        return i["id"], i["identifier"], i["url"]
+
+    def update_description(self, issue_id: str, description: str) -> None:
+        self._gql("mutation($id: String!, $d: String!) { issueUpdate(id: $id, input: {description: $d}) { success } }",
+                  {"id": issue_id, "d": description})
+
+    def find_by_marker(self, marker: str) -> list[dict]:
+        data = self._gql(
+            "query($p: ID!, $m: String!) { issues(first: 10, filter: { project: { id: { eq: $p } }, title: { contains: $m } }) "
+            "{ nodes { id identifier url title } } }", {"p": self.project_id, "m": marker})
+        return data["issues"]["nodes"]
+
+    def history(self, identifier: str) -> list[dict]:
+        """State transitions with actor information (actor = user; botActor = integration/app)."""
+        data = self._gql(
+            "query($id: String!) { issue(id: $id) { history(first: 50) { nodes { id createdAt actor { id name } "
+            "botActor { name type } fromState { name } toState { name } } } } }", {"id": identifier})
+        return [h for h in data["issue"]["history"]["nodes"] if h.get("toState")]

@@ -105,6 +105,43 @@ experiment_proposals = sa.Table(
 )
 
 
+# ---------------------------------------------------------------- Phase 5
+
+def _record_table(name: str, key: str, *extra: sa.Column) -> sa.Table:
+    return sa.Table(
+        name, metadata,
+        sa.Column(key, sa.String(160), primary_key=True),
+        *extra,
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("record", sa.JSON, nullable=False),
+    )
+
+
+authorizations = _record_table("autopilot_authorizations", "authorization_id",
+                               sa.Column("root_task_id", sa.String(64), index=True, nullable=False))
+approval_requests = _record_table("autopilot_approval_requests", "request_id",
+                                  sa.Column("task_id", sa.String(64), index=True, nullable=False),
+                                  sa.Column("status", sa.String(24), index=True, nullable=False),
+                                  sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False))
+approval_decisions = _record_table("autopilot_approval_decisions", "request_id")  # one decision per request
+form_submissions = _record_table("autopilot_form_submissions", "submission_id",
+                                 sa.Column("request_id", sa.String(64), index=True, nullable=False))
+outbox = _record_table("autopilot_outbox", "key", sa.Column("state", sa.String(24), index=True, nullable=False))
+workflow_runs = _record_table("autopilot_workflow_runs", "run_id",
+                              sa.Column("task_id", sa.String(64), index=True, nullable=False),
+                              sa.Column("stage", sa.String(32), index=True, nullable=False))
+notifications_sent = _record_table("autopilot_notifications", "dedupe_key")
+linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
+    "autopilot_linear_writes", metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("issue_identifier", sa.String(64), index=True, nullable=False),
+    sa.Column("to_state", sa.String(64), nullable=False),
+    sa.Column("at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("reason", sa.Text),
+)
+
+
 def _aware(dt: datetime) -> datetime:
     # SQLite returns naive datetimes; everything is stored in UTC.
     return dt if dt.tzinfo else dt.replace(tzinfo=utcnow().tzinfo)
@@ -327,3 +364,48 @@ class Store:
             q = q.where(experiment_proposals.c.task_id == task_id)
         with self.engine.connect() as conn:
             return [r[0] for r in conn.execute(q).all()]
+
+    # -------------------------------------------------- Phase 5 generic record helpers
+
+    def put(self, table: sa.Table, key: str, record: dict, **cols) -> None:
+        now = utcnow()
+        kcol = list(table.primary_key.columns)[0]
+        with self.engine.begin() as conn:
+            if not conn.execute(table.update().where(kcol == key).values(record=record, updated_at=now, **cols)).rowcount:
+                conn.execute(table.insert().values({kcol.name: key, "record": record, "created_at": now,
+                                                    "updated_at": now, **cols}))
+
+    def insert_new(self, table: sa.Table, key: str, record: dict, **cols) -> bool:
+        """Insert only if absent (any unique column conflict -> False)."""
+        now = utcnow()
+        kcol = list(table.primary_key.columns)[0]
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(table.insert().values({kcol.name: key, "record": record, "created_at": now,
+                                                    "updated_at": now, **cols}))
+            return True
+        except IntegrityError:
+            return False
+
+    def get(self, table: sa.Table, key: str) -> dict | None:
+        kcol = list(table.primary_key.columns)[0]
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(table.c.record).where(kcol == key)).first()
+        return row[0] if row else None
+
+    def find(self, table: sa.Table, **where) -> list[dict]:
+        q = sa.select(table.c.record).order_by(table.c.created_at)
+        for k, v in where.items():
+            q = q.where(table.c[k].in_(v) if isinstance(v, (list, tuple, set)) else table.c[k] == v)
+        with self.engine.connect() as conn:
+            return [r[0] for r in conn.execute(q).all()]
+
+    def record_linear_write(self, identifier: str, to_state: str, reason: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(linear_writes.insert().values(issue_identifier=identifier, to_state=to_state, at=utcnow(),
+                                                       reason=reason))
+
+    def linear_writes_for(self, identifier: str) -> list[dict]:
+        with self.engine.connect() as conn:
+            return [dict(r) for r in conn.execute(sa.select(linear_writes).where(
+                linear_writes.c.issue_identifier == identifier).order_by(linear_writes.c.id)).mappings()]

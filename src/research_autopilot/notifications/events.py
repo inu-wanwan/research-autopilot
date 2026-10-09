@@ -25,6 +25,8 @@ class NotificationEvent(BaseModel):
     # Exception class name only (e.g. "TimeoutError"), never the message.
     error_type: str | None = None
     ui_url: str | None = None
+    # Extra human-readable lines (links, what changes, budget). Callers must not put secrets here.
+    details: list[str] = []
 
     def title(self) -> str:
         return f"[Research Autopilot] {self.flow_name}: {self.kind.value}"
@@ -39,4 +41,5 @@ class NotificationEvent(BaseModel):
             lines.append(f"error: {self.error_type}")
         if self.ui_url:
             lines.append(self.ui_url)
+        lines += self.details
         return "\n".join(lines)
