@@ -1794,6 +1794,7 @@ name = "research-autopilot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "prefect" },
     { name = "pydantic" },
     { name = "typer" },
@@ -1806,6 +1807,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "prefect", specifier = ">=3.8.8" },
     { name = "pydantic", specifier = ">=2.14.0" },
     { name = "typer", specifier = ">=0.27.3" },
