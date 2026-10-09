@@ -2,7 +2,8 @@
 
 研究者が定義・承認した研究タスクを、複数のエージェントが実装・実験・解析まで自律的に進めるシステム。
 
-現在は **Phase 1（自律実行・監視基盤）**：研究室 Linux サーバー上の self-hosted Prefect 3（Server / UI、Process Worker、PostgreSQL）を Docker Compose で動かし、MacBook とスマートフォンから Tailscale 経由で監視する。エージェント機能（Orchestrator、Notion / Linear 連携など）は Phase 2 以降。
+- **Phase 1（自律実行・監視基盤）**：研究室サーバー（Eagle）上の self-hosted Prefect 3（Server / UI、Process Worker、PostgreSQL）を Docker Compose で動かし、MacBook とスマートフォンから Tailscale 経由で監視する。
+- **Phase 2（Task Manager / Orchestrator）**：Notion（仕様の正本）と Linear（実行状態の正本）からタスクを取得し、決定論的なゲートを通過したタスクについて Planner / Reviewer エージェント（OpenAI Agents SDK）で実行計画を作る。CLI は `research-agent`。運用は [`docs/operations/phase2_planning.md`](docs/operations/phase2_planning.md)。
 
 - 開発ルール：[`AGENTS.md`](AGENTS.md)
 - Phase 1 仕様：[`docs/phase_specs/phase1.md`](docs/phase_specs/phase1.md) ／ 技術設計：[`docs/phase1_technical_design.md`](docs/phase1_technical_design.md)
@@ -12,6 +13,11 @@
 
 ```text
 src/research_autopilot/
+  tasks/                   # Notion / Linear connector、決定論的ゲート、Task Manager（Phase 2）
+  planning/                # Planner / Reviewer エージェント、再計画ループ、コスト推定（Phase 2）
+  orchestrator/            # plan-task の制御フローと Prefect flow（Phase 2）
+  storage/                 # 実行履歴・リース・監査ログ（SQL）と JSON artifact（Phase 2）
+  cli.py                   # research-agent CLI（Phase 2）
   flows/smoke_test.py      # 正常系・retry・timeout・承認待ち・長時間の smoke flow
   notifications/           # ntfy 互換 HTTP 通知と Prefect state hook
   idempotency.py           # operation_id による冪等な副作用

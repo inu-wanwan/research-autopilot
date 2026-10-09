@@ -67,6 +67,7 @@ User
 ├── src/
 │   └── research_autopilot/    # 唯一のパッケージ（entry point: research_autopilot:main）
 │       ├── flows/             # Prefect flow（Phase 1: smoke_test.py）
+│       ├── tasks/ planning/ orchestrator/ storage/ cli.py   # Phase 2
 │       ├── notifications/     # HTTP 通知 adapter と state hook
 │       └── idempotency.py     # 冪等な副作用
 ├── infra/                     # compose.yaml / Dockerfile / automations/
@@ -76,7 +77,7 @@ User
     ├── development_handoff.md # 引き継ぎ記録
     ├── phase1_technical_design.md
     ├── operations/            # deployment / monitoring / recovery
-    └── phase_specs/           # Phase 別仕様書（phase1.md）
+    └── phase_specs/           # Phase 別仕様書（phase1.md, phase2.md）
 ```
 
 規則：

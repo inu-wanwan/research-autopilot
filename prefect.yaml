@@ -60,3 +60,15 @@ deployments:
     description: Long-running run for worker-kill / zombie-detection drills.
     tags: [phase1, smoke]
     work_pool: *research_local
+
+  - name: manual
+    entrypoint: src/research_autopilot/orchestrator/flow.py:plan_task_flow
+    version: "{{ $GIT_SHA }}"
+    description: >-
+      Phase 2 task planning. Defaults to dry-run (no external writes).
+      Run with -p task_id=INU-123 (or -p next_task=true); -p mode=apply also moves the
+      Linear issue to In Progress when RA_LINEAR_WRITE_ENABLED=true on the worker.
+    tags: [phase2, planning]
+    parameters:
+      mode: dry_run
+    work_pool: *research_local

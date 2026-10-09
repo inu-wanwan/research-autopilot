@@ -86,9 +86,25 @@ services:
       RA_NOTIFY_URL: ${RA_NOTIFY_URL:-}
       RA_NOTIFY_TOPIC: ${RA_NOTIFY_TOPIC:-}
       RA_NOTIFY_TOKEN: ${RA_NOTIFY_TOKEN:-}
+      # --- Phase 2: task planning (docs/operations/phase2_planning.md) ---
+      NOTION_API_TOKEN: ${NOTION_API_TOKEN:-}
+      NOTION_TASKS_DATA_SOURCE_ID: ${NOTION_TASKS_DATA_SOURCE_ID:-}
+      LINEAR_API_KEY: ${LINEAR_API_KEY:-}
+      LINEAR_PROJECT_ID: ${LINEAR_PROJECT_ID:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Separate database on the same PostgreSQL server (Prefect's own DB is untouched).
+      RA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${RA_DB_NAME:-research_autopilot}
+      RA_SCOPE_LABEL: ${RA_SCOPE_LABEL:-autopilot}
+      RA_PLANNER_MODEL: ${RA_PLANNER_MODEL:-gpt-5.6-terra}
+      RA_REVIEWER_MODEL: ${RA_REVIEWER_MODEL:-gpt-5.6-sol}
+      RA_MODEL_PRICING: ${RA_MODEL_PRICING:-}
+      # Linear writes stay disabled unless explicitly enabled here AND a run uses mode=apply.
+      RA_LINEAR_WRITE_ENABLED: ${RA_LINEAR_WRITE_ENABLED:-false}
     volumes:
       - worker-state:/var/lib/research-autopilot
     depends_on:
+      postgres:
+        condition: service_healthy
       prefect-server:
         condition: service_healthy
     healthcheck:
