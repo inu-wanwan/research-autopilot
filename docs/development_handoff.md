@@ -14,7 +14,7 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 1（実装完了・ローカル検証済み。研究室サーバー / Tailscale / スマートフォンでの検証は未実施）
+Phase 1（実装完了。ローカル検証済み、研究室サーバー・Tailscale・スマートフォンでの確認もユーザーが実施済み）
 
 ## Current Task
 
@@ -22,7 +22,7 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Status
 
-ローカル（MacBook）で実装と検証が完了。本番環境（研究室サーバー）での構築と AC-03〜06 の実機検証が残っている。
+完了。AC-01〜10 はすべて Passed（AC-03〜07・AC-10 は 2026-10-10 にユーザーが研究室サーバーで確認したという報告に基づく）。細かい残作業は Remaining Work を参照。
 
 ## Last Updated
 
@@ -30,7 +30,7 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Git Branch / Commit
 
-- Branch: `phase1/implementation`（`phase1/technical-design` @ `f60c748` から分岐。未 merge・未 push）
+- Branch: `main`（`phase1/implementation` を fast-forward で merge し、`origin/main` @ `e623fcb` に push 済み。ユーザー許可あり）
 - Commits:
   - `78ed6a9` phase1: add Phase 1 spec from user-provided requirements
   - `4f3bae6` phase1: add smoke flows, idempotent side effect, HTTP notifications and tests
@@ -109,12 +109,11 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Remaining Work
 
-- 研究室サーバーでの構築と、AC-03 / 04 / 05 / 07 の実機検証（手順は `docs/operations/deployment.md`）。
-- Tailscale の設定（Serve、grants）と、MacBook・スマートフォンからの確認、未承認経路の負の確認（AC-06。手順は `docs/operations/monitoring.md`）。
-- 本番値（heartbeat 180 秒 / 検出窓 540 秒）での zombie 検出の実測。
+- 本番値（heartbeat 180 秒 / 検出窓 540 秒）での zombie 検出の実測（`recovery.md` §3 の復旧訓練）。
 - 実際の ntfy エンドポイントでの通知確認。
 - バックアップの保存先・定期実行・保持世代・暗号化の決定（`docs/operations/recovery.md` §5）。
-- `phase1/implementation` のレビューと merge（ユーザー判断）。
+- 研究室サーバーの OS / CPU、Docker / Compose のバージョンをこの記録に残す。
+- smoke-success のスケジュールを有効にするかどうか（現在は inactive。ユーザー判断）。
 
 ## Changed Files
 
@@ -142,27 +141,36 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 | `pg_dump -Fc` → 使い捨てコンテナへ `pg_restore --exit-on-error` → 稼働スタックへ in-place 復元 | どちらも 8 runs / 115 logs / 5 deployments で一致。復元後の新しい run も Completed |
 | `git diff --check`、秘密情報らしき文字列の grep | 問題なし |
 
-実施していないこと：研究室サーバー、Tailscale、スマートフォン、ブラウザでの UI ログイン操作、実際の ntfy サーバー、本番値での zombie 検出。
+### 研究室サーバーでの確認（2026-10-10、ユーザー実施・報告）
+
+ユーザーが `main`（`e623fcb`）を研究室サーバーに pull し、運用ドキュメントの手順で次を確認したと報告した。手順とドキュメントの間に食い違いはなかったとのこと。エージェントはサーバーに直接アクセスしていないので、個々のコマンド出力は見ていない。
+
+- Compose の3サービスの起動、worker による deployment の実行（AC-03 / 04）
+- MacBook から Tailscale 経由での登録・起動（AC-05）
+- スマートフォンから Tailscale 経由で UI の状態・ログを確認（AC-06）
+- 再起動後の履歴保持、バックアップと復元（AC-07 / 10）
+
+まだ確認されていないこと：本番値（180 秒 / 540 秒）での zombie 検出の実測、実際の ntfy サーバーでの通知、未承認経路からの負の確認の個別結果、サーバーの OS / CPU。
 
 ### Acceptance Criteria
 
 | ID | 判定 | 根拠 |
 |---|---|---|
-| AC-01 | **Passed** | `uv run pytest` 25 passed |
+| AC-01 | **Passed** | `uv run pytest` 25 passed（MacBook、merge 後の main でも再実行） |
 | AC-02 | **Passed** | MacBook で正常系・異常系の flow を実行（ローカルの一時サーバーとローカル Compose の両方） |
-| AC-03 | **Not Tested** | 研究室サーバーでは未実施。MacBook の Compose では3サービスとも healthy を確認（ローカル模擬） |
-| AC-04 | **Not Tested** | 研究室サーバーでは未実施。ローカル Compose の worker が登録済み deployment を実行することは確認済み |
-| AC-05 | **Not Tested** | MacBook → 研究室サーバーの経路は未実施。MacBook CLI → ローカル Compose の登録・起動は確認済み |
-| AC-06 | **Not Tested** | Tailscale とスマートフォンは未実施 |
-| AC-07 | **Not Tested**（本番）／ローカルでは確認済み | ローカル Compose で server / worker / postgres の再起動と down → up の後も履歴が残った。研究室サーバーでは未実施 |
-| AC-08 | **Passed** | ローカル Compose の worker で retry（2回）・失敗ログ（DB に保存され API で取得）・failed 通知（モック受信器）を確認。実際の ntfy では未確認 |
+| AC-03 | **Passed** | 研究室サーバーで確認（ユーザー報告）。MacBook の Compose でも healthy を確認済み |
+| AC-04 | **Passed** | 研究室サーバーで確認（ユーザー報告） |
+| AC-05 | **Passed** | MacBook → Tailscale → 研究室サーバーで確認（ユーザー報告） |
+| AC-06 | **Passed** | スマートフォンから Tailscale 経由で確認（ユーザー報告） |
+| AC-07 | **Passed** | 研究室サーバーで確認（ユーザー報告）。ローカルでも server / worker / postgres の再起動と down → up で確認済み |
+| AC-08 | **Passed** | ローカル Compose で retry・失敗ログ・failed 通知（モック受信器）を確認。実際の ntfy では未確認 |
 | AC-09 | **Passed** | `test_idempotency.py`（16スレッド同時）、`test_duplicate_runs_apply_side_effect_once` |
-| AC-10 | **Not Tested**（本番）／ローカルでは確認済み | 文書の手順で、ローカルで構築・バックアップ・リハーサル復元・in-place 復元を再現した。研究室サーバーでの再現は未実施 |
+| AC-10 | **Passed** | 研究室サーバーで確認（ユーザー報告）。ローカルでも構築・バックアップ・リハーサル復元・in-place 復元を再現済み |
 
 ## Known Issues / Blockers
 
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
-2. **実環境の情報が未確認**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、tailnet の FQDN と grants の対象、バックアップの保存先、通知エンドポイント。イメージは amd64 / arm64 の両方があることを確認済み。
+2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
 4. **`docker kill` / `docker stop` した worker は自動で再起動しない**（Docker の仕様。ローカルで確認済み）。運用者が `up -d` で起動する。
 5. **worker ごと落ちた run は hook 通知が飛ばない**：Crashed への変更は automation が行うため。必要なら Prefect automation の通知 action を追加する（Phase 1 では未実装）。
@@ -172,9 +180,6 @@ Phase 1「自律実行・監視基盤」の実装・テスト・ローカル検�
 
 ## Exact Next Actions
 
-1. ユーザー：`phase1/implementation` をレビューし、merge と push の方針を決める。
-2. ユーザー / 管理者：研究室サーバーの OS / CPU、Docker と Compose のバージョンを確認し、`docs/operations/deployment.md` §2 の手順で構築する（`.env` は本番専用の乱数で作る）。
-3. 管理者：`docs/operations/monitoring.md` §2 の Tailscale 設定（Serve、grants）を行い、`.env` の `PREFECT_SERVER_UI_API_URL` と `PREFECT_UI_URL` を実際の FQDN にして `up -d` で反映する。
-4. MacBook から `deployment.md` §3 の profile を設定し、`prefect deploy --all` と `deployment run` を実行する（AC-05）。スマートフォンから UI を確認する（AC-06）。§3 の負の確認も行う。
-5. サーバーで `recovery.md` の復旧訓練とバックアップのリハーサルを行い（AC-07、AC-10）、結果をこのファイルの AC 表に反映する。
-6. 通知エンドポイントとバックアップ保存先が決まったら `.env` と recovery.md §5 に反映する。
+1. ユーザー：Remaining Work のうち、zombie 検出の本番値での実測と ntfy の設定を行う（任意。Phase 1 の AC はすべて Passed）。
+2. ユーザー：バックアップの保存先と定期実行を決め、`recovery.md` §5 に反映する。
+3. 次の Phase：Phase 2 の要件定義を受け取ってから `docs/phase_specs/phase2.md` を作り、`AGENTS.md` §4 の手順で着手する。仕様が無いうちは実装しない。
