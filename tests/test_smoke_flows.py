@@ -47,3 +47,9 @@ def test_notification_failure_does_not_change_run_state(failing_notifier):
     state = smoke_success(message="hi", return_state=True)
     assert state.is_completed()
     assert len(failing_notifier.events) == 1  # attempted, failed, isolated
+
+
+def test_sleep_flow_completes(recorder):
+    from research_autopilot.flows.smoke_test import smoke_sleep
+
+    assert smoke_sleep(seconds=1) == 1

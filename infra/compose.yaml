@@ -1,0 +1,105 @@
+# Research Autopilot Phase 1: self-hosted Prefect (server + process worker + PostgreSQL).
+# Usage (from repo root): docker compose --env-file .env -f infra/compose.yaml up -d
+# See docs/operations/deployment.md.
+
+name: research-autopilot
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16.15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *logging
+    # No published ports: reachable only on the compose network.
+
+  prefect-server:
+    image: prefecthq/prefect:3.8.8-python3.12
+    restart: unless-stopped
+    command: ["prefect", "server", "start", "--host", "0.0.0.0", "--port", "4200"]
+    environment:
+      PREFECT_SERVER_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_AUTH_STRING:?set in .env}
+      PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
+      # URL the *browser* uses to reach the API (Tailscale FQDN in production).
+      PREFECT_SERVER_UI_API_URL: ${PREFECT_SERVER_UI_API_URL:?set in .env}
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    ports:
+      # Localhost only. Remote access goes through `tailscale serve` on the host.
+      - "127.0.0.1:${PREFECT_HOST_PORT:-4200}:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging: *logging
+
+  prefect-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: research-autopilot-worker:${GIT_SHA:-dev}
+    restart: unless-stopped
+    command:
+      - prefect
+      - worker
+      - start
+      - --pool
+      - research-local
+      - --type
+      - process
+      - --name
+      - lab-worker
+      - --limit
+      - "1"
+      - --with-healthcheck
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_API_AUTH_STRING: ${PREFECT_AUTH_STRING:?set in .env}
+      # Used only to build links in notifications (browser-facing UI URL).
+      PREFECT_UI_URL: ${PREFECT_UI_URL:-}
+      RA_STATE_DIR: /var/lib/research-autopilot/state
+      # Flow-run heartbeat interval; must stay consistent with the zombie automation window.
+      PREFECT_FLOWS_HEARTBEAT_FREQUENCY: ${PREFECT_FLOWS_HEARTBEAT_FREQUENCY:-180}
+      RA_NOTIFY_URL: ${RA_NOTIFY_URL:-}
+      RA_NOTIFY_TOPIC: ${RA_NOTIFY_TOPIC:-}
+      RA_NOTIFY_TOKEN: ${RA_NOTIFY_TOKEN:-}
+    volumes:
+      - worker-state:/var/lib/research-autopilot
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+    # Intentionally no docker.sock, no host mounts, not privileged.
+
+volumes:
+  pgdata:
+  worker-state:

@@ -4,6 +4,7 @@
 - ``smoke_failure``: transient-failure task with bounded retries; fails by default.
 - ``smoke_timeout``: task exceeding its timeout.
 - ``approval_demo``: sends an approval-required notification and pauses.
+- ``smoke_sleep``: long-running run for recovery drills (worker kill / zombie detection).
 
 Run locally (ephemeral Prefect server) with
 ``uv run python -m research_autopilot.flows.smoke_test <success|failure|timeout>``.
@@ -18,6 +19,7 @@ from prefect.flow_runs import pause_flow_run
 from prefect.runtime import flow_run as runtime_flow_run
 from prefect.runtime import task_run as runtime_task_run
 from prefect.tasks import exponential_backoff
+from prefect.utilities.urls import url_for
 
 from research_autopilot.idempotency import ApplyResult, apply_once, state_dir_from_env
 from research_autopilot.notifications import safe_send
@@ -102,13 +104,24 @@ def approval_demo(timeout_seconds: int = 3600) -> str:
             flow_name="approval-demo",
             flow_run_name=runtime_flow_run.name,
             flow_run_id=runtime_flow_run.id,
-            ui_url=runtime_flow_run.ui_url,
+            ui_url=url_for("flow-run", obj_id=runtime_flow_run.id),
         )
     )
     logger.info("waiting for approval (resume this run in the Prefect UI)")
     pause_flow_run(timeout=timeout_seconds)
     logger.info("approved")
     return "approved"
+
+
+@flow(name="smoke-sleep", **HOOKS)
+def smoke_sleep(seconds: int = 900) -> int:
+    """Stays Running for ``seconds`` so operators can kill the worker and
+    observe heartbeat-based crash detection (docs/operations/recovery.md)."""
+    logger = get_run_logger()
+    for elapsed in range(0, seconds, 30):
+        logger.info("sleeping: %d/%d s", elapsed, seconds)
+        time.sleep(min(30, seconds - elapsed))
+    return seconds
 
 
 def main(which: Literal["success", "failure", "timeout"]) -> None:

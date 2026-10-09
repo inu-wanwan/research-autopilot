@@ -1,0 +1,62 @@
+# Deployment definitions (Git-managed source of truth for deployments).
+# Flow code is baked into the worker image at /opt/research-autopilot; deployments
+# only reference it. Deploy from the repo root:
+#   GIT_SHA=$(git rev-parse --short HEAD) uv run prefect deploy --all --no-prompt
+# The worker image must be built from the same commit (see docs/operations/deployment.md).
+
+name: research-autopilot
+prefect-version: 3.8.8
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /opt/research-autopilot
+
+definitions:
+  work_pool: &research_local
+    name: research-local
+    work_queue_name: default
+
+deployments:
+  - name: manual
+    entrypoint: src/research_autopilot/flows/smoke_test.py:smoke_success
+    version: "{{ $GIT_SHA }}"
+    description: Normal-path smoke test with an idempotent side effect.
+    tags: [phase1, smoke]
+    work_pool: *research_local
+    schedules:
+      # Demonstrates scheduled runs. Created INACTIVE; enable only after the
+      # operator approves the time/frequency.
+      - cron: "0 9 * * *"
+        timezone: Asia/Tokyo
+        active: false
+
+  - name: retry-check
+    entrypoint: src/research_autopilot/flows/smoke_test.py:smoke_failure
+    version: "{{ $GIT_SHA }}"
+    description: Transient failures with bounded retries; fails by default.
+    tags: [phase1, smoke]
+    work_pool: *research_local
+
+  - name: timeout-check
+    entrypoint: src/research_autopilot/flows/smoke_test.py:smoke_timeout
+    version: "{{ $GIT_SHA }}"
+    description: Task exceeding its timeout.
+    tags: [phase1, smoke]
+    work_pool: *research_local
+
+  - name: manual
+    entrypoint: src/research_autopilot/flows/smoke_test.py:approval_demo
+    version: "{{ $GIT_SHA }}"
+    description: Sends an approval-required notification and pauses until resumed.
+    tags: [phase1, smoke]
+    work_pool: *research_local
+
+  - name: recovery-drill
+    entrypoint: src/research_autopilot/flows/smoke_test.py:smoke_sleep
+    version: "{{ $GIT_SHA }}"
+    description: Long-running run for worker-kill / zombie-detection drills.
+    tags: [phase1, smoke]
+    work_pool: *research_local

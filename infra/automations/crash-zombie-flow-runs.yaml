@@ -1,0 +1,29 @@
+# Mark flow runs as Crashed when heartbeats stop (machine crash, container kill).
+# Flow runs emit heartbeats every 180 s by default (PREFECT_FLOWS_HEARTBEAT_FREQUENCY);
+# 540 s = 3 missed heartbeats, following the official example.
+# Register: uv run prefect automation create --from-file infra/automations/crash-zombie-flow-runs.yaml
+automations:
+  - name: crash-zombie-flow-runs
+    description: Mark flow runs as Crashed after 3 missed heartbeats.
+    trigger:
+      type: event
+      posture: Proactive
+      after:
+        - prefect.flow-run.heartbeat
+      expect:
+        - prefect.flow-run.heartbeat
+        - prefect.flow-run.Completed
+        - prefect.flow-run.Failed
+        - prefect.flow-run.Cancelled
+        - prefect.flow-run.Crashed
+      match:
+        prefect.resource.id:
+          - prefect.flow-run.*
+      for_each:
+        - prefect.resource.id
+      threshold: 1
+      within: 540
+    actions:
+      - type: change-flow-run-state
+        state: CRASHED
+        message: Flow run marked as Crashed due to missing heartbeats.
