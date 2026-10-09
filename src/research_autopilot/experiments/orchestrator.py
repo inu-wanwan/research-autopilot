@@ -1,0 +1,585 @@
+"""Experiment Orchestrator (Phase 4).
+
+contract & approval -> resources -> schedule (independent experiments in parallel within caps,
+dependent ones in order) -> submit (async, ledger) -> monitor (heartbeat) -> collect -> validate
+-> triage (retry / more resources / Phase 3 repair / blocked) -> analyze -> propose -> review
+-> scope -> ReviewedExperimentProposal -> Phase5Handoff.
+
+Jobs run detached; this process only polls. If it dies, ``run_experiment(resume_run_id=...)``
+reconciles the ledger with reality and continues -- nothing is resubmitted blindly.
+Phase 4 never approves proposals and never writes to Notion / Linear.
+"""
+
+import hashlib
+import json
+import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from research_autopilot.config import Settings
+from research_autopilot.experiments import resources as res
+from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, ScientificReviewer
+from research_autopilot.experiments.backends.base import BackendNotConfigured, ComputeBackend
+from research_autopilot.experiments.config import Phase4Settings
+from research_autopilot.experiments.environment import EnvironmentError_, ensure_venv, export_commit, resolve_argv
+from research_autopilot.experiments.models import (
+    AnalysisResult,
+    ExperimentManifest,
+    ExperimentProposal,
+    ExperimentState,
+    HostResources,
+    JobRecord,
+    JobSpec,
+    JobState,
+    JobStatus,
+    LlmUsage,
+    Phase5Handoff,
+    ReviewedExperimentProposal,
+    TriageDecision,
+)
+from research_autopilot.experiments.scope import assess, dedupe_key
+from research_autopilot.experiments.triage import classify
+from research_autopilot.experiments.validator import validate
+from research_autopilot.implementation.experiment import (
+    SECRET_PATTERNS,
+    ExperimentDefinition,
+    ExperimentSpec,
+    validate_definition,
+)
+from research_autopilot.implementation.failure import FailureReport
+from research_autopilot.implementation.models import ImplementationManifest, RunState
+from research_autopilot.implementation.orchestrator import ImplDeps, check_execution_approval, repair
+from research_autopilot.implementation.worktree import matches_any
+from research_autopilot.models import ExecutionHandoff
+from research_autopilot.storage.artifacts import write_json
+from research_autopilot.storage.db import Store
+from research_autopilot.tasks.manager import TaskManager
+
+
+@dataclass
+class ExpDeps:
+    settings: Phase4Settings
+    phase2: Settings
+    store: Store
+    manager: TaskManager | None
+    backend: ComputeBackend
+    registry: dict  # repo id -> RepoConfig (Phase 3 registry)
+    analyst: Analyst | None
+    reviewer: ScientificReviewer | None
+    impl_deps: ImplDeps | None  # for Phase 3 repairs
+    detect_host: Callable[[], HostResources] = res.detect_host
+    sleep: Callable[[float], None] = time.sleep
+    prepare_env: bool = True  # False in unit tests with the FakeBackend
+    extra: dict = field(default_factory=dict)
+
+
+class _Block(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- entry point
+
+
+def run_experiment(deps: ExpDeps, *, phase3_run_ids: list[str] | None = None, resume_run_id: str | None = None,
+                   flow_run_id: str | None = None, max_loops: int = 100000) -> ExperimentManifest:
+    deps.store.init_schema()
+    if resume_run_id:
+        m = deps.store.get_experiment(resume_run_id)
+        if m is None:
+            raise ValueError(f"unknown experiment run {resume_run_id}")
+        if m.state in (ExperimentState.COMPLETED, ExperimentState.BLOCKED, ExperimentState.FAILED):
+            raise ValueError(f"experiment run {resume_run_id} already finished ({m.state.value})")
+        m.event("recovery", "resuming; reconciling job ledger")
+        for s in deps.backend.recover():
+            m.event("recovery", f"{s.job_key}: {s.state.value}" + (f" ({s.reason})" if s.reason else ""))
+    else:
+        if not phase3_run_ids:
+            raise ValueError("specify phase3_run_ids or resume_run_id")
+        first = deps.store.get_implementation(phase3_run_ids[0])
+        m = ExperimentManifest(task_id=first.task_id if first else "unknown", phase3_run_id=phase3_run_ids[0])
+    m.flow_run_id = flow_run_id or m.flow_run_id
+    run_dir = deps.settings.artifact_root / m.task_id / m.experiment_run_id
+    try:
+        if not resume_run_id:
+            for rid in phase3_run_ids:
+                _accept_contract(deps, m, rid)
+        m.host = deps.detect_host()
+        m.state = ExperimentState.RUNNING
+        _save(deps, m, run_dir)
+        _schedule(deps, m, run_dir, max_loops)
+        if m.state is ExperimentState.RUNNING:
+            _analyze_and_propose(deps, m, run_dir)
+            m.state = ExperimentState.COMPLETED
+    except _Block as b:
+        m.state = ExperimentState.BLOCKED
+        m.block_reason = str(b)
+        m.event("blocked", str(b))
+    except Exception as exc:
+        m.state = ExperimentState.FAILED
+        m.block_reason = f"unexpected {type(exc).__name__}: {exc}"
+        m.event("error", m.block_reason)
+        raise
+    finally:
+        _finalize(deps, m, run_dir)
+    return m
+
+
+# ---------------------------------------------------------------- contract
+
+
+def _accept_contract(deps: ExpDeps, m: ExperimentManifest, phase3_run_id: str) -> None:
+    impl = deps.store.get_implementation(phase3_run_id)
+    if impl is None:
+        raise _Block(f"unknown Phase 3 run {phase3_run_id}")
+    if impl.state is not RunState.COMPLETED or impl.final_review is None or impl.final_review.verdict != "pass":
+        raise _Block(f"Phase 3 run {phase3_run_id} is not a completed implementation with Code Reviewer pass")
+    if impl.task_id != m.task_id:
+        raise _Block(f"Phase 3 run {phase3_run_id} belongs to {impl.task_id}, not {m.task_id}")
+    spec_path = impl.artifact_paths.get("experiment_spec")
+    if not spec_path or not Path(spec_path).exists():
+        raise _Block(f"Phase 3 run {phase3_run_id} has no ExperimentSpec")
+    spec = ExperimentSpec.model_validate_json(Path(spec_path).read_text())
+    if spec.identification.commit != impl.implementation_commit or spec.spec_id != impl.experiment_spec_id:
+        raise _Block("ExperimentSpec does not match the Phase 3 implementation commit / spec id")
+    if spec.experiment_id in m.specs:
+        raise _Block(f"duplicate experiment id {spec.experiment_id} in batch")
+    # Human execution approval (same deterministic gate as Phase 3).
+    handoff = ExecutionHandoff.model_validate_json(Path(impl.handoff_path).read_text())
+    if reason := check_execution_approval(deps.store, deps.manager, deps.phase2, handoff):
+        raise _Block(f"execution not approved: {reason}")
+    # Re-validate the executable contract against the fixed commit (never trust it blindly).
+    repo = _repo(deps, impl)
+    errors = _revalidate(spec, repo)
+    if errors:
+        raise _Block("ExperimentSpec invalid at its commit: " + "; ".join(errors[:5]))
+    missing_env = [n for n in spec.execution.env_var_names if n not in deps.extra.get("host_env", __import__("os").environ)
+                   and not n.endswith("_NUM_THREADS")]
+    if missing_env:
+        raise _Block(f"required environment variables not set on this host: {missing_env}")
+    m.specs[spec.experiment_id] = spec
+    m.spec_history.append(spec.spec_id)
+    m.phase2_plan_run_id, m.plan_id = impl.phase2_plan_run_id, impl.plan_id
+    m.event("contract", f"accepted {spec.experiment_id} @ {spec.identification.commit[:12]} (Phase 3 {phase3_run_id[:8]})")
+
+
+def _repo(deps: ExpDeps, impl: ImplementationManifest):
+    repo = deps.registry.get(impl.task.repo_id)
+    if repo is None:
+        raise _Block(f"repository {impl.task.repo_id} is not registered on this host")
+    return repo
+
+
+def _revalidate(spec: ExperimentSpec, repo) -> list[str]:
+    from research_autopilot.implementation.worktree import WorktreeManager
+
+    wt = WorktreeManager(repo, Path("/nonexistent"))
+    commit = spec.identification.commit
+    d = ExperimentDefinition(experiment_id=spec.experiment_id, execution=spec.execution, environment=spec.environment,
+                             inputs=spec.inputs, resources=spec.resources, outputs=spec.outputs,
+                             metrics=spec.validation.metrics, numeric_checks=spec.validation.numeric_checks,
+                             reproduction=spec.reproduction or ["-"])
+    try:
+        return validate_definition(d, lambda p: wt.file_at(commit, p), lambda p: wt.dir_at(commit, p))
+    except Exception as exc:  # noqa: BLE001 - e.g. repository missing
+        return [f"cannot inspect commit: {exc}"]
+
+
+# ---------------------------------------------------------------- scheduling
+
+
+def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: int) -> None:
+    s = deps.settings
+    rm = res.ResourceManager(s, m.host)
+    done: dict[str, str] = {}  # experiment_id -> "validated" | "blocked"
+    # Rebuild state from the manifest (resume)
+    for exp_id in m.specs:
+        last = _last_job(m, exp_id)
+        if last and last.validation and last.validation.status == "pass":
+            done[exp_id] = "validated"
+        elif last and last.triage and last.triage.action == "blocked":
+            done[exp_id] = "blocked"
+    for j in m.jobs:
+        if j.status is None or not j.status.state.terminal:
+            if j.allocation:
+                rm.reserve(j.job_key, j.allocation)
+    _note_serialization(m, rm)
+
+    for _ in range(max_loops):
+        progressed = False
+        # 1. submit ready experiments
+        for exp_id, spec in m.specs.items():
+            if exp_id in done or _active_job(m, exp_id):
+                continue
+            unknown = [d for d in spec.resources.job_dependencies if d not in m.specs]
+            if unknown:
+                done[exp_id] = "blocked"
+                m.event("blocked", f"{exp_id}: unknown dependency {unknown}")
+                continue
+            if any(done.get(d) == "blocked" for d in spec.resources.job_dependencies):
+                done[exp_id] = "blocked"
+                m.event("blocked", f"{exp_id}: dependency failed")
+                continue
+            if not all(done.get(d) == "validated" for d in spec.resources.job_dependencies):
+                continue
+            last = _last_job(m, exp_id)
+            scale = 1.5 if last and last.triage and last.triage.action == "retry_more_resources" else 1.0
+            try:
+                est = res.estimate(spec, deps.store.ledger_history(exp_id), s)
+                alloc = rm.plan(est, scale=scale)
+            except res.ResourceError as exc:
+                done[exp_id] = "blocked"
+                m.event("blocked", f"{exp_id}: {exc}")
+                continue
+            if not rm.fits_now(alloc):
+                continue
+            job = _submit(deps, m, run_dir, spec, alloc)
+            rm.reserve(job.job_key, alloc)
+            progressed = True
+        # 2. poll running jobs
+        for j in [j for j in m.jobs if j.handle and (j.status is None or not j.status.state.terminal)]:
+            st = deps.backend.status(j.handle)
+            j.status = st
+            if st.state.terminal:
+                rm.release(j.job_key)
+                outcome = _finish_job(deps, m, run_dir, j)
+                if outcome in ("validated", "blocked"):
+                    done[j.experiment_id] = outcome
+                progressed = True
+        _save(deps, m, run_dir)
+        if len(done) == len(m.specs):
+            break
+        if not progressed and not any(j.handle and (j.status is None or not j.status.state.terminal) for j in m.jobs):
+            stuck = [e for e in m.specs if e not in done]
+            raise _Block(f"cannot schedule {stuck} within resource caps")
+        if not progressed:
+            deps.sleep(_poll_interval(m, s))
+    else:
+        raise _Block("scheduler loop limit reached")
+    blocked = [e for e, v in done.items() if v == "blocked"]
+    if blocked:
+        raise _Block(f"experiments blocked: {blocked}" + _triage_summary(m, blocked))
+
+
+def _note_serialization(m: ExperimentManifest, rm: res.ResourceManager) -> None:
+    independent = [e for e, sp in m.specs.items() if not sp.resources.job_dependencies]
+    if len(independent) > 1:
+        cap_cpu, cap_mem = rm.capacity()
+        if rm.settings.max_parallel_jobs < len(independent):
+            m.serialization_notes.append(
+                f"{len(independent)} independent experiments but max_parallel_jobs={rm.settings.max_parallel_jobs}; "
+                f"excess runs queued (cap cpu={cap_cpu:g}, mem={cap_mem:g}GB)")
+
+
+def _poll_interval(m: ExperimentManifest, s: Phase4Settings) -> float:
+    beats = [j.allocation.walltime_seconds / 3 for j in m.jobs if j.allocation and j.status and not j.status.state.terminal]
+    beats += [s.heartbeat_min_seconds]
+    return float(min(max(min(beats), s.heartbeat_min_seconds), s.heartbeat_max_seconds))
+
+
+def _last_job(m: ExperimentManifest, exp_id: str) -> JobRecord | None:
+    jobs = [j for j in m.jobs if j.experiment_id == exp_id]
+    return jobs[-1] if jobs else None
+
+
+def _active_job(m: ExperimentManifest, exp_id: str) -> bool:
+    j = _last_job(m, exp_id)
+    return bool(j and (j.status is None or not j.status.state.terminal) and j.triage is None)
+
+
+def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: ExperimentSpec, alloc) -> JobRecord:
+    attempt = len([j for j in m.jobs if j.experiment_id == spec.experiment_id]) + 1
+    key = f"{m.experiment_run_id}:{spec.experiment_id}:{attempt}"
+    jdir = run_dir / spec.experiment_id / f"attempt-{attempt}"
+    checkout = jdir / "src"
+    argv = spec.execution.argv
+    input_hashes: dict[str, str] = {}
+    impl = deps.store.get_implementation(spec.identification.phase3_run_id)
+    repo = Path(_repo(deps, impl).path).expanduser()
+    try:
+        export_commit(repo, spec.identification.commit, checkout)  # immutable per-job checkout of the fixed commit
+        if deps.prepare_env:
+            prov = ensure_venv(repo, spec, checkout, deps.settings.env_cache_dir)
+            argv = resolve_argv(argv, prov["python"])
+            for step in spec.execution.setup:
+                import subprocess
+
+                p = subprocess.run(resolve_argv(step, prov["python"]), cwd=checkout / spec.execution.working_directory,
+                                   capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
+                if p.returncode != 0:
+                    raise EnvironmentError_(f"setup step {step[:3]} failed: {p.stderr[-300:]}")
+            m.environment[spec.experiment_id] = prov
+    except EnvironmentError_ as exc:
+        raise _Block(f"{spec.experiment_id}: environment preparation failed: {exc}") from exc
+    for inp in spec.inputs:
+        f = checkout / inp.path
+        input_hashes[inp.path] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else ""
+    (jdir / "input_hashes.json").parent.mkdir(parents=True, exist_ok=True)
+    (jdir / "input_hashes.json").write_text(json.dumps(input_hashes))
+    env = {**res.thread_env(alloc), "HOME": str(jdir / "home"), "TMPDIR": str(jdir / "tmp"),
+           "PYTHONHASHSEED": "0", "RA_EXPERIMENT_RUN_ID": m.experiment_run_id, "RA_TASK_ID": m.task_id}
+    (jdir / "home").mkdir(parents=True, exist_ok=True)
+    (jdir / "tmp").mkdir(parents=True, exist_ok=True)
+    job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
+                  commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,
+                  env=env, secret_env_names=[n for n in spec.execution.env_var_names if n not in env],
+                  allocation=alloc, run_dir=str(jdir), checkout_dir=str(checkout), outputs=[o.path for o in spec.outputs],
+                  heartbeat_seconds=res.heartbeat_seconds(alloc, deps.settings))
+    rec = JobRecord(experiment_id=spec.experiment_id, spec_id=spec.spec_id, commit=spec.identification.commit,
+                    attempt=attempt, job_key=key, allocation=alloc)
+    m.jobs.append(rec)
+    _save(deps, m, run_dir)  # record intent before submitting
+    try:
+        rec.handle = deps.backend.submit(job)
+    except BackendNotConfigured as exc:
+        raise _Block(f"compute backend not configured: {exc}") from exc
+    _ledger_tag(deps, key, spec.experiment_id)
+    m.event("submit", f"{key} cpu={alloc.cpu} mem={alloc.memory_gb}GB wall={alloc.walltime_seconds}s "
+                      f"({alloc.estimate.basis}/{alloc.estimate.confidence})")
+    return rec
+
+
+def _ledger_tag(deps: ExpDeps, key: str, exp_id: str) -> None:
+    row = deps.store.ledger_get(key)
+    if row is not None:
+        rec = dict(row.get("record") or {})
+        rec["experiment_id"] = exp_id
+        deps.store.ledger_update(key, record=rec)
+
+
+# ---------------------------------------------------------------- completion / triage
+
+
+def _finish_job(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, j: JobRecord) -> str:
+    spec = m.specs[j.experiment_id]
+    workdir = Path(j.handle.run_dir) / "src" / spec.execution.working_directory
+    if j.status.state is JobState.SUCCEEDED:
+        j.collect = deps.backend.collect(j.handle, [o.path for o in spec.outputs])
+        hashes = json.loads((Path(j.handle.run_dir) / "input_hashes.json").read_text())
+        j.validation = validate(spec, j.status, j.collect, workdir, hashes)
+        if j.validation.status == "pass":
+            m.event("validated", f"{j.job_key}: pass (fully_verified={j.validation.fully_verified})")
+            return "validated"
+    stderr = _read_tail(j.status.stderr_path or str(Path(j.handle.run_dir) / "stderr.log"))
+    impl = deps.store.get_implementation(spec.identification.phase3_run_id)
+    repo_files = set(impl.changed_files) | {i.path for i in spec.inputs}
+    j.triage = classify(j.status, j.validation, stderr, repo_files)
+    m.event("triage", f"{j.job_key}: {j.triage.error_class.value} -> {j.triage.action} ({j.triage.reason[:150]})")
+    return _act_on_triage(deps, m, run_dir, j, stderr)
+
+
+def _act_on_triage(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, j: JobRecord, stderr: str) -> str:
+    s, t = deps.settings, j.triage
+    if t.action in ("retry", "retry_more_resources"):
+        if m.retries >= s.max_infra_retries:
+            j.triage = TriageDecision(error_class=t.error_class, action="blocked", reason=f"retry limit reached: {t.reason}",
+                                      evidence=t.evidence)
+            return "blocked"
+        m.retries += 1
+        deps.sleep(s.retry_backoff_seconds * m.retries)
+        m.event("retry", f"{j.experiment_id}: retry {m.retries}/{s.max_infra_retries} (same scientific conditions)")
+        return "retry"
+    if t.action == "phase3_repair":
+        return _repair(deps, m, run_dir, j, stderr)
+    return "blocked"
+
+
+def _repair(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, j: JobRecord, stderr: str) -> str:
+    s = deps.settings
+    spec = m.specs[j.experiment_id]
+    if m.roundtrips >= s.max_roundtrips:
+        j.triage = TriageDecision(error_class=j.triage.error_class, action="blocked",
+                                  reason=f"Phase 3<->4 round-trip limit ({s.max_roundtrips}) reached", evidence=j.triage.evidence)
+        return "blocked"
+    if deps.impl_deps is None:
+        j.triage = TriageDecision(error_class=j.triage.error_class, action="blocked",
+                                  reason="Phase 3 repair not available on this host", evidence=j.triage.evidence)
+        return "blocked"
+    impl = deps.store.get_implementation(spec.identification.phase3_run_id)
+    locked = spec.locked_scientific_inputs()
+    scope = [g for g in impl.task.allowed_file_scope
+             if g != ".autopilot/experiment.json" and not any(matches_any(p, [g]) for p in locked)]
+    if not scope:
+        j.triage = TriageDecision(error_class=j.triage.error_class, action="blocked",
+                                  reason="no repair scope left outside scientific inputs", evidence=j.triage.evidence)
+        return "blocked"
+    n = m.roundtrips + 1
+    report = FailureReport(
+        report_id=re.sub(r"[^A-Za-z0-9._-]", "-", f"{m.experiment_run_id[:8]}-{spec.experiment_id}-rt{n}")[:64],
+        task_id=m.task_id, phase3_run_id=spec.identification.phase3_run_id, phase4_run_id=m.experiment_run_id,
+        failed_commit=spec.identification.commit, experiment_spec_id=spec.spec_id, argv=spec.execution.argv,
+        input_config={i.path: "unchanged from commit" for i in spec.inputs}, exit_code=j.status.exit_code,
+        signal=str(j.status.signal) if j.status.signal else None, error_class=j.triage.error_class,
+        stdout_ref=j.status.stdout_path, stderr_ref=j.status.stderr_path,
+        artifacts=[a.stored_path for a in (j.collect.artifacts if j.collect else [])],
+        summary=j.triage.reason[:1000], log_excerpt=SECRET_PATTERNS.sub("[REDACTED]", stderr[-6000:]),
+        reproduction=[f"git checkout {spec.identification.commit}", " ".join(spec.execution.argv)],
+        allowed_repair_scope=scope, scientific_invariants=spec.validation.scientific_invariants, roundtrip=n,
+    )
+    path = write_json(Path(j.handle.run_dir) / "failure_report.json", report)
+    m.roundtrips = n
+    m.state = ExperimentState.REPAIRING
+    m.event("repair", f"{j.experiment_id}: FailureReport {report.report_id} -> Phase 3 (round trip {n})")
+    _save(deps, m, run_dir)
+    fixed = repair(deps.impl_deps, path)
+    m.repairs.append({"report_id": report.report_id, "phase3_run_id": fixed.phase3_run_id, "state": fixed.state.value,
+                      "reason": fixed.block_reasons[-1].message if fixed.block_reasons else ""})
+    m.state = ExperimentState.RUNNING
+    if fixed.state is not RunState.COMPLETED:
+        j.triage = TriageDecision(error_class=j.triage.error_class, action="blocked",
+                                  reason=f"Phase 3 repair did not complete: {m.repairs[-1]['reason']}", evidence=j.triage.evidence)
+        return "blocked"
+    new_spec = ExperimentSpec.model_validate_json(Path(fixed.artifact_paths["experiment_spec"]).read_text())
+    m.specs[j.experiment_id] = new_spec
+    m.spec_history.append(new_spec.spec_id)
+    m.event("repair", f"{j.experiment_id}: new commit {new_spec.identification.commit[:12]} spec {new_spec.spec_id[:8]}")
+    return "repaired"
+
+
+def _triage_summary(m: ExperimentManifest, blocked: list[str]) -> str:
+    parts = []
+    for e in blocked:
+        j = _last_job(m, e)
+        if j and j.triage:
+            parts.append(f"{e}: {j.triage.error_class.value}: {j.triage.reason[:120]}")
+    return (" -- " + "; ".join(parts)) if parts else ""
+
+
+def _read_tail(path: str, n: int = 20000) -> str:
+    try:
+        return Path(path).read_text(errors="replace")[-n:]
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- analysis / proposals
+
+
+def _analyze_and_propose(deps: ExpDeps, m: ExperimentManifest, run_dir: Path) -> None:
+    s = deps.settings
+    validated = [j for j in m.jobs if j.validation and j.validation.status == "pass"]
+    if not validated or deps.analyst is None:
+        m.event("analysis", "skipped (no validated results or no analyst configured)")
+        return
+    m.state = ExperimentState.ANALYZING
+    impl = deps.store.get_implementation(m.phase3_run_id)
+    handoff = json.loads(Path(impl.handoff_path).read_text())
+    existing = deps.store.list_proposals(m.task_id)
+    payload = {
+        "task": {k: handoff.get(k) for k in ("task_id", "purpose", "specification", "scientific_invariants",
+                                             "acceptance_criteria", "non_goals")},
+        "plan": handoff.get("plan"),
+        "experiment_specs": {k: v.model_dump(mode="json", include={"experiment_id", "identification", "outputs",
+                                                                   "validation", "resources"}) for k, v in m.specs.items()},
+        "validated_results": [{"job": j.job_key, "commit": j.commit, "metrics": j.validation.metrics,
+                               "checks": [c.model_dump(mode="json") for c in j.validation.checks],
+                               "artifacts": [a.model_dump(mode="json") for a in (j.collect.artifacts if j.collect else [])]}
+                              for j in validated],
+        "failed_or_blocked": [{"job": j.job_key, "triage": j.triage.model_dump(mode="json")} for j in m.jobs if j.triage],
+        "existing_proposals": [{"title": p["proposal"]["draft"]["title"], "question": p["proposal"]["draft"]["research_question"]}
+                               for p in existing],
+        "max_proposals": s.max_proposals_per_run,
+    }
+    try:
+        run = deps.analyst.analyze(payload)
+    except LlmBudgetError as exc:
+        m.llm_usage.append(LlmUsage(agent="analyst", model=deps.analyst.model, error=str(exc)))
+        raise _Block(f"analysis not run: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - normalized agent errors
+        m.llm_usage.append(LlmUsage(agent="analyst", model=deps.analyst.model, error=f"{type(exc).__name__}: {exc}"))
+        raise _Block(f"analysis failed: {type(exc).__name__}: {exc}") from exc
+    m.llm_usage.append(LlmUsage(agent="analyst", model=run.model, input_tokens=run.usage.input_tokens,
+                                output_tokens=run.usage.output_tokens, cost_usd=run.cost_usd))
+    analysis: AnalysisResult = run.output
+    m.analysis = analysis
+    m.artifact_paths["analysis"] = str(write_json(run_dir / "analysis.json", analysis))
+    _review_proposals(deps, m, run_dir, analysis, handoff, existing, validated)
+
+
+def _review_proposals(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, analysis: AnalysisResult, handoff: dict,
+                      existing: list[dict], validated: list[JobRecord]) -> None:
+    s = deps.settings
+    inv = [ln for ln in _lines(handoff.get("scientific_invariants"))]
+    acc = [ln for ln in _lines(handoff.get("acceptance_criteria"))]
+    parent_depth = int(deps.extra.get("chain_depth", 0))
+    for draft in analysis.proposals[: s.max_proposals_per_run]:
+        depth = parent_depth + 1
+        if depth > s.max_chain_depth:
+            m.event("proposal", f"skipped {draft.title!r}: chain depth {depth} > {s.max_chain_depth}")
+            continue
+        key = dedupe_key(m.task_id, draft)
+        if any(p["proposal"]["dedupe_key"] == key for p in existing):
+            m.event("proposal", f"skipped duplicate {draft.title!r}")
+            continue
+        proposal = ExperimentProposal(dedupe_key=key, parent_task_id=m.task_id, source_experiment_run_id=m.experiment_run_id,
+                                      source_artifacts=[a.stored_path for j in validated for a in (j.collect.artifacts if j.collect else [])],
+                                      source_commit=validated[-1].commit, chain_depth=depth, draft=draft)
+        review, err = None, None
+        if deps.reviewer is not None and m.llm_cost_known < s.max_llm_cost_usd_per_run:
+            try:
+                rr = deps.reviewer.review({"task": handoff, "proposal": draft.model_dump(mode="json"),
+                                           "validated_metrics": [j.validation.metrics for j in validated],
+                                           "existing_proposals": [p["proposal"]["draft"]["title"] for p in existing]})
+                review = rr.output
+                m.llm_usage.append(LlmUsage(agent="reviewer", model=rr.model, input_tokens=rr.usage.input_tokens,
+                                            output_tokens=rr.usage.output_tokens, cost_usd=rr.cost_usd))
+            except Exception as exc:  # noqa: BLE001 - recorded; scope then requires a human
+                err = f"{type(exc).__name__}: {exc}"
+                m.llm_usage.append(LlmUsage(agent="reviewer", model=deps.reviewer.model, error=err))
+        else:
+            err = "reviewer unavailable or LLM budget exhausted"
+        scope = assess(draft, original_invariants=inv, original_acceptance=acc, original_purpose=handoff.get("purpose"),
+                       review=review)
+        reviewed = ReviewedExperimentProposal(
+            proposal=proposal, review=review, review_error=err, scope_assessment=scope,
+            task_spec_ref={"task_id": m.task_id, "plan_id": m.plan_id, "phase2_plan_run_id": m.phase2_plan_run_id,
+                           "sources": json.dumps(handoff.get("sources"), ensure_ascii=False)},
+            execution_plan_ref={"plan_id": m.plan_id, "phase3_run_id": m.phase3_run_id},
+            spec_diff=scope.proposed_changes + [f for f in scope.deterministic_findings if "missing" in f or "not preserved" in f],
+            limits_metadata={"chain_depth": depth, "max_chain_depth": s.max_chain_depth,
+                             "proposals_in_run": len(analysis.proposals), "max_proposals_per_run": s.max_proposals_per_run,
+                             "llm_cost_usd_known": m.llm_cost_known, "max_llm_cost_usd_per_run": s.max_llm_cost_usd_per_run,
+                             "estimated_resources": draft.estimated_resources, "estimated_cost": draft.estimated_cost},
+        )
+        if not deps.store.save_proposal(reviewed):
+            m.event("proposal", f"duplicate (store) {draft.title!r}")
+            continue
+        path = write_json(run_dir / "proposals" / f"{proposal.proposal_id}.json", reviewed)
+        m.reviewed_proposals.append(proposal.proposal_id)
+        m.artifact_paths[f"proposal:{proposal.proposal_id}"] = str(path)
+        m.event("proposal", f"{draft.title!r}: review={review.verdict if review else 'n/a'} "
+                            f"within_scope={scope.within_scope} human={scope.requires_human_decision}")
+
+
+def _lines(text: str | None) -> list[str]:
+    from research_autopilot.implementation.experiment import spec_lines
+
+    return spec_lines(text)
+
+
+# ---------------------------------------------------------------- persistence
+
+
+def _finalize(deps: ExpDeps, m: ExperimentManifest, run_dir: Path) -> None:
+    final_commit = next((sp.identification.commit for sp in m.specs.values()), None)
+    handoff = Phase5Handoff(
+        experiment_run_id=m.experiment_run_id, task_id=m.task_id, phase3_run_id=m.phase3_run_id, final_commit=final_commit,
+        state=m.state, validations=[j.validation for j in m.jobs if j.validation],
+        analysis_path=m.artifact_paths.get("analysis"),
+        reviewed_proposal_paths=[v for k, v in m.artifact_paths.items() if k.startswith("proposal:")],
+        manifest_path=str(run_dir / "manifest.json"))
+    m.artifact_paths["phase5_handoff"] = str(write_json(run_dir / "phase5_handoff.json", handoff))
+    _save(deps, m, run_dir)
+
+
+def _save(deps: ExpDeps, m: ExperimentManifest, run_dir: Path) -> None:
+    from research_autopilot.models import utcnow
+
+    m.updated_at = utcnow()
+    m.artifact_paths["manifest"] = str(run_dir / "manifest.json")
+    write_json(run_dir / "manifest.json", m)
+    deps.store.save_experiment(m)
+
+
+__all__ = ["ExpDeps", "run_experiment", "JobStatus"]

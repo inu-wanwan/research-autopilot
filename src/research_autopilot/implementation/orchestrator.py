@@ -706,3 +706,16 @@ def _build_spec(task: ImplementationTask, wt: WorktreeManager, commit: str,
         supersedes_spec_id=rctx.original_spec.spec_id if rctx else None,
         sources=task.sources,
     )
+
+
+def check_execution_approval(store, manager, phase2, handoff: ExecutionHandoff) -> str | None:
+    """Public form of the Phase 3 approval gate for reuse by Phase 4. Returns a block
+    reason, or None when execution is approved."""
+    from types import SimpleNamespace
+
+    probe = ImplementationManifest(task_id=handoff.task_id)
+    try:
+        _approval_gate(SimpleNamespace(store=store, manager=manager, phase2=phase2), handoff, probe)
+    except _Stop as stop:
+        return f"{stop.code}: {stop.message}"
+    return None
