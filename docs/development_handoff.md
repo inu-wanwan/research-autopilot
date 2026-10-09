@@ -31,7 +31,7 @@ Phase 3 の実装・テスト・統合テスト（ExperimentSpec / FailureReport
 ## Git Branch / Commit
 
 - Branch: `phase3/implementer`（`main` @ `7ccaf51` から分岐。未 merge・未 push）
-  - `3e3…` 以降の Phase 3 の commit：仕様書 → Phase 2 handoff の拡張（`cc9ed9d`）→ 本体（`c18a60e`）→ ExperimentSpec / FailureReport（`d5a1efa`）→ flow / CLI（`84626b0`）→ 分類ルールの調整とドキュメント（`0dff1cf`）→ この handoff の commit
+  - Phase 3 の commit：仕様書（`a22c40e`）→ Phase 2 handoff の拡張（`cc9ed9d`）→ 本体（`c18a60e`）→ ExperimentSpec / FailureReport（`d5a1efa`）→ flow / CLI（`84626b0`）→ 分類ルールの調整とドキュメント（`0dff1cf`）→ この handoff の commit
 - `main` / `origin/main` は `7ccaf51` のまま
 
 ## Completed Work
