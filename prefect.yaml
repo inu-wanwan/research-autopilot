@@ -97,3 +97,20 @@ deployments:
       (-p phase3_run_ids='["<run>"]' or -p resume_run_id=<run>). Never approves proposals.
     tags: [phase4, experiment]
     work_pool: *research_local
+
+  - name: scheduled
+    entrypoint: src/research_autopilot/autopilot/flows.py:autopilot_poll_flow
+    version: "{{ $GIT_SHA }}"
+    description: Phase 5 scheduler tick (outbox, approvals, advance <=1 research task). Schedule created INACTIVE.
+    tags: [phase5, autopilot]
+    work_pool: *research_local
+    schedules:
+      - interval: 300
+        active: false
+
+  - name: manual
+    entrypoint: src/research_autopilot/autopilot/flows.py:approval_confirm_flow
+    version: "{{ $GIT_SHA }}"
+    description: Human-in-the-loop approval form (suspends until submitted in the Prefect UI).
+    tags: [phase5, approval]
+    work_pool: *research_local

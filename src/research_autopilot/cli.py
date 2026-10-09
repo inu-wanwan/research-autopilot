@@ -31,6 +31,8 @@ app.add_typer(db_app, name="db")
 app.add_typer(impl_app, name="impl-runs")
 exp_app = typer.Typer(no_args_is_help=True, help="Phase 4 experiments")
 app.add_typer(exp_app, name="experiment")
+ap_app = typer.Typer(no_args_is_help=True, help="Phase 5 autonomous workflow")
+app.add_typer(ap_app, name="autopilot")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 
@@ -212,6 +214,64 @@ def experiment_proposals(task: str | None = typer.Option(None, "--task")) -> Non
         typer.echo(f"{p['proposal']['proposal_id']} {p['proposal']['draft']['title'][:50]!r} "
                    f"review={(p['review'] or {}).get('verdict')} within_scope={sa_['within_scope']} "
                    f"human={sa_['requires_human_decision']} status={p['approval_status']}")
+
+
+@ap_app.command("poll")
+def autopilot_poll(task: str | None = typer.Option(None, "--task", help="Only this Linear issue"),
+                   check_only: bool = typer.Option(False, "--check-only", help="Discover / evaluate only; no writes, no LLM"),
+                   local: bool = typer.Option(False, "--local", help="Run without Prefect")) -> None:
+    """One scheduler tick: outbox retries, approval checks, advance <=1 research task.
+    Writes require RA_AUTOPILOT_WRITE=true; RA_AUTOPILOT_TEST_ONLY=true (default) limits them to [TEST] issues."""
+    if local:
+        from research_autopilot.autopilot.engine import poll
+        from research_autopilot.autopilot.factory import build_autopilot_deps
+
+        typer.echo(json.dumps(poll(build_autopilot_deps(dry_run=check_only), only_task=task), ensure_ascii=False, indent=2,
+                              default=str))
+        return
+    from research_autopilot.autopilot.flows import autopilot_poll_flow
+
+    typer.echo(json.dumps(autopilot_poll_flow(task_id=task, dry_run=check_only), ensure_ascii=False, indent=2, default=str))
+
+
+@ap_app.command("status")
+def autopilot_status() -> None:
+    """Workflow runs, pending approvals and outbox state."""
+    from research_autopilot.autopilot.engine import status_report
+    from research_autopilot.autopilot.factory import build_autopilot_deps
+
+    typer.echo(json.dumps(status_report(build_autopilot_deps(dry_run=True)), ensure_ascii=False, indent=2, default=str))
+
+
+@ap_app.command("cancel")
+def autopilot_cancel(task: str) -> None:
+    """Stop Autopilot work on a task (Linear status is left to the human)."""
+    _set_run_stage(task, "cancelled", "cancelled by operator")
+
+
+@ap_app.command("resume")
+def autopilot_resume(task: str, stage: str = typer.Option(..., "--stage", help="Stage to resume (e.g. planning)")) -> None:
+    """Move a BLOCKED / DEAD_LETTER run back to a stage after a human fixed the cause."""
+    _set_run_stage(task, stage, f"resumed by operator at {stage}")
+
+
+def _set_run_stage(task: str, stage: str, message: str) -> None:
+    from research_autopilot.autopilot.models import WorkflowRun, WorkflowStage
+    from research_autopilot.storage import db as dbm
+
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    runs = [WorkflowRun.model_validate(r) for r in store.find(dbm.workflow_runs, task_id=task)]
+    if not runs:
+        typer.echo("no workflow run for this task", err=True)
+        raise typer.Exit(1)
+    run = runs[-1]
+    run.stage = WorkflowStage(stage)
+    run.attempts = 0
+    run.blocked_reason = None
+    run.event("operator", message)
+    store.put(dbm.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage=run.stage.value)
+    typer.echo(f"{task}: {run.stage.value}")
 
 
 @runs_app.command("list")
