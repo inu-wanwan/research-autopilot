@@ -9,6 +9,10 @@ docs/
 ├── README.md                # このファイル（docs の運用ルール）
 ├── development_handoff.md   # Phase 共通の引き継ぎ記録
 ├── phase1_technical_design.md # Phase 1 公式資料調査と実装設計
+├── operations/              # 運用手順（Phase 1 で作成）
+│   ├── deployment.md        #   構築・デプロイ・更新
+│   ├── monitoring.md        #   監視・Tailscale・通知
+│   └── recovery.md          #   障害復旧・バックアップ / リストア
 └── phase_specs/             # Phase 別の仕様書（各 Phase の実装依頼時に作成）
     ├── phase1.md
     ├── phase2.md
@@ -17,7 +21,7 @@ docs/
     └── phase5.md
 ```
 
-`phase_specs/` 以下は、各 Phase の実装を依頼する時点でユーザーが提供する要件定義を格納します。現時点ではまだ存在しません。
+`phase_specs/` 以下は、各 Phase の実装を依頼する時点でユーザーが提供する要件定義を格納します。現時点では `phase1.md` のみ存在します。
 
 ## 各ファイルの役割
 
@@ -25,6 +29,7 @@ docs/
 |---|---|---|
 | `phase_specs/phaseN.md` | Phase N の仕様の正本（ローカル SSOT） | ユーザー、またはユーザーの承認を得たエージェント |
 | `phase1_technical_design.md` | Phase 1 の公式資料調査、設計判断、実装契約 | ユーザーが調査・設計を依頼したエージェント |
+| `operations/*.md` | 運用手順。検証済みの範囲を明記する | 実装・運用を担当するエージェント |
 | `development_handoff.md` | 進捗・状態・次の作業の記録。仕様の正本ではない | 作業中のエージェント |
 
 ## 運用ルール

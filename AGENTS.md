@@ -53,25 +53,30 @@ User
 
 ## 3. プロジェクト構成と命名規則
 
-現状の構成（2026-10-09 時点で確認したもの）：
+現状の構成（2026-10-10 Phase 1 実装時点）：
 
 ```text
 .
 ├── AGENTS.md                  # 共通開発ルール（このファイル）
 ├── CLAUDE.md                  # Claude Code 入口（@AGENTS.md のみ）
-├── .gitignore
-├── README.md                  # 空
+├── README.md                  # 概要・クイックスタート・運用早見表
+├── .gitignore / .dockerignore
+├── .env.example               # 環境変数のひな形（実値の .env は Git 管理外）
 ├── pyproject.toml / uv.lock   # uv 管理、Python >= 3.12、プロジェクト名 research-autopilot
+├── prefect.yaml               # Prefect deployment 定義
 ├── src/
 │   └── research_autopilot/    # 唯一のパッケージ（entry point: research_autopilot:main）
-│       └── flows/             # 空
-├── tests/                     # 空
-├── data/                      # 空
-├── infra/                     # 空
+│       ├── flows/             # Prefect flow（Phase 1: smoke_test.py）
+│       ├── notifications/     # HTTP 通知 adapter と state hook
+│       └── idempotency.py     # 冪等な副作用
+├── infra/                     # compose.yaml / Dockerfile / automations/
+├── tests/                     # pytest
 └── docs/
     ├── README.md              # docs 運用ルール
     ├── development_handoff.md # 引き継ぎ記録
-    └── phase_specs/           # Phase 別仕様書（実装依頼時に追加）
+    ├── phase1_technical_design.md
+    ├── operations/            # deployment / monitoring / recovery
+    └── phase_specs/           # Phase 別仕様書（phase1.md）
 ```
 
 規則：
