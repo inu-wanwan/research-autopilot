@@ -1,0 +1,26 @@
+[project]
+name = "research-autopilot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "inu-wanwan", email = "rixy.takagi@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "prefect>=3.8.8",
+    "pydantic>=2.14.0",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+research-autopilot = "research_autopilot:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
