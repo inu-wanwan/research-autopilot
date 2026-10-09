@@ -40,6 +40,6 @@ def test_approval_form_flow_records_submission(tmp_path, monkeypatch):
 
     monkeypatch.setattr(flows_mod, "suspend_flow_run", lambda wait_for_input, timeout: Form())
     monkeypatch.setattr("research_autopilot.autopilot.factory.store_from_env", lambda: deps.store)
-    out = flows_mod.approval_confirm_flow.fn(request_id="req-1", spec_hash="h", title="t", details_markdown="d")
+    out = flows_mod.approval_confirm_flow(request_id="req-1", spec_hash="h", title="t", details_markdown="d")
     assert out["decision"] == "approve"
     assert deps.store.find(db.form_submissions, request_id="req-1")[0]["approver"] == "rikushi"
