@@ -144,6 +144,22 @@ def test_missing_sections_is_insufficient_spec(tmp_path):
     assert rec.decision.reasons[0].details["missing_sections"] == ["specification", "acceptance_criteria"]
 
 
+def test_placeholder_sections_are_insufficient_spec(tmp_path):
+    page = make_page(sections={"purpose": "Check the gate.", "specification": "意図的に未記入。手順は未確定。",
+                               "acceptance_criteria": "TBD"})
+    deps = make_deps(tmp_path, FakeNotion(page), FakeLinear(make_issue()), [], [])
+    rec = run(deps)
+    assert rec.decision.status is DecisionStatus.INSUFFICIENT_SPEC
+    assert rec.decision.reasons[0].details["placeholder_sections"] == ["specification", "acceptance_criteria"]
+    assert deps.planner.calls == []
+
+
+def test_long_section_mentioning_todo_is_not_placeholder():
+    from research_autopilot.tasks.gates import is_placeholder
+    assert not is_placeholder("Implement the solver. " * 10 + "TODO markers in code must be removed.")
+    assert is_placeholder("N/A")
+
+
 def test_no_linked_notion_page_is_insufficient_spec(tmp_path):
     deps = make_deps(tmp_path, FakeNotion(), FakeLinear(make_issue(notion_ids=())), [], [])
     assert run(deps).decision.status is DecisionStatus.INSUFFICIENT_SPEC

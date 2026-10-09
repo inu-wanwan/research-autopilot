@@ -82,14 +82,30 @@ def status_gates(issue: LinearIssue, page: NotionTask | None, settings: Settings
     return reasons
 
 
+# A short section containing one of these markers is a placeholder, not a spec.
+PLACEHOLDER_MARKERS = ("未記入", "未定", "記入予定", "tbd", "todo", "n/a", "to be determined")
+PLACEHOLDER_MAX_CHARS = 120
+
+
+def is_placeholder(text: str) -> bool:
+    t = text.strip().lower()
+    return len(t) <= PLACEHOLDER_MAX_CHARS and any(m in t for m in PLACEHOLDER_MARKERS)
+
+
 def spec_gates(spec: TaskSpec, settings: Settings) -> list[BlockedReason]:
     missing = [s for s in settings.required_sections if spec.section(s) is None]
-    if not missing:
+    unfilled = [s for s in settings.required_sections if s not in missing and is_placeholder(spec.section(s))]
+    if not missing and not unfilled:
         return []
+    parts = []
+    if missing:
+        parts.append("missing: " + ", ".join(_SECTION_LABELS[m] for m in missing))
+    if unfilled:
+        parts.append("placeholder only: " + ", ".join(_SECTION_LABELS[m] for m in unfilled))
     return [BlockedReason(
         code=BlockedCode.MISSING_SPEC,
-        message="Notion spec is missing required sections: " + ", ".join(_SECTION_LABELS[m] for m in missing),
-        details={"missing_sections": missing},
+        message="Notion spec is insufficient (" + "; ".join(parts) + ")",
+        details={"missing_sections": missing, "placeholder_sections": unfilled},
     )]
 
 
