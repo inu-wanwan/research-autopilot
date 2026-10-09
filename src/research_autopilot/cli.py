@@ -23,8 +23,10 @@ from research_autopilot.storage.db import Store
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Research Autopilot task planning CLI")
 runs_app = typer.Typer(no_args_is_help=True, help="Inspect plan-run history")
 db_app = typer.Typer(no_args_is_help=True, help="Database management")
+impl_app = typer.Typer(no_args_is_help=True, help="Inspect Phase 3 implementation runs")
 app.add_typer(runs_app, name="runs")
 app.add_typer(db_app, name="db")
+app.add_typer(impl_app, name="impl-runs")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 
@@ -74,6 +76,78 @@ def _print_decision(d: dict) -> None:
         u = d["linear_update"]
         typer.echo(f"linear: {u['action']} ({u.get('from_state')} -> {u.get('to_state')})")
     typer.echo(f"plan_run_id: {d['plan_run_id']}")
+
+
+IMPL_EXIT = {"completed": 0, "blocked": 2, "failed": 5, "interrupted": 4}
+
+
+@app.command()
+def implement(
+    task: str | None = typer.Option(None, "--task", help="Use the latest Phase 2 handoff of this task"),
+    handoff: str | None = typer.Option(None, "--handoff", help="Path to a Phase 2 handoff JSON"),
+    resume: str | None = typer.Option(None, "--resume", help="Resume an interrupted Phase 3 run by id"),
+    local: bool = typer.Option(False, "--local", help="Run without Prefect"),
+) -> None:
+    """Phase 3: implement an approved task (never merges or pushes)."""
+    if sum(x is not None for x in (task, handoff, resume)) != 1:
+        raise typer.BadParameter("specify exactly one of --task, --handoff, --resume")
+    if local:
+        from pathlib import Path
+
+        from research_autopilot.implementation.factory import build_impl_deps
+        from research_autopilot.implementation.flow import summary_markdown
+        from research_autopilot.implementation.orchestrator import implement as run_implement
+
+        m = run_implement(build_impl_deps(), task_id=task, handoff_path=Path(handoff) if handoff else None,
+                          resume_run_id=resume)
+        typer.echo(summary_markdown(m))
+        raise typer.Exit(IMPL_EXIT.get(m.state.value, 1))
+    from research_autopilot.implementation.flow import implement_task_flow
+
+    out = implement_task_flow(task_id=task, handoff_path=handoff, resume_run_id=resume)
+    typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+    raise typer.Exit(IMPL_EXIT.get(out["state"], 1))
+
+
+@app.command("repair")
+def repair_cmd(report: str = typer.Argument(..., help="Path to a Phase 4 FailureReport JSON"),
+               local: bool = typer.Option(False, "--local")) -> None:
+    """Phase 4 -> 3: repair a failed experiment commit within the approved scope."""
+    if local:
+        from pathlib import Path
+
+        from research_autopilot.implementation.factory import build_impl_deps
+        from research_autopilot.implementation.flow import summary_markdown
+        from research_autopilot.implementation.orchestrator import repair as run_repair
+
+        m = run_repair(build_impl_deps(), Path(report))
+        typer.echo(summary_markdown(m))
+        raise typer.Exit(IMPL_EXIT.get(m.state.value, 1))
+    from research_autopilot.implementation.flow import repair_task_flow
+
+    out = repair_task_flow(report_path=report)
+    typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+    raise typer.Exit(IMPL_EXIT.get(out["state"], 1))
+
+
+@impl_app.command("list")
+def impl_list(task: str | None = typer.Option(None, "--task"), limit: int = typer.Option(20, "--limit")) -> None:
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    for r in store.list_implementations(task, limit):
+        typer.echo(f"{r['created_at']:%Y-%m-%d %H:%M:%S} {r['task_id']:<10} {r['state']:<12} "
+                   f"{(r['implementation_commit'] or '-')[:12]:<12} parent={(r['parent_run_id'] or '-')[:8]} "
+                   f"{r['phase3_run_id']}")
+
+
+@impl_app.command("show")
+def impl_show(run_id: str) -> None:
+    store = Store(load_settings().resolved_database_url())
+    m = store.get_implementation(run_id)
+    if m is None:
+        typer.echo("not found", err=True)
+        raise typer.Exit(1)
+    typer.echo(m.model_dump_json(indent=2))
 
 
 @runs_app.command("list")

@@ -1,0 +1,13 @@
+# Repository registry for Phase 3 (copy to config/research_repos.toml; that file is git-ignored
+# because paths are machine-specific). Only repositories listed here can be implemented in.
+# Tasks select one via the Notion "Repository" section and restrict files via "Allowed files".
+
+[repositories.h2-test]
+path = "~/workspace/research-repos/h2-test"   # local clone (outside ResearchAutopilot)
+url = ""                                       # optional remote URL (recorded, never pushed to)
+base_branch = "main"
+protected_paths = ["data/validated/**", "results/**"]   # validated artifacts: never modified
+test_command = ["uv", "run", "pytest", "-q"]
+lint_command = ["uv", "run", "ruff", "check", "."]
+typecheck_command = ["uv", "run", "mypy", "."]
+check_timeout_seconds = 600

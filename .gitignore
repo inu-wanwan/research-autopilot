@@ -35,3 +35,6 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Phase 3 repository registry (machine-specific paths)
+config/research_repos.toml
