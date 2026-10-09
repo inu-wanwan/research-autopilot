@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 2 の事前設定（完了）。Phase 2 本体（Task Manager / Orchestrator）は未着手。Phase 1 は完了（AC-01〜10 すべて Passed）。
+Phase 2（Task Manager / Orchestrator）実装完了。MacBook のローカル Compose と実際の Notion / Linear / OpenAI で統合テスト済み。研究室サーバー（Eagle）への反映はまだ。
 
 ## Current Task
 
-Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限・接続確認
+Phase 2 の実装・テスト・統合テスト
 
 ## Status
 
-完了。接続確認はすべて PASS（Notion、Linear の読み取りと書き込み、OpenAI）。Phase 2 の実装を始められる状態。本体の実装は別の指示を待つ。
+完了。AC は下表のとおり。Eagle での反映（worker の作り直しが必要）が残っている。
 
 ## Last Updated
 
@@ -30,12 +30,33 @@ Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限�
 
 ## Git Branch / Commit
 
-- Branch: `phase2/prerequisites`（`main` @ `b5eb9be` から分岐。未 merge・未 push）
-  - `0e3d0e6` phase2: add placeholders for Notion / Linear / OpenAI settings in .env.example
-  - この記録を含む docs の commit（hash は `git log` を参照）
-- `main` は `origin/main` より1 commit 先行（`b5eb9be`、サーバー検証の記録。未 push）
+- `phase2/task-manager` を `main` に merge し、push 済み（ユーザー許可あり）。主な commit：
+  - `140a1ef` Phase 2 仕様書
+  - `a611732` 実装（Task Manager、agents、orchestrator、CLI、テスト）
+  - `ae61351` compose / prefect.yaml の配線とドキュメント
+  - `1f20b04` プレースホルダーだけの仕様を不足と判定する修正
+  - この handoff の commit
 
 ## Completed Work
+
+### Phase 2 実装（2026-10-10 / Claude Code）
+
+- 仕様書は `docs/phase_specs/phase2.md`。ユーザーと合意した事項：
+  - 承認：Linear Todo かつ Notion Pending=false
+  - スコープ：ラベル `autopilot`
+  - 依存：Linear の blocked-by
+  - モデル：Planner `gpt-5.6-terra`、Reviewer `gpt-5.6-sol`
+  - Eagle：Windows + WSL2
+- コード（`src/research_autopilot/`）
+  - `tasks/`：Notion connector（読み取り専用、API 2025-09-03、見出しを正規の項目に対応づける）、Linear connector（GraphQL、限定的な再試行）、決定論的なゲート、TaskManager（Notion と Linear の対応確認、`--next` の選択）
+  - `planning/`：Agents SDK の Planner / Reviewer（Pydantic の strict 出力、エラーを3種類に分類）、再計画ループ（毎回レビュー、最大2回）、コスト推定（単価が分からなければ null）
+  - `orchestrator/`：`core.plan_task`（リース、最後のゲート再確認、apply 時だけ Linear を In Progress にする。started 以外の state へは更新しない）、Prefect flow `plan-task`（markdown artifact を作る）
+  - `storage/`：SQLAlchemy の `plan_runs` / `task_leases` / `linear_status_audit`、JSON 記録、Phase 3 用の handoff JSON
+  - `cli.py`：`research-agent plan|runs|db`
+  - `models.py`：TaskSpec、ExecutionPlan、ReviewResult、WorkflowDecision、BlockedReason など
+- インフラ：worker に Phase 2 の環境変数と `RA_DATABASE_URL`（同じ PostgreSQL 上の別 DB `research_autopilot`）を追加。`prefect.yaml` に deployment `plan-task/manual` を追加（既定は dry_run）。
+- ドキュメント：`docs/operations/phase2_planning.md`、README、AGENTS、docs/README。
+- 依存の追加：`openai-agents`、`sqlalchemy`、`psycopg[binary]`。
 
 ### Phase 2 事前設定（2026-10-10 / Claude Code + ユーザー）
 
@@ -115,10 +136,16 @@ Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限�
 
 ## Remaining Work
 
-- Phase 2 本体の実装（別の指示を待つ）。着手時に `docs/phase_specs/phase2.md` を作る。
-- 研究室サーバーの `.env` に Phase 2 の5変数を設定し、`infra/compose.yaml` の `prefect-worker.environment` に渡す設定を追加する（Phase 2 のコードが使い始める時点で。worker の再作成はユーザーの承認が必要）。
-- Phase 1 の残り：本番値での zombie 検出の実測、ntfy の設定、バックアップの保存先と定期実行、サーバーの OS / CPU の記録、smoke-success のスケジュールを有効にするかの判断。
-- Phase 2 で決めること：使うモデル、統合テスト用の Notion / Linear sandbox、OpenAI の予算上限、INU-270 の扱い。
+- **Eagle への反映**（`phase2_planning.md` §5）：
+  - サーバーの `.env` に Phase 2 の変数を設定する
+  - `createdb research_autopilot` を実行する
+  - worker イメージを作り直し、worker を再作成する（**実行中の run がないことを確認し、ユーザーの承認を得てから**）
+  - `research-agent db init`、MacBook から `prefect deploy --all`
+  - Eagle の worker で plan-task の check-only を確認する
+- テストデータの後片付け（ユーザー判断）：INU-273 は apply テストで In Progress になっている（Notion のテストページも Mirror で同じになる）。INU-271 / 272 / 273 と Notion のテストページ、ラベル `autopilot` を残すかどうか。
+- `RA_MODEL_PRICING` に gpt-5.6-terra / sol の単価を設定する（未設定のあいだ、推定料金は n/a になる）。
+- Phase 1 の残り：本番値での zombie 検出の実測、ntfy、バックアップの保存先と定期実行。
+- 研究タスクを Autopilot の対象にするには、Linear に `autopilot` ラベルを付け、Notion の本文に Purpose / Implementation / Acceptance criteria を書く必要がある（既存タスクは見出しがばらばらで、多くが insufficient_spec になる）。
 
 ## Changed Files
 
@@ -127,24 +154,39 @@ Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限�
 
 ## Tests and Verification
 
-すべて 2026-10-10 に MacBook（arm64、Docker 29.8.1）で実行した。Compose は project 名 `ra-verify` でローカルに起動し、`.env` はローカル用の乱数で作った（Git 管理外）。
+### Phase 2（2026-10-10、MacBook）
 
-| コマンド / 操作 | 結果 |
+| 確認 | 結果 |
 |---|---|
-| `uv run pytest` | 25 passed |
-| `uv run python -m research_autopilot.flows.smoke_test success/failure/timeout`（一時的な SQLite サーバー） | Completed / Failed（3回試行）/ TimedOut |
-| `docker compose ... config -q`、`build`、`up -d` | 3サービスとも healthy |
-| `lsof -iTCP:4200` / `:5432`、LAN IP からの curl | 4200 は 127.0.0.1 のみ、5432 は host に出ていない、LAN IP からは到達不可 |
-| `GET /api/admin/version`（認証なし / 誤り / 正しい値）、`/api/health` | 401 / 401 / 200、health は 200 |
-| Mac から `prefect deploy --all --no-prompt` → `deployment run --watch` | 登録成功。worker が実行し、success は Completed、retry-check は Failed（ログに Retry 1/2・2/2・exhausted）、timeout-check は TimedOut |
-| `deployment inspect` | version=GIT_SHA、schedule は cron `0 9 * * *` Asia/Tokyo で `active: False`、pull step は `/opt/research-autopilot` |
-| 通知（host 上のモック HTTP 受信器） | completed / failed（error: TransientError）/ approval_required が届き、Bearer token が一致、本文に例外メッセージなし |
-| approval-demo | Paused → `resume_flow_run` → Completed（completed 通知あり） |
-| `restart prefect-server prefect-worker`、`restart postgres`、`down` → `up -d` | いずれも run 数・状態の内訳が一致（6 runs） |
-| worker を `docker kill`（heartbeat 30秒、一時的な 90 秒 automation） | 約100秒後に run が Running → Crashed。コンテナは exited のまま（restart policy の対象外） |
-| コンテナ内で worker プロセスを SIGKILL | 自動で再起動（RestartCount=1）、healthy に戻り、新しい run も Completed |
-| `pg_dump -Fc` → 使い捨てコンテナへ `pg_restore --exit-on-error` → 稼働スタックへ in-place 復元 | どちらも 8 runs / 115 logs / 5 deployments で一致。復元後の新しい run も Completed |
-| `git diff --check`、秘密情報らしき文字列の grep | 問題なし |
+| `uv run pytest` | **116 passed**（Phase 1 の 25 件、Phase 2 の 91 件） |
+| 実データでの読み取り（INU-265 / 261 / 239 / 243） | ゲートが期待どおりに判定した（スコープ外、In Progress、Backlog と Pending、見出しの不足） |
+| ローカル Compose の worker：DB `research_autopilot` 作成、`db init`、deploy、`plan-task` の check-only（INU-265） | blocked。PostgreSQL に記録された |
+| 統合テスト INU-271（仕様不足） | insufficient_spec（プレースホルダーを検出、LLM 呼び出しなし） |
+| 統合テスト INU-272（Pending） | blocked / not_approved（LLM 呼び出しなし） |
+| 統合テスト INU-273 の dry-run（worker 上） | ready。Planner 21秒 / Reviewer 7秒で approved、入力 4,639 / 出力 2,625 トークン、handoff JSON を作成、Linear は変更なし |
+| `--next` の check-only | 271 と 272 を飛ばして INU-273 を選んだ |
+| INU-273 の apply（ユーザー承認あり、Mac の CLI → Prefect） | ready、Linear が Todo → In Progress（updated）、監査ログ1行 |
+| INU-273 の apply 2回目 | blocked / invalid_status。書き込みなし（監査ログは1行のまま） |
+
+まだ確認していないこと：Eagle での動作、ntfy への通知、単価を設定したうえでの料金推定（単体テストでは確認済み）、Reviewer の revision_required → 再計画の実 LLM での発生（単体テストでは確認済み）。
+
+### Phase 2 Acceptance Criteria
+
+| # | 条件 | 判定 |
+|---|---|---|
+| 1 | 実際の Notion / Linear から取得できる | Passed |
+| 2 | 着手できるタスクを決定論的に選べる | Passed（`--next`） |
+| 3 | Planner が構造化された計画を作る | Passed |
+| 4 | Reviewer がすべての計画を検証する | Passed（実行時と単体テスト） |
+| 5 | 最大2回まで再計画できる | Passed（単体テスト。実 LLM では再計画が起きなかった） |
+| 6 | 4状態を区別できる | Passed（ready / blocked / insufficient_spec は実データ、transient_failure は単体テスト） |
+| 7 | 許可済みのタスクを In Progress にできる | Passed（INU-273） |
+| 8 | 計画の完了だけで Done にしない | Passed（state type が started 以外への更新を拒否。テストあり） |
+| 9 | 重複実行を防げる | Passed（リース、apply の2回目が blocked） |
+| 10 | 履歴、根拠、トークン数を確認できる | Passed（`runs list/show`、PostgreSQL、JSON） |
+| 11 | Prefect UI で履歴を確認できる | Passed（ローカル Compose の UI / API に flow run と artifact がある。Eagle の UI では未確認） |
+| 12 | 単体テストと安全な統合テストが成功する | Passed |
+| 13 | Phase 3 用の構造化 artifact が作られる | Passed（`handoffs/<task>/<plan_id>.json`、schema_version 1） |
 
 ### 研究室サーバーでの確認（2026-10-10、ユーザー実施・報告）
 
@@ -185,7 +227,6 @@ Phase 2 の事前設定：Notion / Linear / OpenAI API の認証情報・権限�
 
 ## Exact Next Actions
 
-1. ユーザー：`phase2/prerequisites` と `main`（未 push の `b5eb9be`）の merge と push を判断する。
-2. ユーザー：OpenAI の Limits で予算とアラートを設定する（推奨）。Notion integration の capabilities が Read content だけになっているかを確認する（推奨）。
-3. ユーザー：Phase 2 本体の実装指示を出す。
-4. エージェント：Phase 2 に着手するときは、まず Notion の Phase 2 ページ（`3f469893cf8f817f9f7ef768fd99c9d3`）と提示された要件から `docs/phase_specs/phase2.md` を作り、`AGENTS.md` §4 の手順で進める。接続情報は `docs/operations/phase2_prerequisites.md` を参照する。
+1. ユーザー：Eagle への反映を承認する。承認後、`docs/operations/phase2_planning.md` §5 の手順で反映し、check-only で動作を確認する。
+2. ユーザー：テスト用の Issue と Notion ページの扱い、モデル単価（`RA_MODEL_PRICING`）を決める。
+3. 次の Phase：Phase 3 の要件定義を受け取り、`docs/phase_specs/phase3.md` を作ってから着手する。Phase 3 の入力は `handoffs/<task>/<plan_id>.json`（`ExecutionHandoff`）。
