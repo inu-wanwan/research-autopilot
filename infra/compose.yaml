@@ -83,6 +83,14 @@ services:
       RA_STATE_DIR: /var/lib/research-autopilot/state
       # Flow-run heartbeat interval; must stay consistent with the zombie automation window.
       PREFECT_FLOWS_HEARTBEAT_FREQUENCY: ${PREFECT_FLOWS_HEARTBEAT_FREQUENCY:-180}
+      RA_NOTIFICATION_BACKEND: ${RA_NOTIFICATION_BACKEND:-discord}
+      RA_DISCORD_BOT_TOKEN: ${RA_DISCORD_BOT_TOKEN:-}
+      RA_DISCORD_GUILD_ID: ${RA_DISCORD_GUILD_ID:-}
+      RA_DISCORD_AUTHORIZED_USER_IDS: ${RA_DISCORD_AUTHORIZED_USER_IDS:-}
+      RA_DISCORD_APPROVAL_CHANNEL_ID: ${RA_DISCORD_APPROVAL_CHANNEL_ID:-}
+      RA_DISCORD_RESULTS_CHANNEL_ID: ${RA_DISCORD_RESULTS_CHANNEL_ID:-}
+      RA_DISCORD_ERRORS_CHANNEL_ID: ${RA_DISCORD_ERRORS_CHANNEL_ID:-}
+      RA_DISCORD_LOGS_CHANNEL_ID: ${RA_DISCORD_LOGS_CHANNEL_ID:-}
       RA_NOTIFY_URL: ${RA_NOTIFY_URL:-}
       RA_NOTIFY_TOPIC: ${RA_NOTIFY_TOPIC:-}
       RA_NOTIFY_TOKEN: ${RA_NOTIFY_TOKEN:-}
@@ -115,6 +123,28 @@ services:
       start_period: 30s
     logging: *logging
     # Intentionally no docker.sock, no host mounts, not privileged.
+
+  discord-bot:
+    image: research-autopilot-worker:${GIT_SHA:-dev}
+    restart: unless-stopped
+    command: ["research-agent", "discord", "run"]
+    environment:
+      RA_STATE_DIR: /var/lib/research-autopilot/state
+      RA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${RA_DB_NAME:-research_autopilot}
+      RA_NOTIFICATION_BACKEND: discord
+      RA_DISCORD_BOT_TOKEN: ${RA_DISCORD_BOT_TOKEN:?set in .env}
+      RA_DISCORD_GUILD_ID: ${RA_DISCORD_GUILD_ID:?set in .env}
+      RA_DISCORD_AUTHORIZED_USER_IDS: ${RA_DISCORD_AUTHORIZED_USER_IDS:?set in .env}
+      RA_DISCORD_APPROVAL_CHANNEL_ID: ${RA_DISCORD_APPROVAL_CHANNEL_ID:?set in .env}
+      RA_DISCORD_RESULTS_CHANNEL_ID: ${RA_DISCORD_RESULTS_CHANNEL_ID:?set in .env}
+      RA_DISCORD_ERRORS_CHANNEL_ID: ${RA_DISCORD_ERRORS_CHANNEL_ID:?set in .env}
+      RA_DISCORD_LOGS_CHANNEL_ID: ${RA_DISCORD_LOGS_CHANNEL_ID:?set in .env}
+    volumes:
+      - worker-state:/var/lib/research-autopilot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
 
 volumes:
   pgdata:

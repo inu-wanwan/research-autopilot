@@ -127,6 +127,8 @@ approval_requests = _record_table("autopilot_approval_requests", "request_id",
 approval_decisions = _record_table("autopilot_approval_decisions", "request_id")  # one decision per request
 form_submissions = _record_table("autopilot_form_submissions", "submission_id",
                                  sa.Column("request_id", sa.String(64), index=True, nullable=False))
+discord_interactions = _record_table("autopilot_discord_interactions", "interaction_id",
+                                     sa.Column("request_id", sa.String(64), index=True, unique=True, nullable=False))
 outbox = _record_table("autopilot_outbox", "key", sa.Column("state", sa.String(24), index=True, nullable=False))
 workflow_runs = _record_table("autopilot_workflow_runs", "run_id",
                               sa.Column("task_id", sa.String(64), index=True, nullable=False),

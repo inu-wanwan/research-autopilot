@@ -7,13 +7,27 @@ notifications cannot leak secrets.
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from hashlib import sha256
+
+from pydantic import BaseModel, Field
 
 
 class EventKind(StrEnum):
+    # Legacy Prefect hook events. Routing also considers the flow name.
     COMPLETED = "completed"
     FAILED = "failed"
     APPROVAL_REQUIRED = "approval_required"
+    EXPERIMENT_COMPLETED = "experiment_completed"
+    ANALYSIS_COMPLETED = "analysis_completed"
+    TASK_COMPLETED = "task_completed"
+    UNRECOVERABLE_ERROR = "unrecoverable_error"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    WORKER_FAILURE = "worker_failure"
+    TASK_STARTED = "task_started"
+    PHASE_TRANSITION = "phase_transition"
+    AUTOMATIC_RETRY = "automatic_retry"
+    REPAIR_SUCCEEDED = "repair_succeeded"
+    PROPOSAL_GENERATED = "proposal_generated"
 
 
 class NotificationEvent(BaseModel):
@@ -26,7 +40,9 @@ class NotificationEvent(BaseModel):
     error_type: str | None = None
     ui_url: str | None = None
     # Extra human-readable lines (links, what changes, budget). Callers must not put secrets here.
-    details: list[str] = []
+    details: list[str] = Field(default_factory=list)
+    dedupe_key: str | None = None
+    approval_request_id: str | None = None
 
     def title(self) -> str:
         return f"[Research Autopilot] {self.flow_name}: {self.kind.value}"
@@ -43,3 +59,11 @@ class NotificationEvent(BaseModel):
             lines.append(self.ui_url)
         lines += self.details
         return "\n".join(lines)
+
+    def stable_dedupe_key(self) -> str:
+        """Return a restart-stable key without putting secrets in the key."""
+        if self.dedupe_key:
+            return self.dedupe_key
+        raw = "|".join((self.kind.value, self.flow_name, self.flow_run_id or "",
+                        self.flow_run_name or "", self.state_name or ""))
+        return f"event:{sha256(raw.encode()).hexdigest()}"

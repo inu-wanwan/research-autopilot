@@ -1,14 +1,10 @@
-"""Approval controller: request -> (Linear status signal + Prefect form) -> verified decision.
+"""Approval controller: request -> authenticated human input -> verified decision.
 
-A decision is accepted only if ALL of these hold:
-- a form submission exists for this request id (channel: authenticated Prefect UI);
-- the submission's spec hash equals the request's and the task's *current* spec hash (else stale);
-- the request is still pending and not expired;
-- the Linear issue is in the state matching the decision (Approved / Revision Requested / Canceled);
-- that state was entered after Autopilot set "Awaiting Approval", by a non-bot actor, and Autopilot
-  never wrote that state itself.
-Linear alone cannot prove *who* changed the status (a personal API key acts as the user), so the
-form is the authoritative confirmation; the Linear status is the visible signal.
+Discord mode accepts only persisted interactions that already passed the guild,
+channel and user allowlist checks.  The controller remains authoritative: it
+re-checks pending status, expiry and the current Notion spec hash before writing
+a decision.  Legacy Linear and Linear+Prefect-form modes remain available only
+for migration compatibility.
 """
 
 from collections.abc import Callable
@@ -22,6 +18,7 @@ from research_autopilot.autopilot.models import (
     ApprovalKind,
     ApprovalRequest,
     ApprovalStatus,
+    DiscordSubmission,
     FormSubmission,
 )
 from research_autopilot.models import utcnow
@@ -47,12 +44,13 @@ class CheckResult:
 class ApprovalController:
     """``mode="linear"``: the Linear status change alone decides, verified by the actor's user id
     (``approver_ids``), non-bot actor, ordering after the request, no own write of that state, unchanged
-    spec hash and expiry. ``mode="linear+form"`` additionally requires the Prefect form submission."""
+    spec hash and expiry. ``mode="linear+form"`` additionally requires the Prefect form submission.
+    ``mode="discord"`` consumes an authenticated Discord interaction and never treats Linear as proof."""
 
     def __init__(self, store: Store, linear_ops: LinearOps, channel: ConfirmationChannel | None,
                  notify: Callable[[ApprovalRequest, str], None] = lambda r, m: None, mode: str = "linear+form",
                  approver_ids: set[str] | None = None) -> None:
-        if mode not in ("linear", "linear+form"):
+        if mode not in ("linear", "linear+form", "discord"):
             raise ValueError(f"unknown approval mode {mode}")
         if mode == "linear" and not approver_ids:
             raise ValueError("linear approval mode requires approver Linear user ids (RA_APPROVER_LINEAR_USER_IDS)")
@@ -74,6 +72,8 @@ class ApprovalController:
             if r.get("payload", {}).get("_dedupe") == key and r["status"] == ApprovalStatus.PENDING.value:
                 return ApprovalRequest.model_validate(r)
         missing = self.ops.missing_states(issue.team_id)
+        if self.mode == "discord":
+            missing = [state for state in missing if state != "Approved"]
         if missing:
             raise RuntimeError(f"Linear workflow states missing: {missing} (a human must create them)")
         req = ApprovalRequest(kind=kind, task_id=issue.identifier, root_task_id=root_task_id, spec_hash=spec_hash,
@@ -104,6 +104,16 @@ class ApprovalController:
         if current_spec_hash != req.spec_hash:
             return self._close(req, ApprovalStatus.STALE, "task spec changed after the request; a new request is needed")
         decision_state = HUMAN_DECISION_STATES.get(issue.state_name)
+        if self.mode == "discord":
+            subs = [DiscordSubmission.model_validate(s)
+                    for s in self.store.find(db.discord_interactions, request_id=req.request_id)]
+            if not subs:
+                return CheckResult(ApprovalStatus.PENDING, None, "waiting for an authorized Discord interaction")
+            sub = subs[-1]
+            if sub.spec_hash != req.spec_hash:
+                return CheckResult(ApprovalStatus.PENDING, None,
+                                   "Discord interaction refers to a different spec version; ignored")
+            return self._decide(req, sub.decision, f"discord:{sub.user_id}", "discord", issue.state_name, sub.comment)
         if self.mode == "linear":
             if not decision_state:
                 return CheckResult(ApprovalStatus.PENDING, None, "waiting for a human Linear status change")
@@ -132,7 +142,12 @@ class ApprovalController:
         decision = ApprovalDecision(request_id=req.request_id, decision=decision_value, actor=actor, channel=channel,
                                     linear_state=linear_state, spec_hash=req.spec_hash, comment=comment)
         if not self.store.insert_new(db.approval_decisions, req.request_id, decision.model_dump(mode="json")):
-            return CheckResult(ApprovalStatus.PENDING, None, "decision already recorded")
+            existing = ApprovalDecision.model_validate(self.store.get(db.approval_decisions, req.request_id))
+            status = {"approve": ApprovalStatus.APPROVED, "reject": ApprovalStatus.REJECTED,
+                      "revise": ApprovalStatus.REVISION_REQUESTED}[existing.decision]
+            req.status = status
+            self._save(req)
+            return CheckResult(status, existing, "decision already recorded")
         status = {"approve": ApprovalStatus.APPROVED, "reject": ApprovalStatus.REJECTED,
                   "revise": ApprovalStatus.REVISION_REQUESTED}[decision_value]
         req.status = status

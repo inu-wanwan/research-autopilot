@@ -54,6 +54,25 @@ class LinearOps:
         self.linear.set_state(issue.id, state_id)
         issue.state_name, issue.state_type = name, state_type
 
+    def reflect_verified_decision(self, issue, name: str, reason: str) -> None:
+        """Reflect a controller-verified Discord rejection/revision in Linear.
+
+        This is deliberately separate from ``set_state`` so ordinary Autopilot
+        code still cannot manufacture a human approval state.
+        """
+        if name not in {REVISION, REJECTED}:
+            raise WriteRefused(f"not a reflectable human decision state: {name!r}")
+        self._guard(issue)
+        if issue.state_name == name:
+            return
+        states = self.linear.team_states(issue.team_id)
+        if name not in states:
+            raise WriteRefused(f"Linear workflow state {name!r} does not exist")
+        state_id, state_type = states[name]
+        self.store.record_linear_write(issue.identifier, name, reason)
+        self.linear.set_state(issue.id, state_id)
+        issue.state_name, issue.state_type = name, state_type
+
     def comment(self, issue, body: str) -> str:
         self._guard(issue)
         return self.linear.create_comment(issue.id, body)

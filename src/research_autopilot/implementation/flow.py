@@ -35,6 +35,10 @@ def implement_task_flow(task_id: str | None = None, handoff_path: str | None = N
 def repair_task_flow(report_path: str) -> dict:
     deps = build_impl_deps()
     m = repair(deps, Path(report_path), flow_run_id=_flow_run_id())
+    if m.state is RunState.COMPLETED:
+        safe_send(NotificationEvent(kind=EventKind.REPAIR_SUCCEEDED, flow_name="repair-task",
+                                    flow_run_name=m.task_id, flow_run_id=m.flow_run_id,
+                                    state_name=m.state.value, details=[f"Phase 3 run: {m.phase3_run_id}"]))
     return _publish(m)
 
 

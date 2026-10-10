@@ -12,6 +12,7 @@ By default ``plan`` runs as the Prefect flow ``plan-task`` (history appears in t
 Prefect UI of the configured PREFECT_API_URL). ``--local`` skips Prefect.
 """
 
+import asyncio
 import json
 import sys
 
@@ -33,6 +34,8 @@ exp_app = typer.Typer(no_args_is_help=True, help="Phase 4 experiments")
 app.add_typer(exp_app, name="experiment")
 ap_app = typer.Typer(no_args_is_help=True, help="Phase 5 autonomous workflow")
 app.add_typer(ap_app, name="autopilot")
+discord_app = typer.Typer(no_args_is_help=True, help="Discord notifications and approval UI")
+app.add_typer(discord_app, name="discord")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 
@@ -263,6 +266,26 @@ def autopilot_status() -> None:
     from research_autopilot.autopilot.factory import build_autopilot_deps
 
     typer.echo(json.dumps(status_report(build_autopilot_deps(dry_run=True)), ensure_ascii=False, indent=2, default=str))
+
+
+@discord_app.command("run")
+def discord_run() -> None:
+    """Run the reconnecting Discord Gateway consumer and durable notification sender."""
+    from research_autopilot.notifications.discord import load_discord_settings, run_gateway
+
+    settings = load_discord_settings()
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    run_gateway(store, settings)
+
+
+@discord_app.command("check")
+def discord_check(send_test: bool = typer.Option(False, "--send-test", help="Post a labelled test embed to all channels")) -> None:
+    """Validate token, guild and channel access without starting the Gateway loop."""
+    from research_autopilot.notifications.discord import connection_check, load_discord_settings
+
+    checked = asyncio.run(connection_check(load_discord_settings(), send_test=send_test))
+    typer.echo("Discord configuration OK: " + ", ".join(checked))
 
 
 @ap_app.command("cancel")

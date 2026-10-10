@@ -28,6 +28,14 @@ def run_experiment_flow(phase3_run_ids: list[str] | None = None, resume_run_id: 
     if m.state is ExperimentState.BLOCKED:
         safe_send(NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="run-experiment", flow_run_name=m.task_id,
                                     flow_run_id=m.flow_run_id, state_name="blocked"))
+    elif m.state is ExperimentState.COMPLETED:
+        safe_send(NotificationEvent(kind=EventKind.EXPERIMENT_COMPLETED, flow_name="run-experiment",
+                                    flow_run_name=m.task_id, flow_run_id=m.flow_run_id, state_name=m.state.value,
+                                    details=[f"Experiment run: {m.experiment_run_id}"]))
+        if m.analysis is not None:
+            safe_send(NotificationEvent(kind=EventKind.ANALYSIS_COMPLETED, flow_name="run-experiment",
+                                        flow_run_name=m.task_id, flow_run_id=m.flow_run_id, state_name=m.state.value,
+                                        details=[f"Outcome: {m.analysis.hypothesis_evaluation}"]))
     create_markdown_artifact(key="exp-" + re.sub(r"[^a-z0-9-]", "-", m.task_id.lower()), markdown=summary_markdown(m),
                              description=f"Phase 4 run for {m.task_id}")
     return {"experiment_run_id": m.experiment_run_id, "state": m.state.value, "block_reason": m.block_reason,

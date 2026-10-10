@@ -17,6 +17,7 @@ from research_autopilot.autopilot.completion import assess, review_payload
 from research_autopilot.autopilot.linear_ops import LinearOps, WriteRefused
 from research_autopilot.autopilot.models import (
     ApprovalKind,
+    ApprovalDecision,
     ApprovalRequest,
     ApprovalStatus,
     Budget,
@@ -36,7 +37,7 @@ from research_autopilot.implementation.experiment import spec_lines
 from research_autopilot.implementation.models import RunState
 from research_autopilot.implementation.orchestrator import ImplDeps, implement
 from research_autopilot.models import DecisionStatus, utcnow
-from research_autopilot.notifications import safe_send
+from research_autopilot.notifications import notify_once
 from research_autopilot.notifications.events import EventKind, NotificationEvent
 from research_autopilot.orchestrator.core import Deps as PlanDeps
 from research_autopilot.orchestrator.core import plan_task
@@ -135,6 +136,8 @@ def _new_run(deps: AutopilotDeps, task_id: str) -> WorkflowRun:
                       parent_task_id=origin.get("parent_task_id") if origin else None)
     run.event("discovered", f"{task_id} (root {run.root_task_id}, depth {run.chain_depth})")
     _save(deps, run)
+    _notify(deps, run, EventKind.TASK_STARTED, f"started:{run.run_id}",
+            [f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
     return run
 
 
@@ -172,10 +175,19 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
             if run.attempts >= deps.settings.max_stage_attempts:
                 run.stage = WorkflowStage.DEAD_LETTER
                 run.blocked_reason = f"dead-lettered after {run.attempts} failures in {before.value}: {exc}"
-                _notify(deps, run, EventKind.FAILED, f"dead-letter:{run.run_id}", [run.blocked_reason])
+                _notify(deps, run, EventKind.UNRECOVERABLE_ERROR, f"dead-letter:{run.run_id}", [run.blocked_reason])
+            else:
+                _notify(deps, run, EventKind.AUTOMATIC_RETRY,
+                        f"retry:{run.run_id}:{before.value}:{run.attempts}",
+                        [f"Stage: {before.value}", f"Attempt: {run.attempts}/{deps.settings.max_stage_attempts}",
+                         f"Error type: {type(exc).__name__}"])
             _save(deps, run)
             break
         _save(deps, run)
+        if run.stage != before:
+            _notify(deps, run, EventKind.PHASE_TRANSITION,
+                    f"transition:{run.run_id}:{before.value}:{run.stage.value}",
+                    [f"{before.value} → {run.stage.value}"])
         if run.stage == before or run.stage in TERMINAL or run.stage in WAITING or run.stage is WorkflowStage.BLOCKED:
             break
     return run
@@ -185,7 +197,7 @@ def _block(deps: AutopilotDeps, run: WorkflowRun, reason: str) -> None:
     run.stage = WorkflowStage.BLOCKED
     run.blocked_reason = reason
     run.event("blocked", reason)
-    _notify(deps, run, EventKind.FAILED, f"blocked:{run.run_id}:{reason[:80]}", [reason])
+    _notify(deps, run, EventKind.UNRECOVERABLE_ERROR, f"blocked:{run.run_id}:{reason[:80]}", [reason])
 
 
 def _load_spec(deps: AutopilotDeps, task_id: str):
@@ -261,6 +273,10 @@ def _budget_gate(deps: AutopilotDeps, run: WorkflowRun, auth: ResearchAuthorizat
     problems = policy.evaluate_budget(auth, u.api_usd, u.cpu_hours, u.unknown_api_cost_calls)
     if not problems:
         return True
+    _notify(deps, run, EventKind.BUDGET_EXCEEDED, f"budget:{run.run_id}:{run.stage.value}",
+            [f"API: ${u.api_usd:.2f} / ${auth.budget.api_usd:.2f}",
+             f"Compute: {u.cpu_hours:.2f} / {auth.budget.compute_cpu_hours:g} CPU-h",
+             *problems[:3]])
     issue = deps.linear.get_issue(run.task_id)
     req = deps.approvals.request(kind=ApprovalKind.BUDGET, issue=issue, root_task_id=run.root_task_id,
                                  spec_hash=_spec_hash_of(_load_spec(deps, run.task_id).spec),
@@ -321,6 +337,8 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
     if m.state is ExperimentState.COMPLETED:
         run.stage = WorkflowStage.PROPOSING
         run.event("experimented", f"experiment {m.experiment_run_id[:8]} validated; {len(m.reviewed_proposals)} proposal(s)")
+        _notify(deps, run, EventKind.EXPERIMENT_COMPLETED, f"experiment:{m.experiment_run_id}",
+                [f"Experiment run: {m.experiment_run_id}", f"Validated proposals: {len(m.reviewed_proposals)}"])
     else:
         _block(deps, run, f"Phase 4 {m.state.value}: {m.block_reason}")
 
@@ -369,6 +387,8 @@ def _propose(deps: AutopilotDeps, run: WorkflowRun) -> None:
         item = deps.outbox.process(item) if item.state is not OutboxState.DONE else item
         if item.state is not OutboxState.DONE:
             raise RuntimeError(f"outbox {item.key} not completed: {item.last_error}")
+        _notify(deps, run, EventKind.PROPOSAL_GENERATED, f"proposal:{pid}",
+                [f"Proposal: {d.title}", f"Policy: {decision.outcome}", *decision.reasons[:3]])
         if decision.outcome == "human":
             child = deps.linear.get_issue(item.linear_identifier)
             child_spec = _load_spec(deps, item.linear_identifier).spec
@@ -410,6 +430,9 @@ def _proposal_hash(tp: ResearchTaskProposal) -> str:
 
 def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     exp = deps.store.get_experiment(run.experiment_run_ids[-1])
+    if exp.analysis is not None:
+        _notify(deps, run, EventKind.ANALYSIS_COMPLETED, f"analysis:{exp.experiment_run_id}",
+                [f"Experiment run: {exp.experiment_run_id}", f"Outcome: {exp.analysis.hypothesis_evaluation}"])
     bundle = _load_spec(deps, run.task_id)
     acceptance = spec_lines(bundle.spec.acceptance_criteria)
     impl = deps.store.get_implementation(run.phase3_run_ids[-1])
@@ -459,7 +482,7 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     deps.ops.set_state(deps.linear.get_issue(run.task_id), "Done", f"completion {exp.experiment_run_id}")
     run.stage = WorkflowStage.DONE
     run.event("done", f"hypothesis {a.hypothesis_outcome}; " + "; ".join(a.reasons))
-    _notify(deps, run, EventKind.COMPLETED, f"done:{run.run_id}",
+    _notify(deps, run, EventKind.TASK_COMPLETED, f"done:{run.run_id}",
             [f"Notes: {deps.notion_writer.page_url(notes.notion_page_id)}", f"Linear: {links['linear']}",
              f"Result: {a.hypothesis_outcome}; " + (exp.analysis.summary[:200] if exp.analysis else "")])
 
@@ -475,11 +498,12 @@ def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
     result = deps.approvals.check(req, issue, history, current)
     if result.decision is None:
         return (req.request_id[:8], result.status.value, result.note)
-    _apply_decision(deps, req, result.decision.decision, result.decision.actor, issue)
+    _apply_decision(deps, req, result.decision, issue)
     return (req.request_id[:8], result.status.value, result.note)
 
 
-def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, decision: str, actor: str, issue) -> None:
+def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: ApprovalDecision, issue) -> None:
+    decision, actor = approval.decision, approval.actor
     run = next((r for r in _runs(deps) if r.waiting_for == req.request_id), None)
     if req.kind is ApprovalKind.PROPOSAL:
         if decision == "approve":
@@ -487,7 +511,10 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, decision: str, ac
             if page:
                 deps.notion_writer.set_task_links(page, pending=False)  # Phase 2 approval gate: Pending=false
             deps.ops.set_state(issue, "Todo", f"proposal approved ({req.request_id[:8]}) by {actor}")
-        return  # rejected / revision: the issue stays in the human-chosen state
+        if approval.channel == "discord" and decision in {"reject", "revise"}:
+            state = "Canceled" if decision == "reject" else "Revision Requested"
+            deps.ops.reflect_verified_decision(issue, state, f"verified Discord {decision} ({req.request_id[:8]}) by {actor}")
+        return
     if run is None:
         return
     if decision == "approve":
@@ -511,10 +538,16 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, decision: str, ac
         run.waiting_for = None
         run.event("approved", f"{req.kind.value} approved by {actor}")
     elif decision == "reject":
+        if approval.channel == "discord":
+            deps.ops.reflect_verified_decision(issue, "Canceled",
+                                                f"verified Discord reject ({req.request_id[:8]}) by {actor}")
         run.stage = WorkflowStage.CANCELLED
         run.waiting_for = None
         run.event("rejected", f"{req.kind.value} rejected by {actor}")
     else:
+        if approval.channel == "discord":
+            deps.ops.reflect_verified_decision(issue, "Revision Requested",
+                                                f"verified Discord revise ({req.request_id[:8]}) by {actor}")
         run.stage = WorkflowStage.BLOCKED
         run.blocked_reason = f"revision requested by {actor}: edit the Notion spec / plan, then re-run"
         run.waiting_for = None
@@ -526,23 +559,22 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, decision: str, ac
 
 
 def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str, details: list[str]) -> None:
-    if not deps.store.insert_new(db.notifications_sent, dedupe, {"kind": kind.value, "task": run.task_id}):
-        return  # already sent (no duplicate notifications)
-    safe_send(NotificationEvent(kind=kind, flow_name="autopilot", flow_run_name=run.task_id, state_name=run.stage.value,
-                                details=details), deps.notifier)
+    notify_once(deps.store,
+                NotificationEvent(kind=kind, flow_name="autopilot", flow_run_name=run.task_id,
+                                  state_name=run.stage.value, details=details, dedupe_key=dedupe),
+                deps.notifier)
 
 
 def notify_approval(deps_store, notifier, req: ApprovalRequest, message: str, linear_url: str, form_url: str | None) -> None:
     key = f"approval:{req.request_id}:{message[:40]}"
-    if not deps_store.insert_new(db.notifications_sent, key, {"kind": "approval", "task": req.task_id}):
-        return
-    safe_send(NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="autopilot", flow_run_name=req.task_id,
-                                state_name=f"{req.kind.value}:{req.status.value}",
-                                details=[f"Linear: {linear_url}/issue/{req.task_id}", f"Approval: {req.title}",
-                                         *[f"change: {x}" for x in req.what_changes[:5]],
-                                         *[f"diff: {x}" for x in req.diff_from_original[:5]],
-                                         f"budget: {req.budget_summary}", f"confirm: {form_url or '-'}", f"note: {message}"]),
-              notifier)
+    notify_once(deps_store,
+                NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="autopilot",
+                                  flow_run_name=req.task_id, state_name=f"{req.kind.value}:{req.status.value}",
+                                  details=[f"Linear: {linear_url}/issue/{req.task_id}", f"Approval: {req.title}",
+                                           *[f"change: {x}" for x in req.what_changes[:5]],
+                                           *[f"diff: {x}" for x in req.diff_from_original[:5]],
+                                           f"budget: {req.budget_summary}", f"note: {message}"],
+                                  dedupe_key=key, approval_request_id=req.request_id), notifier)
 
 
 def status_report(deps: AutopilotDeps) -> dict:

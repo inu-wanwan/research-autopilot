@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "discord-py>=2.7.1",
     "httpx>=0.28.1",
     "openai-agents>=0.23.1",
     "prefect>=3.8.8",

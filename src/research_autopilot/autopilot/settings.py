@@ -17,7 +17,7 @@ class Phase5Settings(BaseModel):
     approval_poll_seconds: int = 60
     prefect_ui_url: str | None = None
     confirm_deployment: str = "approval-confirm/manual"
-    approval_mode: str = "linear"  # "linear" (status change by an authorized user) | "linear+form"
+    approval_mode: str = "discord"  # Discord interaction is authoritative; legacy modes remain supported.
     approver_linear_user_ids: list[str] = []
 
     @property

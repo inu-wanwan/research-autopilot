@@ -23,8 +23,20 @@ class Notifier(Protocol):
     def send(self, event: NotificationEvent) -> None: ...
 
 
-def get_notifier(env: dict[str, str] | None = None) -> Notifier:
+def get_notifier(env: dict[str, str] | None = None, store=None) -> Notifier:
     env = os.environ if env is None else env
+    backend = env.get("RA_NOTIFICATION_BACKEND", "").strip().lower()
+    if backend == "discord":
+        from research_autopilot.config import load_settings
+        from research_autopilot.notifications.discord import DiscordNotifier, load_discord_settings
+        from research_autopilot.storage.db import Store
+
+        store = store or Store(load_settings(dict(env)).resolved_database_url())
+        return DiscordNotifier(store, load_discord_settings(dict(env)))
+    if backend not in ("", "ntfy", "logging"):
+        raise ValueError("RA_NOTIFICATION_BACKEND must be discord, ntfy, or logging")
+    if backend == "logging":
+        return LoggingNotifier()
     url = env.get("RA_NOTIFY_URL", "").strip()
     if not url:
         return LoggingNotifier()
@@ -51,6 +63,37 @@ def safe_send(event: NotificationEvent, notifier: Notifier | None = None) -> boo
     return True
 
 
+def notify_once(store, event: NotificationEvent, notifier: Notifier | None = None) -> bool:
+    """Persist dedupe state and retry failed legacy delivery on a later call.
+
+    DiscordNotifier owns its durable outbox. ntfy/logging delivery is marked sent
+    only after success, so a temporary failure never becomes a false dedupe hit.
+    """
+    if notifier is None:
+        try:
+            notifier = get_notifier(store=store)
+        except TypeError as exc:
+            # Compatibility with simple zero-argument notifier factories used by
+            # existing callers/tests during the backend migration.
+            if "unexpected keyword argument 'store'" not in str(exc):
+                raise
+            notifier = get_notifier()
+    if getattr(notifier, "persistent", False):
+        return safe_send(event, notifier)
+    from research_autopilot.storage import db
+
+    key = event.stable_dedupe_key()
+    existing = store.get(db.notifications_sent, key)
+    if existing and existing.get("state") == "sent":
+        return True
+    record = {"state": "pending", "kind": event.kind.value, "event": event.model_dump(mode="json")}
+    store.put(db.notifications_sent, key, record)
+    delivered = safe_send(event, notifier)
+    record["state"] = "sent" if delivered else "failed"
+    store.put(db.notifications_sent, key, record)
+    return delivered
+
+
 __all__ = [
     "EventKind",
     "HttpNotifier",
@@ -59,5 +102,6 @@ __all__ = [
     "NotificationEvent",
     "Notifier",
     "get_notifier",
+    "notify_once",
     "safe_send",
 ]

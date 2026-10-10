@@ -44,7 +44,8 @@ class HttpNotifier:
         self._transport = transport
 
     def send(self, event: NotificationEvent) -> None:
-        headers = {"Title": event.title(), "Priority": _PRIORITY[event.kind]}
+        priority = _PRIORITY.get(event.kind, "high" if event.kind.value.endswith(("error", "failure")) else "default")
+        headers = {"Title": event.title(), "Priority": priority}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 

@@ -121,7 +121,7 @@ class ApprovalDecision(BaseModel):
     request_id: str
     decision: Literal["approve", "reject", "revise"]
     actor: str
-    channel: Literal["prefect_form", "linear_status"]
+    channel: Literal["prefect_form", "linear_status", "discord"]
     linear_state: str
     spec_hash: str
     comment: str = ""
@@ -135,6 +135,20 @@ class FormSubmission(BaseModel):
     decision: Literal["approve", "reject", "revise"]
     spec_hash: str
     approver: str
+    comment: str = ""
+    submitted_at: datetime = Field(default_factory=utcnow)
+
+
+class DiscordSubmission(BaseModel):
+    """Discord interaction persisted before the approval controller evaluates it."""
+
+    interaction_id: str
+    request_id: str
+    decision: Literal["approve", "reject", "revise"]
+    spec_hash: str
+    user_id: str
+    guild_id: str
+    channel_id: str
     comment: str = ""
     submitted_at: datetime = Field(default_factory=utcnow)
 
