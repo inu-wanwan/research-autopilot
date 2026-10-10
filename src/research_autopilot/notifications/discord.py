@@ -338,13 +338,19 @@ class DiscordGatewayClient(discord.Client):
         self.approvals = DiscordApprovalInput(notifier.store, notifier.settings)
         self._views_restored = False
         self._lease_owner = f"discord:{id(self)}"
+        self.startup_error: Exception | None = None
 
     async def setup_hook(self) -> None:
-        self.deliver_pending.start()
-        self.reconcile_approvals.start()
+        # Channel objects and the bot member are available only after READY.
+        pass
 
     async def on_ready(self) -> None:
-        await self.validate_configuration()
+        try:
+            await self.validate_configuration()
+        except Exception as exc:  # fail closed instead of running with a partial channel configuration
+            self.startup_error = exc
+            await self.close()
+            return
         if not self._views_restored:
             for record in self.notifier.store.find(db.notifications_sent):
                 if "event" not in record:
@@ -354,6 +360,10 @@ class DiscordGatewayClient(discord.Client):
                 if delivery.state is DeliveryState.SENT and delivery.message_id and req_id:
                     self.add_view(ApprovalView(self.approvals, req_id), message_id=int(delivery.message_id))
             self._views_restored = True
+        if not self.deliver_pending.is_running():
+            self.deliver_pending.start()
+        if not self.reconcile_approvals.is_running():
+            self.reconcile_approvals.start()
 
     async def validate_configuration(self) -> None:
         guild = self.get_guild(self.settings.guild_id)
@@ -451,6 +461,8 @@ def run_gateway(store: Store, settings: DiscordSettings) -> None:
     notifier = DiscordNotifier(store, settings)
     client = DiscordGatewayClient(notifier)
     client.run(settings.token.get_secret_value(), reconnect=True, log_handler=None)
+    if client.startup_error is not None:
+        raise RuntimeError(f"Discord Gateway configuration invalid: {client.startup_error}") from client.startup_error
 
 
 async def connection_check(settings: DiscordSettings, *, send_test: bool = False) -> list[str]:

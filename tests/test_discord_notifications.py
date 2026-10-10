@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from research_autopilot.notifications.discord import (
     DeliveryState,
     DiscordApprovalInput,
     DiscordDelivery,
+    DiscordGatewayClient,
     DiscordNotifier,
     DiscordRoute,
     DiscordSettings,
@@ -103,6 +105,26 @@ def test_notification_outbox_deduplicates_and_survives_restart(tmp_path):
     second.save(failed)
     assert second.pending() == []
     assert len(second.pending(now=utcnow() + timedelta(minutes=2))) == 1
+
+
+def test_gateway_fails_closed_when_channel_validation_fails(tmp_path):
+    store = Store(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    client = DiscordGatewayClient(DiscordNotifier(store, settings()))
+    closed = False
+
+    async def invalid():
+        raise RuntimeError("missing permission")
+
+    async def close():
+        nonlocal closed
+        closed = True
+
+    client.validate_configuration = invalid
+    client.close = close
+    asyncio.run(client.on_ready())
+    assert closed is True
+    assert isinstance(client.startup_error, RuntimeError)
+    assert not client.deliver_pending.is_running()
 
 
 @pytest.mark.parametrize("case,result", [
