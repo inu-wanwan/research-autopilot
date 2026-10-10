@@ -67,24 +67,26 @@ curl -m 5 http://<server-lan-ip>:4200/api/health
 curl -s -o /dev/null -w '%{http_code}\n' https://<TS_FQDN>/api/admin/version
 ```
 
-## 4. 通知（ntfy 互換）
+## 4. 通知（Discord）
 
-`.env` で設定する（未設定ならログに出るだけ）：
+`.env` で Bot token、guild、承認者 user ID、approvals / results / errors / logs の4チャンネルを設定する。変数名と用途は `phase5_autopilot.md` §2〜3 および `.env.example` を参照する。
 
 ```bash
-RA_NOTIFY_URL=https://<ntfy-server>     # 自前の ntfy、または ntfy.sh
-RA_NOTIFY_TOPIC=<推測されにくい topic 名>
-RA_NOTIFY_TOKEN=<アクセストークン（任意）>
+RA_NOTIFICATION_BACKEND=discord
+RA_APPROVAL_MODE=discord
+uv run research-agent discord check
+uv run research-agent discord check --send-test   # 明示的なテスト投稿を各チャンネルへ1件
 ```
 
-`ra-compose up -d prefect-worker` で反映。スマートフォンの ntfy アプリで同じ topic を購読する。
+Compose では `prefect-worker` が PostgreSQL に通知を enqueue し、`discord-bot` が Gateway と REST を担当する。設定変更後は `ra-compose up -d prefect-worker discord-bot` で反映する。
 
-- 送られるイベント：`completed`（正常完了）、`failed`（Failed / TimedOut / Crashed hook）、`approval_required`（approval-demo の一時停止）。
-- 本文に入るのは flow 名、run 名、状態、例外の **型名**、UI リンクだけ。例外メッセージ、パラメータ、ログ、トークンは入らない。
-- 送信は timeout 5秒、5xx / 通信エラーは最大2回再送、4xx は再送しない。失敗しても warning ログを出すだけで run の状態は変わらない。
+- イベントは種類から4チャンネルへ決定論的に routing し、Discord Embed で表示する。
+- 通知は DB outbox で重複排除し、成功時に message ID を保存する。失敗は pending/failed のまま指数 backoff で再送し、run の成否は変えない。
+- Gateway は自動再接続し、再起動時に pending 通知と承認待ち persistent view を DB から復元する。
+- Bot token は coding agent の環境、通知本文、ログ、custom_id、DB record に含めない。
 - **制約**：heartbeat 途絶 automation が Crashed にした run（worker ごと落ちた場合）は flow プロセスが存在しないため hook 通知が飛ばない。必要なら Prefect automation の通知 action で補う（Phase 1 では未実装）。
 
-ローカル検証（2026-10-10）：Worker からホスト上のモック HTTP 受信器に `completed` / `failed` / `approval_required` が届き、Bearer token が付いていること、本文に例外メッセージがないことを確認済み。実際の ntfy サーバーでは未確認。
+実 Discord 検証（2026-10-10）：Bot の Gateway 接続、guild、4チャンネルの view/send/embed/history 権限を確認し、各チャンネルにテスト Embed を1件投稿した。ボタン操作は fake E2E で検証し、実ユーザーによるクリックは未確認。ntfy adapter は後方互換として残す。
 
 ## 5. ログとヘルスチェック
 

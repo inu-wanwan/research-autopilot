@@ -28,6 +28,7 @@
 | `postgres` | Prefect メタデータ（run 状態・履歴・ログ・deployment） | なし（compose 内部のみ） |
 | `prefect-server` | API / UI / スケジューラ等（単一プロセス） | `127.0.0.1:4200` のみ |
 | `prefect-worker` | `research-local`（process 型）pool を poll し、subprocess で flow を実行。同時実行 1 | なし |
+| `discord-bot` | Gateway 常駐、通知 outbox の送信、承認 Interaction の保存 | なし |
 
 Redis は使わない（単一サーバープロセス構成のため不要。スケールする場合は設計変更が必要。技術設計 §4.1）。
 
@@ -52,7 +53,7 @@ chmod 600 .env
 alias ra-compose='docker compose --env-file .env -f infra/compose.yaml'
 ra-compose build
 ra-compose up -d
-ra-compose ps            # 3サービスとも (healthy) になるまで待つ
+ra-compose ps            # postgres / prefect-server / prefect-worker / discord-bot を確認
 
 # 3. ポートの確認：4200 が 127.0.0.1 のみ、5432 は host に出ていない
 ss -ltnp | grep -E ':4200|:5432'
@@ -124,7 +125,7 @@ uv run prefect deployment run smoke-success/manual --param message=hi --param op
 git pull
 sed -i "s/^GIT_SHA=.*/GIT_SHA=$(git rev-parse --short HEAD)/" .env
 ra-compose build prefect-worker
-ra-compose up -d prefect-worker      # 実行中 run があれば終わるのを待つ（同時実行1）
+ra-compose up -d prefect-worker discord-bot  # 同じ image。実行中 run があれば終わるのを待つ
 
 # MacBook（同じ commit で）
 GIT_SHA=$(git rev-parse --short HEAD) uv run prefect deploy --all --no-prompt
@@ -147,7 +148,7 @@ Compose ファイルは共通。違いは `.env` の値だけ。
 | `PREFECT_UI_URL` | `http://127.0.0.1:4200` | `https://<TS_FQDN>` |
 | MacBook CLI の `PREFECT_API_URL` | `http://127.0.0.1:4200/api` | `https://<TS_FQDN>/api` |
 | シークレット | ローカル用の乱数 | 本番専用の乱数（ローカルと共有しない） |
-| 通知 | 空（ログのみ）でよい | ntfy 等を設定 |
+| 通知 | Discord のテスト guild / 4 channel | Discord の運用 guild / 4 channel（token は環境別） |
 
 Compose を使わない最小のローカル実行（一時的な SQLite サーバーを自動起動）：
 

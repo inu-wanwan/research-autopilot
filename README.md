@@ -3,7 +3,7 @@
 研究者が定義・承認した研究タスクを、複数のエージェントが実装・実験・解析まで自律的に進めるシステム。
 
 - **Phase 1（自律実行・監視基盤）**：研究室サーバー（Eagle）上の self-hosted Prefect 3（Server / UI、Process Worker、PostgreSQL）を Docker Compose で動かし、MacBook とスマートフォンから Tailscale 経由で監視する。
-- **Phase 5（Autopilot）**：Notion / Linear に登録された承認済みの研究タスクを、Phase 2〜4 を通して自律的に実行する。初回の委任（ResearchAuthorization）の範囲内なら途中の承認なしで進め、範囲外・予算超過・完了の判断が必要なときだけ Linear の Status で承認を求める。結果は Notion Notes と Linear に反映する。運用は [`docs/operations/phase5_autopilot.md`](docs/operations/phase5_autopilot.md)。
+- **Phase 5（Autopilot）**：Notion / Linear に登録された研究タスクを、Phase 2〜4 を通して自律的に実行する。初回の委任範囲内なら途中の承認なしで進め、範囲外・予算超過・完了判断だけ Discord のボタン UI で承認を求める。Linear はタスク状態、Notion は仕様・結果、PostgreSQL は承認監査の正本を保つ。運用は [`docs/operations/phase5_autopilot.md`](docs/operations/phase5_autopilot.md)。
 - **Phase 4（Experiment Runner / Scientific Analyst）**：固定 commit と ExperimentSpec から実験を再現可能に実行・監視・回収・検証し、失敗は振り分けて再試行するか Phase 3 で修正する。検証済みの結果を LLM Analyst が解釈し、独立した Reviewer と ScopeAssessment が次の実験案を審査して、Phase 5 への handoff を作る（承認はしない）。運用は [`docs/operations/phase4_experiments.md`](docs/operations/phase4_experiments.md)。
 - **Phase 3（Implementer / Code Reviewer）**：承認済みタスクを登録済みの研究リポジトリの専用 worktree で Codex（fallback は Claude Code）に実装させ、決定論的な検証と独立した LLM Reviewer で確認したうえで、固定 commit と ExperimentSpec を Phase 4 に渡す。Phase 4 からの FailureReport による修正にも対応する。運用は [`docs/operations/phase3_implementation.md`](docs/operations/phase3_implementation.md)。
 - **Phase 2（Task Manager / Orchestrator）**：Notion（仕様の正本）と Linear（実行状態の正本）からタスクを取得し、決定論的なゲートを通過したタスクについて Planner / Reviewer エージェント（OpenAI Agents SDK）で実行計画を作る。CLI は `research-agent`。運用は [`docs/operations/phase2_planning.md`](docs/operations/phase2_planning.md)。
@@ -22,10 +22,10 @@ src/research_autopilot/
   storage/                 # 実行履歴・リース・監査ログ（SQL）と JSON artifact（Phase 2）
   cli.py                   # research-agent CLI（Phase 2）
   flows/smoke_test.py      # 正常系・retry・timeout・承認待ち・長時間の smoke flow
-  notifications/           # ntfy 互換 HTTP 通知と Prefect state hook
+  notifications/           # Discord Gateway/outbox、ntfy 互換 adapter、Prefect state hook
   idempotency.py           # operation_id による冪等な副作用
 infra/
-  compose.yaml             # postgres / prefect-server / prefect-worker
+  compose.yaml             # postgres / prefect-server / prefect-worker / discord-bot
   Dockerfile               # worker イメージ（flow コードを焼き込み）
   automations/             # heartbeat 途絶 → Crashed の automation
 prefect.yaml               # deployment 定義
@@ -61,11 +61,11 @@ uv run prefect deployment run smoke-success/manual --watch
 | 目的 | コマンド | 詳細 |
 |---|---|---|
 | 状態確認 | `ra-compose ps` | monitoring.md §5 |
-| ログ確認 | `ra-compose logs -f --tail=200 prefect-worker`（`prefect-server` / `postgres`） | monitoring.md §5 |
+| ログ確認 | `ra-compose logs -f --tail=200 prefect-worker discord-bot`（`prefect-server` / `postgres`） | monitoring.md §5 |
 | run のログ | UI、または `uv run prefect flow-run logs <id>` | monitoring.md §5 |
-| サービス再起動 | `ra-compose restart prefect-server prefect-worker` | recovery.md §2 |
-| 停止していた worker の起動 | `ra-compose up -d prefect-worker`（`docker kill/stop` 後は自動で戻らない） | recovery.md §2 |
-| コード更新 | `git pull` → `.env` の `GIT_SHA` 更新 → `ra-compose build prefect-worker && ra-compose up -d prefect-worker` → MacBook で `prefect deploy --all` | deployment.md §4 |
+| サービス再起動 | `ra-compose restart prefect-server prefect-worker discord-bot` | recovery.md §2 |
+| 停止していた worker / Bot の起動 | `ra-compose up -d prefect-worker discord-bot`（`docker kill/stop` 後は自動で戻らない） | recovery.md §2 |
+| コード更新 | `git pull` → `.env` の `GIT_SHA` 更新 → `ra-compose build prefect-worker && ra-compose up -d prefect-worker discord-bot` → MacBook で `prefect deploy --all` | deployment.md §4 |
 | Prefect / PostgreSQL 更新 | バックアップ → 4か所のバージョンを揃えて変更 → 検証 → 再構築 | deployment.md §4 |
 | バックアップ | `ra-compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > <file>` | recovery.md §5 |
 | リストア | リハーサル → 承認 → in-place 復元 | recovery.md §5 |

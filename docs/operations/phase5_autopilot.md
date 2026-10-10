@@ -5,31 +5,37 @@
 ## 1. 利用者から見た流れ
 
 1. ChatGPT と相談して、Notion Research Tasks（Purpose / Implementation / Acceptance criteria / Scientific invariants / Repository / Allowed files）と Linear Issue（project Research、ラベル `autopilot`、Todo）を作る。
-2. Autopilot が polling でタスクを見つけ、**初回の委任承認（onboarding）**を求める。Linear は Awaiting Approval になり、ntfy に通知が届く。
-3. 承認する：**Linear の Status を Approved にするだけ**（既定の `RA_APPROVAL_MODE=linear`）。却下は Canceled、修正依頼は Revision Requested。スマホの Linear アプリから操作できる。
-4. 承認後は自律的に進む：計画（Phase 2）→ 実装（Phase 3）→ 実験・検証・分析（Phase 4）→ 範囲内の追加実験の登録と実行 → Notes への書き込み → Linear へのコメント → Done → ntfy への通知。
-5. 途中で人間の判断が必要になるのは、範囲外の提案、invariants や acceptance の変更、予算の超過、自動では完了を判断できない場合だけ。どれも同じ「Linear の Status ＋ Prefect のフォーム」で答える。
+2. Autopilot が polling でタスクを見つけ、**初回の委任承認（onboarding）**を求める。Linear は Awaiting Approval になり、Discord の approvals チャンネルに通知とボタンが届く。
+3. Discord で Approve / Reject / Request Revision を選ぶ。修正依頼ではモーダルに理由を書く。Linear の Status 変更だけでは承認にならない。
+4. 承認後は自律的に進む：計画（Phase 2）→ 実装（Phase 3）→ 実験・検証・分析（Phase 4）→ 範囲内の追加実験の登録と実行 → Notes への書き込み → Linear へのコメント → Done。結果・エラー・主要遷移は用途別の Discord チャンネルに届く。
+5. 途中で人間の判断が必要になるのは、範囲外の提案、invariants や acceptance の変更、予算の超過、自動では完了を判断できない場合だけ。判断は同じ Discord UI で行う。
 
-## 2. 承認の仕組み（承認者の確定方法）
+## 2. Discord 通知と承認の仕組み
 
-既定は `RA_APPROVAL_MODE=linear`（2026-10-10 ユーザー決定）。次の条件をすべて満たす Linear の Status 変更だけを承認として受け付ける。
+既定は `RA_NOTIFICATION_BACKEND=discord` / `RA_APPROVAL_MODE=discord`。Prefect worker は通知を PostgreSQL の outbox に保存し、別プロセスの `discord-bot` が Gateway 接続を維持して送信・Interaction 受信を行う。Discord は UI であり、最終判定は Approval Controller、承認監査の正本は PostgreSQL、タスク状態の正本は Linear のまま変わらない。
 
 | 確認すること | 方法 |
 |---|---|
-| 誰が変更したか | Linear の history の `actor.id` が `RA_APPROVER_LINEAR_USER_IDS` に含まれていること |
-| bot による変更でないこと | `botActor` が null であること |
-| 承認要求に対する操作であること | Autopilot が Awaiting Approval にした**後**に、Approved / Revision Requested / Canceled へ遷移していること |
-| 自分自身による承認でないこと | Autopilot は承認用の状態へ遷移させることができない（コードで禁止）。自分の書き込みはすべて `autopilot_linear_writes` に記録し、同じ状態への書き込みがあれば無効とする |
+| 誰が操作したか | Discord Interaction の user ID が `RA_DISCORD_AUTHORIZED_USER_IDS` に含まれること。bot user は拒否 |
+| どこで操作したか | 指定 guild の approvals チャンネル内だけを許可 |
+| 承認要求に対する操作か | custom_id には request ID と action だけを含め、DB の pending request と照合。秘密・仕様本文は含めない |
+| 二重操作でないか | Interaction ID と request ID を DB で一意にし、同じ request の最初の入力だけを保存 |
 | 古い承認でないこと | 承認要求の spec hash と、現在の Notion の仕様の hash が一致すること（仕様が編集されていれば stale として出し直す） |
 | 有効期限 | 承認要求は7日、ResearchAuthorization は30日 |
+| 誰が最終決定するか | polling 時に Approval Controller が DB の Interaction を再検証して `approval_decisions` に確定する。Discord handler 自身は承認しない |
 
-**残るリスクと対策**：Personal API key で行った更新は、ユーザー本人の操作として記録される（2026-10-10 に確認）。同じ key を持つ別のプログラムがあれば、承認を偽装できてしまう。
+確定後、Approve は実行状態（Todo / In Progress）へ進み、Reject は Canceled、Request Revision は Revision Requested として Linear に反映する。元メッセージのボタンは無効化される。Linear の手動 Status 変更は可視化には使えても、承認の証拠にはしない。
 
-- 対策①：Coding Agent（Codex / Claude）、Reviewer、検証コマンドに渡す環境変数から、Autopilot の認証情報（Notion / Linear / OpenAI の key、Prefect の認証、DB の URL）を取り除く（`sanitized_env`）。
-- 対策②：自分の書き込みを照合する。
-- **根本対策**：Autopilot 専用の Linear ID（OAuth アプリ、または別ユーザーの key）を使えば、actor で区別できる。Eagle に反映するときに導入を検討する。
+チャンネルの用途：
 
-`RA_APPROVAL_MODE=linear+form` にすると、Prefect の Human-in-the-loop フォーム（suspend した flow、`approval-confirm/manual`）による確認も必須になる。Prefect UI v2（3.8.8）では、suspend した run の Resume の場所が分かりにくい（2026-10-10、ユーザーがメニューで見つけられなかった）。そのため、送信は `research-agent autopilot approve <request_id> --decision approve --approver <name>`（Prefect API の資格情報が必要）で行う。
+| チャンネル | イベント |
+|---|---|
+| approvals | onboarding、範囲外 proposal、予算、完了レビューなど人間の判断が必要なもの |
+| results | 実験完了、解析完了、タスク完了 |
+| errors | 復旧不能エラー、予算超過、worker failure |
+| logs | task 開始、phase 遷移、自動 retry、repair 成功、proposal 生成 |
+
+`linear` / `linear+form` と ntfy adapter は既存環境の移行用にコードを残すが、日常運用では使わない。Coding Agent / Reviewer / 検証コマンドには Discord Bot token を含む Research Autopilot の資格情報を渡さない。
 
 ## 3. 必要な設定（人間が行うこと）
 
@@ -37,8 +43,9 @@
 |---|---|---|
 | Linear の workflow state | INU チームに Awaiting Approval / Approved / Revision Requested を追加（却下は既存の Canceled） | 設定済み（2026-10-10） |
 | Notion integration | capabilities で Insert content と Update content を ON にする。Research Tasks と Research Notes の両方に接続する | 設定済み（書き込みを確認） |
-| 承認者 | `RA_APPROVAL_MODE=linear`、`RA_APPROVER_LINEAR_USER_IDS=<あなたの Linear user id>` | Mac の検証では設定済み |
-| ntfy | `RA_NOTIFY_URL=https://ntfy.sh`、`RA_NOTIFY_TOPIC=<推測されにくい名前>`。スマホの ntfy アプリで購読する | 未設定（今は通知がログに出るだけ） |
+| Discord backend | `RA_NOTIFICATION_BACKEND=discord`、`RA_APPROVAL_MODE=discord` | Mac で検証済み |
+| Bot / guild / 承認者 | `RA_DISCORD_BOT_TOKEN`、`RA_DISCORD_GUILD_ID`、`RA_DISCORD_AUTHORIZED_USER_IDS` | `.env` に設定（値は Git 管理外） |
+| 4チャンネル | `RA_DISCORD_{APPROVAL,RESULTS,ERRORS,LOGS}_CHANNEL_ID` | Mac から実 Bot で権限・テスト投稿を確認済み（2026-10-10） |
 | `.env` | `RA_AUTOPILOT_WRITE=true` で書き込みを有効にする。`RA_AUTOPILOT_TEST_ONLY=true`（Mac）にすると [TEST] タスクだけに書き込む。`RA_MODEL_PRICING` は設定済み | Mac では TEST_ONLY のまま |
 | Prefect deployment | `autopilot-poll/scheduled`（5分間隔、inactive で作成）、`approval-confirm/manual` | `prefect deploy --all` で作る |
 
@@ -48,13 +55,15 @@
 uv run research-agent autopilot poll --check-only          # 候補とゲートの確認だけ（書き込み・LLM なし）
 uv run research-agent autopilot poll [--task INU-123]      # 1回分の処理（Prefect flow として実行。--local で Prefect を使わない）
 uv run research-agent autopilot status                     # ワークフロー、承認待ち、outbox
-uv run research-agent autopilot approve <request_id> --decision approve --approver <name>   # linear+form モードのとき
+uv run research-agent discord check                        # token / guild / 4 channel / 権限の検証
+uv run research-agent discord check --send-test            # 4チャンネルにテスト Embed を1件ずつ投稿
+uv run research-agent discord run                          # Gateway consumer（通常は compose service で常駐）
 uv run research-agent autopilot cancel INU-123             # Autopilot の作業を止める（Linear は人間が操作する）
 uv run research-agent autopilot resume INU-123 --stage planning   # 原因を直した後、blocked / dead_letter の run を再開する
 uv run prefect deployment run autopilot-poll/scheduled     # 手動で起動する
 ```
 
-blocked や dead_letter になったら ntfy に通知が届く（同じ通知は二度送らない）。Prefect UI では、artifact `autopilot-status` で run の状態、blocked の理由、承認待ち、outbox を確認できる。
+blocked や dead_letter は errors、retry や stage 遷移は logs に届く。通知は送信成功後に Discord message ID とともに確定し、失敗は指数 backoff で再送する。Bot 再起動後は pending/failed 通知と承認待ちの persistent view を DB から復元する。通知障害は通常の自動処理を失敗扱いにせず、承認通知障害でも自動承認しない。Prefect UI では artifact `autopilot-status` で run の状態、blocked の理由、承認待ち、outbox を確認できる。
 
 ### Research Notes の結果レポート
 

@@ -18,11 +18,11 @@ Phase 5（Approval-Gated Autonomous Research Workflow）を実装完了。Mac �
 
 ## Current Task
 
-Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の担当者、結果ページの可読性）
+Phase 5 の通知・承認 UI を ntfy / Linear Status から Discord Bot Gateway へ移行
 
 ## Status
 
-実装・関連テスト完了（2026-10-10）。Notes の既定プロパティ、Linear の担当者、結果ページの Human Report 化、JSON field / unit 検証の不整合修正まで作業ブランチに実装済み。ユーザーのレビュー待ち。
+ローカル実装・関連テスト・実 Discord 接続確認まで完了（2026-10-10）。Eagle への deploy、既存の本番タスクを使った承認、main への merge は未実施。ユーザーのレビュー待ち。
 
 ## Last Updated
 
@@ -30,10 +30,24 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 
 ## Git Branch / Commit
 
-- 作業ブランチ：`codex/phase5-note-linear-defaults`（`main` / `origin/main` の `ff53448` から作成）
+- 作業ブランチ：`codex/phase5-discord-ui`（結果 UX 改善ブランチから継続）
+- Discord 実装 commit：`d5e3138`
+- 結果 UX 改善 commit：`800ac7f`、`fa19f3a`
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
+
+- `RA_NOTIFICATION_BACKEND=discord` と `RA_APPROVAL_MODE=discord` を既定にし、`.env.example` に Bot token、guild、承認者 user ID、approvals / results / errors / logs の4チャンネル ID を追加。ntfy と旧 Linear / Prefect form モードは移行互換として残した。
+- 型付きイベントを4チャンネルへ決定論的に routing し、Discord Embed を生成する `notifications/discord.py` を追加。通知は `autopilot_notifications` に pending / failed / sent、attempt、next retry、message ID を永続化する。
+- Gateway consumer を `research-agent discord run` と Compose の独立 `discord-bot` service として追加。`discord.py` 2.7.1 を使用し、特権 Intent は使わない。ライブラリの rate-limit / reconnect と、アプリ側の指数 backoff、DB lease、Embed footer marker による crash-window の重複回避を組み合わせた。
+- approval message に Approve / Reject / Request Revision の persistent button と revision modal を追加。guild、approvals channel、user allowlist、bot user、pending、expiry、Interaction ID / request ID の重複を検証し、入力だけを DB に保存する。
+- Approval Controller が polling 時に current Notion spec hash を再検証して初めて決定を確定する。Linear Status 変更は承認証拠に使わない。確定後は approve を実行状態へ、reject を Canceled、revise を Revision Requested へ反映し、Discord の元ボタンを無効化する。
+- task start、phase transition、retry、proposal、experiment、analysis、task completion、budget、unrecoverable error、repair success を typed event として追加。通知失敗は通常処理の成否を変えず、承認通知が失敗しても自動承認しない。
+- Discord Bot token を coding agent / reviewer / check command の環境から除外するよう `sanitized_env` を拡張。
+- `research-agent discord check` で実 Bot の Gateway 接続、guild、4チャンネルの view/send/embed/history 権限を確認。`--send-test` で各チャンネルに「実タスクではない」と明記した Embed を1件ずつ投稿した。実ユーザーによるボタンクリックは未確認。
+- 関連テスト93件が成功（Discord 26、既存通知・Phase 3/4 flow 21、Phase 5 46）。ユーザー指示により全 pytest は実行していない。
 
 ### Phase 5 結果登録 UX 改善（2026-10-10 / Codex）
 
@@ -211,8 +225,8 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 
 ## Remaining Work
 
-- **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker 上での Codex / Claude CLI の認証、volume、上限と予約、Autopilot 専用の Linear ID（承認者を Linear 単独で確定するため）。
-- ntfy の設定（`RA_NOTIFY_URL` / `RA_NOTIFY_TOPIC`）。今は通知がログに出るだけ。
+- **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker / discord-bot image、DB の新規 Interaction table、Bot token と4チャンネル、Codex / Claude CLI の認証、volume、上限と予約を確認する。
+- 実 Discord でユーザーが承認ボタン / revision modal を操作し、polling が再開して Linear と元メッセージを更新する一連の確認（Fake E2E では確認済み）。本番タスクを作成・変更せずに止めている。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。
 - 既存の INU-279 Notes は旧形式のままで、今回の Human Report 形式への backfill と実 LLM Completion Reviewer での再判定は未実施（本番 Notes を無断更新しない方針）。新規 run では passing evidence の正確な識別子を Reviewer に提示する。
 - テストデータ：INU-279（Done）、INU-271〜273、INU-270、Notion のテストページ、Notes「[AP] [TEST] …」、ラベル `autopilot` を残すかどうか（ユーザー判断）。
@@ -220,10 +234,22 @@ Phase 5 の結果登録 UX 改善（Notes の既定プロパティ、Linear の�
 
 ## Changed Files
 
+- Discord 移行（`d5e3138`）：新規 `notifications/discord.py`、`tests/test_discord_notifications.py`。変更 `.env.example`、`infra/compose.yaml`、`pyproject.toml` / `uv.lock`、notification / approval / engine / CLI / DB / flow / secret sanitization。
+- Discord 運用文書：`README.md`、`docs/operations/{deployment,monitoring,phase5_autopilot}.md`、本ファイル。
+
 - 新規：`docs/phase_specs/phase1.md`, `src/research_autopilot/idempotency.py`, `src/research_autopilot/flows/smoke_test.py`, `src/research_autopilot/notifications/{__init__,events,http,hooks}.py`, `tests/{conftest,test_idempotency,test_notifications,test_smoke_flows}.py`, `infra/{compose.yaml,Dockerfile}`, `infra/automations/crash-zombie-flow-runs.yaml`, `prefect.yaml`, `.env.example`, `.dockerignore`, `docs/operations/{deployment,monitoring,recovery}.md`
 - 変更：`pyproject.toml`, `uv.lock`（httpx を追加）、`README.md`、`AGENTS.md`（構成図）、`docs/README.md`（構成図・役割表）、本ファイル
 
 ## Tests and Verification
+
+### Discord 通知・承認 UI（2026-10-10、MacBook）
+
+- `uv run pytest -q tests/test_discord_notifications.py`：26 passed。routing、Embed、厳格な設定、outbox の dedupe / 再起動復元 / retry、権限外・bot・別 guild / channel・期限切れ・処理済み・二重 Interaction、Approve / Reject / Revision、spec stale、Linear 反映、token 除外。
+- 既存通知・Phase 3/4 flow：21件、100% passed。completed / failed hook、repair / experiment / analysis event を確認。
+- Phase 5 関連：46 passed。旧 linear mode の後方互換、policy / outbox / engine / Fake E2E / Prefect flow / CLI を確認。
+- `docker compose --env-file .env -f infra/compose.yaml config --quiet`：成功。`research-agent discord --help` / `discord check --help`：成功。
+- 実 Discord：`research-agent discord check` と `--send-test` が成功。Bot token は出力せず、4チャンネルの権限と各1件のテスト Embed を確認。
+- 全 pytest はユーザー指示（変更部分に関連するテストのみ）に従い、今回の Discord commit 後には実行していない。
 
 ### Phase 5（2026-10-10、MacBook）
 
@@ -439,6 +465,6 @@ Fake の E2E で確認したこと：
 
 ## Exact Next Actions
 
-1. ユーザー：ntfy の topic を決めて `.env` に設定する（任意）。
-2. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。Autopilot 専用の Linear ID の導入もあわせて検討する。
+1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
+2. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。今回は deploy しない。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
