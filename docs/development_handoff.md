@@ -32,6 +32,7 @@ Phase 5 の通知・承認 UI を ntfy / Linear Status から Discord Bot Gatewa
 
 - 作業ブランチ：`codex/phase5-discord-ui`（結果 UX 改善ブランチから継続）
 - Discord 実装 commit：`d5e3138`
+- Gateway fail-closed 修正 commit：`a294624`
 - 結果 UX 改善 commit：`800ac7f`、`fa19f3a`
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
@@ -47,7 +48,7 @@ Phase 5 の通知・承認 UI を ntfy / Linear Status から Discord Bot Gatewa
 - task start、phase transition、retry、proposal、experiment、analysis、task completion、budget、unrecoverable error、repair success を typed event として追加。通知失敗は通常処理の成否を変えず、承認通知が失敗しても自動承認しない。
 - Discord Bot token を coding agent / reviewer / check command の環境から除外するよう `sanitized_env` を拡張。
 - `research-agent discord check` で実 Bot の Gateway 接続、guild、4チャンネルの view/send/embed/history 権限を確認。`--send-test` で各チャンネルに「実タスクではない」と明記した Embed を1件ずつ投稿した。実ユーザーによるボタンクリックは未確認。
-- 関連テスト93件が成功（Discord 26、既存通知・Phase 3/4 flow 21、Phase 5 46）。ユーザー指示により全 pytest は実行していない。
+- 関連テスト94件が成功（Discord 27、既存通知・Phase 3/4 flow 21、Phase 5 46）。ユーザー指示により全 pytest は実行していない。
 
 ### Phase 5 結果登録 UX 改善（2026-10-10 / Codex）
 
@@ -244,7 +245,7 @@ Phase 5 の通知・承認 UI を ntfy / Linear Status から Discord Bot Gatewa
 
 ### Discord 通知・承認 UI（2026-10-10、MacBook）
 
-- `uv run pytest -q tests/test_discord_notifications.py`：26 passed。routing、Embed、厳格な設定、outbox の dedupe / 再起動復元 / retry、権限外・bot・別 guild / channel・期限切れ・処理済み・二重 Interaction、Approve / Reject / Revision、spec stale、Linear 反映、token 除外。
+- `uv run pytest -q tests/test_discord_notifications.py`：27 passed。routing、Embed、厳格な設定、Gateway fail-closed、outbox の dedupe / 再起動復元 / retry、権限外・bot・別 guild / channel・期限切れ・処理済み・二重 Interaction、Approve / Reject / Revision、spec stale、Linear 反映、token 除外。
 - 既存通知・Phase 3/4 flow：21件、100% passed。completed / failed hook、repair / experiment / analysis event を確認。
 - Phase 5 関連：46 passed。旧 linear mode の後方互換、policy / outbox / engine / Fake E2E / Prefect flow / CLI を確認。
 - `docker compose --env-file .env -f infra/compose.yaml config --quiet`：成功。`research-agent discord --help` / `discord check --help`：成功。
