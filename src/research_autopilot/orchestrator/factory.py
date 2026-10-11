@@ -37,5 +37,25 @@ def build_deps(settings: Settings, on_retry=None) -> Deps:
         reviewer=OpenAIReviewer(settings.reviewer_model, tracing=settings.agents_tracing),
         store=store,
         settings=settings,
-        catalog=context_from_env(store),
+        catalog=(catalog := context_from_env(store)),
+        literature=_literature(settings, catalog),
     )
+
+
+def _literature(settings: Settings, catalog):
+    """Phase 8 Researcher (needs RA_LITERATURE_CONTACT_EMAIL); notes go to Notion Research Notes when configured."""
+    import os
+    if not os.environ.get("RA_LITERATURE_CONTACT_EMAIL", "").strip():
+        return None
+    from research_autopilot.literature.researcher import deps_from_env, research
+    from research_autopilot.autopilot.settings import load_phase5_settings
+    writer = None
+    notes_ds = load_phase5_settings().notes_data_source_id
+    if notes_ds and settings.notion_api_token:
+        from research_autopilot.tasks.notion_writer import NotionWriter
+        writer = NotionWriter(settings.notion_api_token.get_secret_value(), settings.notion_tasks_data_source_id,
+                              notes_ds)
+
+    def run(question: str, task_id: str | None, seeds: list[str]):
+        return research(deps_from_env(catalog, writer), question, task_id=task_id, seeds=seeds)
+    return run

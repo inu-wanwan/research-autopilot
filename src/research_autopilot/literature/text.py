@@ -9,14 +9,14 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from research_autopilot.literature.acquire import CACHE
+from research_autopilot.literature import acquire
 
 LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "−": "-", "–": "-", "—": "-", "’": "'",
              "‘": "'", "“": '"', "”": '"'}
 
 
 def pdf_pages(path: Path, sha256: str) -> list[str]:
-    cache = CACHE / "text" / f"{sha256}.json"
+    cache = acquire.CACHE / "text" / f"{sha256}.json"
     if cache.is_file():
         return json.loads(cache.read_text())
     reader = PdfReader(str(path))
@@ -42,21 +42,29 @@ def repo_files(root: Path) -> dict[str, str]:
     return out
 
 
-def normalize(text: str) -> str:
-    """Matching form: NFKC, ligatures/dashes/quotes unified, de-hyphenated line breaks, collapsed space."""
+def normalize(text: str, join_hyphens: bool = True) -> str:
+    """Matching form: NFKC, ligatures/dashes/quotes unified, collapsed space.
+
+    A hyphen at a line break is either a split word ("effi-\ncient") or a compound ("sparsity-\ninducing");
+    ``join_hyphens`` selects which reading is produced, and matching tries both.
+    """
     t = unicodedata.normalize("NFKC", text)
     for a, b in LIGATURES.items():
         t = t.replace(a, b)
-    t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
+    t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2" if join_hyphens else r"\1-\2", t)
     return re.sub(r"\s+", " ", t).strip().lower()
 
 
 def find_quote(quote: str, pages: list[str]) -> int | None:
     """1-based page where the (normalized) quote occurs, else None."""
-    q = normalize(quote)
-    if len(q) < 12:
+    base = normalize(quote, True)
+    if len(base) < 12:
         return None
+    # A sentence can mix split words and compounds at line ends, so also compare hyphen-free forms.
+    qs = {base, normalize(quote, False), base.replace("-", "")}
     for i, page in enumerate(pages, 1):
-        if q in normalize(page):
+        joined = normalize(page, True)
+        variants = (joined, normalize(page, False), joined.replace("-", ""))
+        if any(q in v for q in qs for v in variants):
             return i
     return None

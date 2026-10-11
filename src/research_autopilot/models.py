@@ -123,6 +123,7 @@ class TaskSpec(BaseModel):
     file_scope: str | None = None
     non_goals: str | None = None
     input_artifacts: str | None = None
+    literature: str | None = None  # Phase 8
 
     @classmethod
     def from_sources(cls, issue: LinearIssue, page: NotionTask) -> "TaskSpec":
@@ -146,6 +147,7 @@ class TaskSpec(BaseModel):
             file_scope=s.get("file_scope"),
             non_goals=s.get("non_goals"),
             input_artifacts=s.get("input_artifacts"),
+            literature=s.get("literature"),
         )
 
     def section(self, name: str) -> str | None:
@@ -191,6 +193,9 @@ class ExecutionPlan(BaseModel):
     resource_estimate: ResourceEstimate
     open_questions: list[str]
     approvals_needed: list[str] = Field(description="Decisions that need human approval before execution")
+    literature_requests: list[str] = Field(default_factory=list, description=(
+        "Literature questions whose evidence would materially change this plan (empty if none); Research "
+        "Autopilot investigates them and asks for a revised plan"))
 
     @model_validator(mode="after")
     def _consistent(self) -> "ExecutionPlan":
@@ -415,3 +420,5 @@ class ExecutionHandoff(BaseModel):
     input_artifacts: str | None = None
     # Phase 7A: frozen catalog resolution (verified artifacts) the plan was made against.
     catalog_resolution: dict | None = None
+    # Phase 8: literature reports (Research Artifacts) the plan was grounded on.
+    literature_reports: list[str] = Field(default_factory=list)

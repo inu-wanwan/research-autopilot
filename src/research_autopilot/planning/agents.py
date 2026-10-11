@@ -84,6 +84,12 @@ Rules:
   (changing scope, metrics, data, compute beyond the estimate) goes to approvals_needed.
 - If reviewer revision requests are provided, address each of them explicitly while
   still obeying the rules above.
+- LITERATURE EVIDENCE (if present in the input) comes from an automated literature review: claims marked
+  VERIFIED were found verbatim in the cited source; UNVERIFIED ones were not and must not be treated as facts.
+  Use the evidence to ground methods and conditions, cite source ids, and never change the fixed scientific
+  specification because of it (put proposed changes into approvals_needed).
+- If a question only the literature can answer would materially change the plan, put it into
+  literature_requests (concise, answerable questions); otherwise leave it empty.
 - Write in the same language as the task specification.
 """
 

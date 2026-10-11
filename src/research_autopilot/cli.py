@@ -41,6 +41,9 @@ app.add_typer(discord_app, name="discord")
 from research_autopilot.catalog.cli import app as catalog_app  # noqa: E402
 
 app.add_typer(catalog_app, name="catalog")
+from research_autopilot.literature.cli import app as literature_app  # noqa: E402
+
+app.add_typer(literature_app, name="literature")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 

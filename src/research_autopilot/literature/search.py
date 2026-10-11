@@ -140,7 +140,7 @@ def discover(net: Net, query: str, *, seeds: list[str] = (), code_query: str | N
         ("arxiv", lambda: search_arxiv(net, query, per_service)),
         ("crossref", lambda: search_crossref(net, query, per_service)),
         ("openalex", lambda: search_openalex(net, query, per_service)),
-        ("github", lambda: search_github(net, code_query or query, 5)),
+        ("github", lambda: search_github(net, code_query or _keywords(query), 5)),
     ]
     for seed in seeds:  # explicit DOIs / arXiv ids / repositories from the task
         calls.append((f"seed {seed}", lambda s=seed: _seed(net, s)))
@@ -241,6 +241,17 @@ def _same_work(a: Candidate, b: Candidate) -> bool:
     if norm_title(a.title) and norm_title(a.title) == norm_title(b.title):
         return a.year is None or b.year is None or abs(a.year - b.year) <= 1
     return False
+
+
+def _keywords(query: str, n: int = 6) -> str:
+    """GitHub search rejects long queries: keep the first distinctive words (acronyms first)."""
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9-]+", query)[:40]
+    stop = {"the", "and", "how", "what", "with", "from", "for", "into", "their", "them", "realizes", "reference",
+            "implementation", "setup", "model", "models", "experimental"}
+    acr = [w for w in words if w.isupper() and len(w) >= 3]
+    rest = [w for w in words if w.lower() not in stop and w not in acr and len(w) > 3]
+    picked = list(dict.fromkeys(acr + rest))[:n]
+    return " ".join(picked) if picked else query[:120]
 
 
 def _year(s: str) -> int | None:
