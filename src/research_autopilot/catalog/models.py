@@ -64,7 +64,8 @@ class AdapterRecord(BaseModel):
     kind: AdapterKind
     origin: AdapterOrigin
     definition: dict[str, Any] | None = None  # declarative body
-    entrypoint: str | None = None             # python: "package.module:factory"
+    entrypoint: str | None = None             # python (manual, trusted package): "package.module:factory"
+    python_source: str | None = None          # python (generated): module source, only ever run in a sandbox
     definition_hash: str
     state: AdapterState = AdapterState.REGISTERED
     generator: dict[str, Any] = Field(default_factory=dict)  # 7B: model / prompt hash / source scan
@@ -149,6 +150,37 @@ class Artifact(BaseModel):
         return next((loc for loc in self.locations if loc.environment == environment), None)
 
 
+class GenerationAttempt(BaseModel):
+    attempt: int
+    adapter_id: str | None = None
+    kind: str | None = None
+    passed: bool = False
+    problems: list[str] = Field(default_factory=list)
+    cost_usd: float | None = None
+    rationale: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+
+
+class GenerationRun(BaseModel):
+    """Phase 7B audit record of one autonomous adapter generation for a repository."""
+
+    schema_version: Literal["1.0"] = SCHEMA
+    generation_id: str = Field(default_factory=new_id)
+    repository_id: str
+    environment: str
+    reason: str                     # why generation was needed (detection result)
+    model: str | None = None
+    survey_hash: str | None = None
+    attempts: list[GenerationAttempt] = Field(default_factory=list)
+    outcome: Literal["activated", "awaiting_human", "rejected", "skipped", "failed"] = "failed"
+    adapter_id: str | None = None   # final adapter (activated or awaiting human)
+    note: str = ""
+    total_cost_usd: float = 0.0
+    started_at: datetime = Field(default_factory=utcnow)
+    finished_at: datetime | None = None
+
+
 class ScanRecord(BaseModel):
     schema_version: Literal["1.0"] = SCHEMA
     scan_id: str = Field(default_factory=new_id)
@@ -160,6 +192,7 @@ class ScanRecord(BaseModel):
     finished_at: datetime | None = None
     discovered: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
+    became_stale: int = 0  # previously catalogued artifacts no longer observed by this scan
     errors: list[str] = Field(default_factory=list)
 
 

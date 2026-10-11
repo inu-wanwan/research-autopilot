@@ -170,6 +170,8 @@ catalog_artifacts = _record_table("catalog_artifacts", "artifact_id",
                                   sa.Column("status", sa.String(24), index=True, nullable=False))
 catalog_scans = _record_table("catalog_scans", "scan_id",
                               sa.Column("repository_id", sa.String(120), index=True, nullable=False))
+catalog_generations = _record_table("catalog_generations", "generation_id",
+                                    sa.Column("repository_id", sa.String(120), index=True, nullable=False))
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

@@ -76,12 +76,14 @@ def test_python_adapters_are_confined_to_the_trusted_package_and_generated_ones_
                                 name="evil", version="1", entrypoint="os:system")
     rec = adapters.validate(ctx.store, outside.adapter_id, repository_id="casci", root=ctx.root("casci"), actor=HUMAN)
     assert rec.state is AdapterState.REJECTED and "trusted" in rec.validation.checks[0].detail
+    with pytest.raises(AdapterError, match="no entrypoint"):  # generated code is never importable
+        adapters.register(ctx.store, kind=AdapterKind.PYTHON, origin=AdapterOrigin.GENERATED, actor="ai",
+                          name="gen", version="1", entrypoint="research_autopilot.catalog.builtin.x:make")
     generated = adapters.register(ctx.store, kind=AdapterKind.PYTHON, origin=AdapterOrigin.GENERATED, actor="ai",
-                                  name="gen", version="1",
-                                  entrypoint="research_autopilot.catalog.builtin.x:make",
+                                  name="gen", version="1", python_source="def discover(root):\n    return []\n",
                                   generator={"model": "fake"})
-    with pytest.raises(AdapterError, match="never executed"):
-        adapters.runtime(generated)
+    from research_autopilot.catalog.sandbox import SandboxedPythonRuntime
+    assert isinstance(adapters.runtime(generated), SandboxedPythonRuntime)
     # Phase 7B policy hook: only generated declarative adapters may skip the human.
     gen_decl = adapters.register(ctx.store, kind=AdapterKind.DECLARATIVE, origin=AdapterOrigin.GENERATED, actor="ai",
                                  definition={**SHARD_ADAPTER, "name": "gen-shards"})

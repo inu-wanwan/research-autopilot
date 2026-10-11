@@ -44,7 +44,7 @@ class _Declarative:
 
 def register(store, *, kind: AdapterKind, origin: AdapterOrigin, actor: str,
              definition: dict[str, Any] | None = None, entrypoint: str | None = None,
-             name: str | None = None, version: str | None = None,
+             python_source: str | None = None, name: str | None = None, version: str | None = None,
              generator: dict[str, Any] | None = None) -> AdapterRecord:
     """Store a new immutable adapter version in state REGISTERED (idempotent for identical content)."""
     if kind is AdapterKind.DECLARATIVE:
@@ -52,8 +52,12 @@ def register(store, *, kind: AdapterKind, origin: AdapterOrigin, actor: str,
             raise AdapterError("a declarative adapter needs a definition and no entrypoint")
         name, version = definition.get("name"), definition.get("version")
         body: Any = definition
+    elif origin is AdapterOrigin.GENERATED:
+        if not python_source or entrypoint is not None or definition is not None or not name or not version:
+            raise AdapterError("a generated python adapter needs name, version and source (no entrypoint)")
+        body = {"python_source": python_source}
     else:
-        if entrypoint is None or definition is not None or not name or not version:
+        if entrypoint is None or definition is not None or python_source is not None or not name or not version:
             raise AdapterError("a python adapter needs name, version and an entrypoint 'module:factory'")
         body = {"entrypoint": entrypoint}
     if not name or not version:
@@ -67,7 +71,8 @@ def register(store, *, kind: AdapterKind, origin: AdapterOrigin, actor: str,
             raise AdapterError(f"{adapter_id} already exists with different content; bump the version")
         return rec
     rec = AdapterRecord(adapter_id=adapter_id, name=name, version=version, kind=kind, origin=origin,
-                        definition=definition, entrypoint=entrypoint, definition_hash=digest,
+                        definition=definition, entrypoint=entrypoint, python_source=python_source,
+                        definition_hash=digest,
                         generator=generator or {})
     rec.event("registered", actor, f"{kind.value} adapter from {origin.value}")
     _save(store, rec)
@@ -78,7 +83,11 @@ def runtime(rec: AdapterRecord) -> AdapterRuntime:
     if rec.kind is AdapterKind.DECLARATIVE:
         return _Declarative(rec.definition or {})
     if rec.origin is AdapterOrigin.GENERATED:
-        raise AdapterError("generated python adapters are never executed in-process")
+        # Never imported in-process: discovery always runs in the OS sandbox (validation and after approval).
+        from research_autopilot.catalog.sandbox import SandboxedPythonRuntime
+        if not rec.python_source:
+            raise AdapterError("generated python adapter has no source")
+        return SandboxedPythonRuntime(rec.python_source)
     module, _, attr = (rec.entrypoint or "").partition(":")
     if not attr or not module.startswith(TRUSTED_PYTHON_PREFIXES):
         raise AdapterError(f"python adapter entrypoint {rec.entrypoint!r} is outside the trusted package")

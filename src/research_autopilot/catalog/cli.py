@@ -158,3 +158,61 @@ def resolve(requirement: list[str] = typer.Argument(..., help='e.g. "catalog: ki
                         for a in res.artifacts]})
     if res.problems:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------- Phase 7B
+
+
+@app.command("detect")
+def detect(repository: list[str] = typer.Argument(None, help="Repository ids (default: every registered one)")) -> None:
+    """Which registered repositories need a (new or updated) adapter on this environment."""
+    from research_autopilot.catalog import generation
+    ctx = _ctx()
+    _out([generation.detect(ctx, r).model_dump() for r in (repository or sorted(ctx.registry))])
+
+
+def build_generator(budget_usd: float):
+    """Paid generator with the shared pricing table; refuses models without a configured price."""
+    import os
+
+    from research_autopilot.catalog.generation import OpenAIAdapterGenerator
+    from research_autopilot.config import load_settings
+
+    s = load_settings()
+    model = os.environ.get("RA_ADAPTER_GENERATOR_MODEL", "").strip() or s.reviewer_model
+    spent = {"usd": 0.0}
+    gen = OpenAIAdapterGenerator(model, s.model_pricing, lambda: budget_usd - spent["usd"], s.agents_tracing)
+    original = gen.generate
+
+    def tracked(payload):
+        run = original(payload)
+        spent["usd"] += run.cost_usd or 0.0
+        return run
+    gen.generate = tracked
+    return gen
+
+
+@app.command("generate")
+def generate(repository: str,
+             focus: str | None = typer.Option(None, "--focus", help="What artifacts matter (ranks the survey)"),
+             attempts: int = typer.Option(3, "--attempts", min=1, max=5),
+             budget_usd: float = typer.Option(None, "--budget-usd", help="Default RA_ADAPTER_GENERATION_BUDGET_USD or 1.0"),
+             force: bool = typer.Option(False, "--force", help="Generate even when detection says it is not needed")
+             ) -> None:
+    """AI-generate an adapter, validate it, and activate it when policy allows (declarative only)."""
+    import os
+
+    from research_autopilot.catalog import generation
+    budget = budget_usd if budget_usd is not None else float(os.environ.get("RA_ADAPTER_GENERATION_BUDGET_USD") or 1.0)
+    run = generation.generate_adapter(_ctx(), repository, build_generator(budget), focus=focus,
+                                      max_attempts=attempts, force=force)
+    _out(run.model_dump(mode="json"))
+    if run.outcome in ("rejected", "failed"):
+        raise typer.Exit(1)
+
+
+@app.command("generations")
+def generations(repository: str) -> None:
+    """Generation history (attempts, validation problems, outcome, cost) for a repository."""
+    from research_autopilot.catalog import generation
+    _out([g.model_dump(mode="json") for g in generation.history(_ctx().store, repository)])

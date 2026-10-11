@@ -107,3 +107,29 @@ def install(ctx: CatalogContext, definition: dict, repo_ids: list[str], *, activ
     for rid in repo_ids:
         adapters.bind(ctx.store, rid, [definition["name"]], actor=HUMAN, registry=ctx.registry)
     return rec
+
+
+# ---- Repository C: "experiment runs with a manifest per seed" (ML-style layout) ----
+
+def runs_repo(root: Path) -> Path:
+    for exp in ("baseline", "ablation"):
+        for seed in (0, 1):
+            d = root / f"experiments/{exp}/seed_{seed}"
+            write_json(d / "manifest.json", {"experiment": exp, "seed": seed, "dataset": "toy-v1", "commit": "c0ffee1"})
+            write_json(d / "metrics.json", {"experiment": exp, "seed": seed, "loss": 0.1 * (seed + 1), "steps": 100})
+    return root
+
+
+RUNS_ADAPTER = {
+    "name": "toy-runs", "version": "1.0.0",
+    "artifacts": [{
+        "rule": "metrics", "kind": "training-metrics",
+        "pattern": "experiments/{experiment}/seed_{seed}/metrics.json",
+        "fields": {"doc_experiment": "/experiment", "doc_seed": "/seed", "loss": "/loss", "steps": "/steps"},
+        "identity": ["experiment", "seed"],
+        "metadata": ["loss", "steps"],
+        "checks": [{"type": "equals_field", "field": "doc_experiment", "other": "experiment"},
+                   {"type": "equals_field", "field": "doc_seed", "other": "seed"},
+                   {"type": "finite", "field": "loss"}],
+    }],
+}

@@ -140,6 +140,7 @@ def _mark_unobserved(ctx: CatalogContext, repository_id: str, adapter_ids: set[s
         if art.location_for(ctx.environment) is None:
             continue
         art.locations = [loc for loc in art.locations if loc.environment != ctx.environment]
+        record.became_stale += 1
         if not art.locations:
             art.status = ValidationStatus.STALE
             art.status_reason = f"not observed by scan {record.scan_id} on {ctx.environment} (changed or removed)"
