@@ -525,3 +525,22 @@ def test_a_confirmed_discord_cancel_ends_the_research_and_voids_its_pending_appr
     assert linear.issues["INU-900"].state_name == "Canceled"
     closed = ApprovalRequest.model_validate(deps.store.get(db.approval_requests, pending.request_id))
     assert closed.status is ApprovalStatus.STALE and "打ち切られた" in closed.payload["_closed_note"]
+
+
+def test_a_research_child_is_not_sent_to_a_human_completion_review(tmp_path):
+    from phase5_fakes import FakeCompletionReviewer
+    from research_autopilot.autopilot.models import ApprovalKind
+    deps, linear, *_ = _build(tmp_path, completion=FakeCompletionReviewer(status="unverifiable"))
+    poll(deps)
+    (req,) = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    from test_phase10_research import _discord
+    _discord(deps, req)
+    for _ in range(25):
+        poll(deps)
+    assert not [r for r in deps.store.find(db.approval_requests) if r.get("kind") == ApprovalKind.COMPLETION_REVIEW.value]
+    kids = [r for r in _runs_all(deps) if r.research_cycle_id]
+    assert kids and any(any(e["kind"] == "completion_unestablished" for e in k.events) for k in kids)
+
+
+def _runs_all(deps):
+    return [WorkflowRun.model_validate(r) for r in deps.store.find(db.workflow_runs)]

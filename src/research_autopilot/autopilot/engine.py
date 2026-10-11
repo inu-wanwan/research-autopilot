@@ -750,7 +750,11 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     if not a.deterministic_ok:
         _block(deps, run, "cannot complete: " + "; ".join(a.reasons))
         return
-    if not a.auto_done and not approved_review:
+    if not a.auto_done and not approved_review and run.research_cycle_id:
+        # a research child is judged by the research evaluator, not by a human (docs/phase_specs/ux_policy.md §3):
+        # record what the completion check could not establish and finish; the cycle evaluation sees it
+        run.event("completion_unestablished", "research evaluator decides; not established: " + "; ".join(a.reasons)[:600])
+    elif not a.auto_done and not approved_review:
         issue = deps.linear.get_issue(run.task_id)
         req = deps.approvals.request(kind=ApprovalKind.COMPLETION_REVIEW, issue=issue, root_task_id=run.root_task_id,
                                      spec_hash=_spec_hash_of(bundle.spec), title=f"Review results of {run.task_id} before Done",
