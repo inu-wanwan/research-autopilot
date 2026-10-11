@@ -386,6 +386,12 @@ def test_every_llm_output_type_is_valid_for_the_strict_json_schema():
         AgentOutputSchema(t, strict_json_schema=True)
 
 
+def test_numbers_with_trailing_zeros_are_matched_in_quotes():
+    q = "E2E の仮の計算予算上限：累積 1 CPU-hour、API 費用 10 USD 最大12 geometry。0.50 Å 〜 100 点"
+    assert all(scope_mod._num_ok(v, q) for v in (1.0, 10.0, 12, 0.5, 100))
+    assert not scope_mod._num_ok(5.0, q)
+
+
 def test_range_bounds_are_read_from_the_quote_and_unbounded_ranges_block():
     from phase2_fakes import make_issue, make_page
 

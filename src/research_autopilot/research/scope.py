@@ -65,7 +65,8 @@ def extract_scope(llm, spec) -> ResearchScope:
 
 
 def _numbers(text: str) -> set[str]:
-    return {n.lstrip("-").rstrip("0").rstrip(".") or "0" for n in NUMBER.findall(text or "")}
+    # canonical form ("10" -> "10", "2.50" -> "2.5"); stripping zeros from integers would turn 10 into 1
+    return {f"{abs(float(n)):g}" for n in NUMBER.findall(text or "")}
 
 
 def _num_ok(value: float | int | None, quote: str) -> bool:
