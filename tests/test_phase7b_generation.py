@@ -235,7 +235,7 @@ def test_generated_python_adapter_is_sandbox_validated_and_waits_for_a_human(tmp
     assert run.outcome == "awaiting_human", run.attempts[-1].problems
     rec = adapters.get(ctx.store, run.adapter_id)
     assert rec.state is AdapterState.VALIDATED and rec.python_source and rec.entrypoint is None
-    assert any("adapter activate" in d for d in notifier.events[0].details)
+    assert notifier.events[0].needs_human and any("adapter activate" in s for s in notifier.events[0].steps)
     adapters.bind(ctx.store, "repo", [rec.name], actor=HUMAN, registry=ctx.registry)
     assert service.scan(ctx, "repo").discovered == 0  # not active -> never used
     with pytest.raises(adapters.AdapterError, match="human"):

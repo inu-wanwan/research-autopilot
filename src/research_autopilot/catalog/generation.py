@@ -515,16 +515,21 @@ def _notify(ctx: CatalogContext, run: GenerationRun, notifier) -> None:
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
 
-    kind = {"activated": EventKind.PROPOSAL_GENERATED, "awaiting_human": EventKind.APPROVAL_REQUIRED}.get(
+    # "awaiting_human" has no approval request (no buttons): it goes to approvals with the steps instead.
+    kind = {"activated": EventKind.PROPOSAL_GENERATED, "awaiting_human": EventKind.PROPOSAL_GENERATED}.get(
         run.outcome, EventKind.UNRECOVERABLE_ERROR)
     details = [f"Repository: {run.repository_id} ({run.environment})", f"Outcome: {run.outcome}", run.note[:300],
                f"Cost: ${run.total_cost_usd:.4f}"]
+    steps = []
     if run.outcome == "awaiting_human" and run.adapter_id:
-        details.append(f"Review, then: research-agent catalog adapter activate {run.adapter_id} --actor <you>")
+        steps = [f"生成された adapter {run.adapter_id} の内容（抽出規則とサンプルの抽出結果）を確認する",
+                 f"問題なければ有効化する: research-agent catalog adapter activate {run.adapter_id} --actor <あなたの名前>",
+                 "有効化しない場合は何もしなくてよい（この adapter は使われない）"]
     try:
         notify_once(ctx.store, NotificationEvent(kind=kind, flow_name="catalog-adapter-generation",
                                                  flow_run_name=run.repository_id, details=details,
-                                                 dedupe_key=f"adapter-generation:{run.generation_id}"),
+                                                 dedupe_key=f"adapter-generation:{run.generation_id}",
+                                                 needs_human=bool(steps), steps=steps),
                     notifier=notifier)
     except Exception:  # notification failure never changes the outcome
         pass

@@ -29,7 +29,10 @@ def test_blocked_run_notifies_human(tmp_path, monkeypatch, recorder):
     monkeypatch.setattr(flow_mod, "build_impl_deps", lambda: deps)
     out = flow_mod.implement_task_flow(handoff_path=rec.handoff_path)
     assert out["state"] == "blocked"
-    assert any(e.kind.value == "approval_required" for e in recorder.events)
+    # UX policy: no approval request exists, so no buttonless approval message: reasons + steps, routed to approvals
+    human = [e for e in recorder.events if e.needs_human]
+    assert human and human[0].kind.value != "approval_required" and human[0].steps
+    assert any("not_approved" in d for d in human[0].details)
 
 
 def test_cli_implement_local_and_listing(tmp_path, monkeypatch):

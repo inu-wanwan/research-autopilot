@@ -148,16 +148,47 @@ def _task(draft: GrantDraft) -> str:
 
 def _notify(store, req: ApprovalRequest, notifier) -> None:
     from research_autopilot.notifications import notify_once
-    from research_autopilot.notifications.events import EventKind, NotificationEvent
+    from research_autopilot.notifications.guidance import approval_event
     try:
-        notify_once(store, NotificationEvent(
-            kind=EventKind.APPROVAL_REQUIRED, flow_name="external-code", flow_run_name=req.task_id,
-            state_name=f"{req.kind.value}:{req.status.value}",
-            details=[f"Approval: {req.title}", *req.what_changes[:12], *[f"diff: {d}" for d in req.diff_from_original[:5]],
-                     f"budget: {req.budget_summary}"],
-            dedupe_key=f"approval:{req.request_id}", approval_request_id=req.request_id), notifier)
+        notify_once(store, approval_event(req, flow_name="external-code", dedupe_key=f"approval:{req.request_id}",
+                                          changes_limit=12), notifier)
     except Exception:  # the request is durable; delivery is retried by the notifier outbox
         pass
+
+
+_ONBOARD_AGAIN = ("オンボーディングをやり直す: Autopilot がこのリポジトリを次に必要としたときに自動で再開する"
+                  "（すぐ行う場合は research-agent external onboard <name> --retry-failed）")
+
+
+def _notify_human(store, notifier, *, task_id: str, key: str, headline: str, reason: str, steps: list[str]) -> None:
+    from research_autopilot.notifications import notify_once
+    from research_autopilot.notifications.guidance import human_event
+    try:
+        notify_once(store, human_event(flow_name="external-code", task_id=task_id, state=None, headline=headline,
+                                       reason=reason, steps=steps, dedupe_key=key), notifier)
+    except Exception:
+        pass
+
+
+def _on_closed(store, notifier):
+    """Notify callback for stale / expired external requests (the original message is edited by the gateway;
+    this message says what to do next).  A run waiting on an external-code request reports it itself."""
+    def notify(req: ApprovalRequest, note: str) -> None:
+        if req.status not in (ApprovalStatus.STALE, ApprovalStatus.EXPIRED):
+            return
+        if req.kind is ApprovalKind.EXTERNAL_CODE and any(
+                r.get("waiting_for") == req.request_id for r in store.find(db.workflow_runs)):
+            return  # engine._external_tick sends the message with steps for the waiting run
+        what = "期限切れで失効しました" if req.status is ApprovalStatus.EXPIRED else "対象が変わったため失効しました"
+        if req.kind is ApprovalKind.EXTERNAL_LICENSE:
+            steps = ["失効の理由（下記）を確認する", _ONBOARD_AGAIN.replace("<name>", req.task_id.removeprefix("external:")),
+                     "ライセンス判断の依頼が改めて届いたら判断する"]
+        else:
+            steps = ["失効の理由（下記）を確認する",
+                     "必要なら実験をやり直す（Autopilot が実行するときに、現在のコードに対する新しい依頼が届く）"]
+        _notify_human(store, notifier, task_id=req.task_id, key=f"external-closed:{req.request_id}",
+                      headline=f"外部コードの依頼 {req.request_id[:8]} が{what}", reason=note, steps=steps)
+    return notify
 
 
 # ---------------------------------------------------------------- decisions -> grants
@@ -181,7 +212,7 @@ def current_hash(store, req: ApprovalRequest) -> str:
 
 def process_decisions(store, *, catalog=None, notifier=None, on_license=None) -> list[dict]:
     """Consume verified Discord decisions on external-code / license requests (idempotent)."""
-    ctl = ApprovalController(store, None, None, mode="discord")
+    ctl = ApprovalController(store, None, None, mode="discord", notify=_on_closed(store, notifier))
     out = []
     for req in ctl.pending():
         if req.kind not in KINDS:
@@ -189,12 +220,12 @@ def process_decisions(store, *, catalog=None, notifier=None, on_license=None) ->
         res = ctl.check(req, _NoIssue(), [], current_hash(store, req))
         item = {"request_id": req.request_id, "kind": req.kind.value, "status": res.status.value, "note": res.note}
         if res.decision is not None:
-            item.update(_apply(store, req, res.decision, catalog, on_license))
+            item.update(_apply(store, req, res.decision, catalog, on_license, notifier))
         out.append(item)
     return out
 
 
-def _apply(store, req: ApprovalRequest, decision, catalog, on_license) -> dict:
+def _apply(store, req: ApprovalRequest, decision, catalog, on_license, notifier=None) -> dict:
     if req.kind is ApprovalKind.EXTERNAL_LICENSE:
         entry = registry.get_entry(store, req.payload["entry_id"])
         entry.verification.license.human_decision = {"decision": decision.decision, "actor": decision.actor,
@@ -208,6 +239,13 @@ def _apply(store, req: ApprovalRequest, decision, catalog, on_license) -> dict:
             entry.state = EntryState.FAILED
             entry.verification.failure_reasons.append(f"license use not approved by {decision.actor}")
         registry.save_entry(store, entry, catalog)
+        if decision.decision != "approve":
+            _notify_human(store, notifier, task_id=req.task_id, key=f"license-not-approved:{req.request_id}",
+                          headline=f"{entry.name} はライセンス判断により使用しません（登録は失敗扱い）",
+                          reason=f"license {decision.decision} by {decision.actor}: {decision.comment or '(コメントなし)'}",
+                          steps=["このリポジトリを必要とする研究タスクは実行されない。Notion の仕様で別の実装・"
+                                 "リポジトリを指定するか、外部コードを使わない方針に直す",
+                                 "直したら Notion で Run Autopilot を押す"])
         if decision.decision == "approve" and on_license is not None:
             on_license(entry)
         return {"entry_id": entry.entry_id}

@@ -181,11 +181,26 @@ def _notify(deps: ExternalDeps, entry: RegistryEntry) -> None:
     elif v and v.failure_reasons:
         details.append("; ".join(v.failure_reasons)[:300])
     try:
+        failed = entry.state is EntryState.FAILED
         notify_once(deps.store, NotificationEvent(kind=kind, flow_name="external-onboarding", flow_run_name=entry.name,
-                                                  details=details, dedupe_key=f"external:{entry.entry_id}:{entry.state.value}"),
+                                                  details=details, dedupe_key=f"external:{entry.entry_id}:{entry.state.value}",
+                                                  needs_human=failed, steps=_failed_steps(entry) if failed else []),
                     deps.notifier)
     except Exception:
         pass
+
+
+def _failed_steps(entry: RegistryEntry) -> list[str]:
+    """What a human does after a failed onboarding (Autopilot never retries a failed commit by itself)."""
+    reasons = " ".join(entry.verification.failure_reasons if entry.verification else [])
+    if "license" in reasons:
+        fix = ("ライセンスがこの用途を認めていないため使えない。Notion の仕様で別の実装・リポジトリを指定するか、"
+               "外部コードを使わない方針に直す")
+    else:
+        fix = ("原因（取得・整合性・サンドボックス検証・依存関係）を確認し、必要なら Notion の仕様で別の commit や"
+               "リポジトリを指定する。同じ commit をやり直す場合は research-agent external onboard "
+               f"{entry.name} --retry-failed")
+    return ["失敗の理由（下記）を確認する", fix, "直したら研究タスクの Notion ページで Run Autopilot を押す"]
 
 
 def deps_from_env(store, catalog=None, notifier=None) -> ExternalDeps:

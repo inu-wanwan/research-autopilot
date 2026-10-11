@@ -51,10 +51,18 @@ def _publish(m: ImplementationManifest) -> dict:
     for e in m.events:
         logger.info("[%s] %s", e.kind, e.message)
     if m.state is RunState.BLOCKED:
-        # Human attention needed (approval, scope, budget, revision limit, ...).
-        safe_send(NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="implement-task",
-                                    flow_run_name=m.task_id, flow_run_id=m.flow_run_id,
-                                    state_name=f"blocked:{m.block_reasons[-1].code if m.block_reasons else ''}"))
+        # Human attention needed (approval, scope, budget, revision limit, ...). No approval request exists
+        # behind this message, so it carries the reasons and steps instead of approval buttons.
+        safe_send(NotificationEvent(
+            kind=EventKind.UNRECOVERABLE_ERROR, flow_name="implement-task", flow_run_name=m.task_id,
+            flow_run_id=m.flow_run_id, state_name=f"blocked:{m.block_reasons[-1].code if m.block_reasons else ''}",
+            details=[*[f"理由: {b.code}: {b.message[:300]}" for b in m.block_reasons[-5:]],
+                     f"Phase 3 run: {m.phase3_run_id}",
+                     f"費用: ${m.cost_usd_known:.4f}（費用不明の呼び出し {m.cost_unknown_calls} 件）"],
+            needs_human=True,
+            steps=["下の理由を確認する（詳細は Prefect の run の artifact）",
+                   "理由に応じて Notion の仕様（実装方針・対象ファイル・受け入れ基準）、承認、環境を直す",
+                   f"implement-task を resume_run_id={m.phase3_run_id} で実行し直す"]))
     create_markdown_artifact(key="impl-" + re.sub(r"[^a-z0-9-]", "-", m.task_id.lower()),
                              markdown=summary_markdown(m), description=f"Phase 3 run for {m.task_id}")
     return {"phase3_run_id": m.phase3_run_id, "state": m.state.value, "task_id": m.task_id,

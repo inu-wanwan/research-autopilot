@@ -26,8 +26,15 @@ def run_experiment_flow(phase3_run_ids: list[str] | None = None, resume_run_id: 
     for e in m.events:
         logger.info("[%s] %s", e.kind, e.message)
     if m.state is ExperimentState.BLOCKED:
-        safe_send(NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="run-experiment", flow_run_name=m.task_id,
-                                    flow_run_id=m.flow_run_id, state_name="blocked"))
+        safe_send(NotificationEvent(
+            kind=EventKind.UNRECOVERABLE_ERROR, flow_name="run-experiment", flow_run_name=m.task_id,
+            flow_run_id=m.flow_run_id, state_name="blocked",
+            details=[f"理由: {(m.block_reason or 'unknown')[:600]}", f"Experiment run: {m.experiment_run_id}",
+                     f"費用: LLM ${m.llm_cost_known:.4f}（既知分）"],
+            needs_human=True,
+            steps=["下の理由を確認する（詳細は Prefect の run の artifact）",
+                   "理由に応じて計算条件・資源・データの指定（Notion の仕様）や外部コードの承認を直す",
+                   f"run-experiment を resume_run_id={m.experiment_run_id} で実行し直す"]))
     elif m.state is ExperimentState.COMPLETED:
         safe_send(NotificationEvent(kind=EventKind.EXPERIMENT_COMPLETED, flow_name="run-experiment",
                                     flow_run_name=m.task_id, flow_run_id=m.flow_run_id, state_name=m.state.value,
