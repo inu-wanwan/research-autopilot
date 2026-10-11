@@ -158,6 +158,18 @@ artifact_handoffs = _record_table("autopilot_artifact_handoffs", "handoff_id",
                                   sa.Column("consumer_task_id", sa.String(64), index=True, nullable=False),
                                   sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False))
 notifications_sent = _record_table("autopilot_notifications", "dedupe_key")
+# Phase 7A artifact catalog.  Identity lookups use identity_key (kind + repository + identity hash).
+catalog_adapters = _record_table("catalog_adapters", "adapter_id",
+                                 sa.Column("name", sa.String(120), index=True, nullable=False),
+                                 sa.Column("state", sa.String(24), index=True, nullable=False))
+catalog_bindings = _record_table("catalog_bindings", "repository_id")
+catalog_artifacts = _record_table("catalog_artifacts", "artifact_id",
+                                  sa.Column("kind", sa.String(120), index=True, nullable=False),
+                                  sa.Column("repository_id", sa.String(120), index=True, nullable=False),
+                                  sa.Column("identity_key", sa.String(64), index=True, nullable=False),
+                                  sa.Column("status", sa.String(24), index=True, nullable=False))
+catalog_scans = _record_table("catalog_scans", "scan_id",
+                              sa.Column("repository_id", sa.String(120), index=True, nullable=False))
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

@@ -31,6 +31,8 @@ class RepoConfig(BaseModel):
     lint_command: list[str] | None = None
     typecheck_command: list[str] | None = None
     check_timeout_seconds: int = 600
+    # Phase 7A: where this repository lives on other environments (e.g. {"eagle": "~/..."}); ``path`` is this host.
+    locations: dict[str, str] = Field(default_factory=dict)
 
 
 class ComplexityAssessment(BaseModel):
