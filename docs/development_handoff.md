@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 6B（Parent Task DAG Execution）を実装中。Eagle と TSUBAME は未実施。
+Phase 7A（Artifact Catalog Core / Repository Adapter）を実装済み。ユーザー指示により Phase 7B（Autonomous Adapter Generation）は未着手で停止中。Phase 6B は main に fast-forward merge 済み（`2f662bc`、origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針（ユーザー指示 2026-10-11）。
 
 ## Current Task
 
-親 Notion task の明示的開始から既存 child relation を取得し、検証済み DAG と structured artifact handoff により既存 Phase 2〜5 を実行する。
+登録済み研究 Repository の Artifact を Adapter 経由で発見・検証し、Planner / Executor が検証済み Artifact だけを再利用できるようにする（`docs/phase_specs/phase7a.md`）。
 
 ## Status
 
-Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff / parent completion gate と Fake integration を実装・検証済み。実 Phase A は read-only dry-run し、現行仕様不足のため安全に Blocked となることを確認。本番実行、Eagle deploy、main merge は未実施。
+Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase 2/3/4 連携を実装・検証済み。実データ（active_space_research の Phase 4 orbital 81 条件）を作業用 SQLite で発見・検証・解決済み。本番 PostgreSQL への Adapter 登録・有効化は未実施（人間の有効化操作が必要）。Phase 7B は未着手。
 
 ## Last Updated
 
@@ -30,13 +30,24 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ## Git Branch / Commit
 
-- 作業ブランチ：`codex/phase6b-parent-dag`
+- 作業ブランチ：`phase7/artifact-catalog`（main `2f662bc` から分岐）
+- Phase 7A commit：`b66fd2c`（仕様）→ `e1b5782`（core）→ `41bb60d`（連携）→ `a711a33`（CLI）→ docs commit
+- Phase 6B：`codex/phase6b-parent-dag` を main に fast-forward 済み
 - Discord 実装 commit：`d5e3138`
 - Gateway fail-closed 修正 commit：`a294624`
 - 結果 UX 改善 commit：`800ac7f`、`fa19f3a`
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 7A Artifact Catalog（2026-10-11 / Claude Code）
+
+- 仕様 `docs/phase_specs/phase7.md` / `phase7a.md` / `phase7b.md` を保存（ユーザー提供）。
+- `src/research_autopilot/catalog/`：repository-agnostic な core（identity / metadata / provenance / content hash / validation status / 環境別 location）、Adapter lifecycle（register → validate → activate、version 不変、retire、binding は Adapter 名）、データのみの declarative engine（pattern confinement、symlink 非追跡、固定語彙の check、cross_reference）、名前付き validator、CLI `research-agent catalog ...`。DB に `catalog_*` 4 table。
+- 連携：Phase 2 が Input artifacts の `catalog:` 行を Planner 前に解決（不可なら `DATA_INCONSISTENCY` で BLOCKED）し `ExecutionHandoff.catalog_resolution` に凍結、Phase 3 は read-only 入力としてプロンプト提示、Phase 4 は job 直前に再解決・再ハッシュし一致時のみ `RA_CATALOG_INPUTS` を渡す。
+- `config/catalog/adapters/active-space-phase4-orbital.json`（repository 固有知識はここだけ）。`RepoConfig.locations`、`RA_CATALOG_ENVIRONMENT` を追加。
+- 検証済み：`uv run pytest` 401 passed / 1 dependency warning（Phase 7A：catalog 17、integration 7）。実データ：204 artifact 発見、`supervisor_6c0d1dd` 81 件 verified（52,312 評価値を base cache と照合）、6c17c30 81 件・3a61c10 42 件は inconsistent、commit 未指定の 81 条件要求は ambiguous で 0 件、`git_commit=6c0d1dd` 指定で 81 件解決。研究 repo は read-only（検証前後で clean）。詳細は `docs/operations/phase7a_catalog.md`。
+- 未検証：本番 PostgreSQL での登録、Eagle での scan / 他環境 location、`catalog.builtin` の python Adapter（未作成）。
 
 ### Phase 6B Parent Task DAG Execution（2026-10-11 / Codex）
 
@@ -61,6 +72,8 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ### Exact Next Actions
 
+0. **Phase 7B はユーザー指示まで着手しない。** 着手時は `docs/phase_specs/phase7b.md` と `docs/operations/phase7a_catalog.md`（`adapters.requires_human()`、`AdapterOrigin.GENERATED`、`generator` 欄が受け入れ口）を読む。
+0. 本番 DB で使う場合は人間が `research-agent catalog adapter register/validate/activate/bind/scan` を実行（`RA_CATALOG_ENVIRONMENT=mac`）。Phase A の A2/A3 で cache を使うなら、人間が Input artifacts に `catalog: kind=orbital-casci-exhaustive-condition repository=active-space-research molecule=N2,BeO,NH3 k=2..10 git_commit=6c0d1dd expect=81` を追記するか判断する（科学仕様の変更にあたるため RA は書かない）。
 1. Phase A の本番投入はユーザー方針により**全 Phase 完了後**。それまで Phase A の実行・E2E はしない。
 2. 投入前に人間が INU-275〜278 の `Allowed files` を決めて Notion に `## Allowed files` 見出しで記入する（候補：`src/active_space_selection/`、`scripts/`、`tests/`。ページ上は未承認）。A1〜A4 の Linear blocked-by は任意（未設定なら Dependency Planner が提案し Discord 承認）。
 3. 記入後に read-only dry-run（`discover_and_build(..., registered_repositories=set(deps.impl.registry))`）で DAG が valid / problems 0 を確認してから Run Autopilot を押す。詳細は `docs/operations/phase6b_parent_dag.md`「Phase A 準備状況」。

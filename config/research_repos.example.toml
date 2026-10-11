@@ -11,3 +11,5 @@ test_command = ["uv", "run", "pytest", "-q"]
 lint_command = ["uv", "run", "ruff", "check", "."]
 typecheck_command = ["uv", "run", "mypy", "."]
 check_timeout_seconds = 600
+# Phase 7A (optional): the same repository on other environments (RA_CATALOG_ENVIRONMENT names).
+# locations = { eagle = "~/workspace/research-repos/h2-test" }
