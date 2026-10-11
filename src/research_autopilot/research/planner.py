@@ -32,8 +32,8 @@ You are the Research Planner of Research Autopilot. Draft an executable research
 SCOPE: implementation, experiment and analysis tasks forming a DAG (depends_on), small enough to run on the
 given research repository. Rules:
 - Stay strictly inside SCOPE: never change the objective, primary metric, targets, invariants or baseline; put every
-  varied quantity in `parameters` using the condition names of SCOPE.conditions with explicit values inside the
-  approved ranges; respect max_count limits over the whole research (later cycles need room).
+  varied quantity in `parameters` using the names of range / values conditions with explicit values inside the
+  approved ranges; max_count conditions are limits (never parameters): respect them over the whole research.
 - The plan is the FIRST cycle only: the smallest informative step with concrete parameter values. Tasks whose
   parameters depend on results (adaptive sampling, final aggregation after later cycles) must NOT be in the plan:
   describe them in replanning_rules; the Research Evaluator creates them in later cycles. Mark tasks whose results
@@ -61,6 +61,14 @@ def draft_plan(llm, scope: ResearchScope, evidence: list[EvidenceItem], reposito
 
 
 # ---------------------------------------------------------------- deterministic gate (10A and 10B)
+
+
+def strip_count_parameters(t: PlannedTask, scope: ResearchScope) -> PlannedTask:
+    """A max_count condition is a limit, not a value a task can set: drop it from task parameters."""
+    counts = {c.name for c in scope.conditions if c.kind == "max_count"}
+    if not counts & set(t.parameters):
+        return t
+    return t.model_copy(update={"parameters": {k: v for k, v in t.parameters.items() if k not in counts}})
 
 
 def _float(v: str) -> float | None:
@@ -182,7 +190,7 @@ def build_plan(llm, spec, *, task_id: str, notion_page_id: str | None, evidence:
     feedback: list[str] = []
     for _ in range(max_attempts):
         d = draft_plan(llm, scope, evidence, repos, feedback, revision_comment)
-        tasks = [t.to_task() for t in d.tasks]
+        tasks = [strip_count_parameters(t.to_task(), scope) for t in d.tasks]
         problems = check_tasks(tasks, scope, registry=registry, evidence_ids={e.evidence_id for e in evidence})
         problems += [f"rationale cites unknown evidence {e}" for e in d.rationale_evidence
                      if e not in {x.evidence_id for x in evidence}]

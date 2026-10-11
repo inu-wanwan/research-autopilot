@@ -61,6 +61,7 @@ def gate(decision: EvaluationDecision, *, scope: ResearchScope, cycles: list[Res
     if decision.action == "continue":
         if len(cycles) >= a.max_cycles:
             problems.append(f"the approved maximum of {a.max_cycles} cycles is reached")
+        decision.new_tasks = [planner_mod.strip_count_parameters(t, scope) for t in decision.new_tasks]
         problems += planner_mod.check_tasks(decision.new_tasks, scope, registry=registry, evidence_ids=set(),
                                             used_values=used_values, budget_used_cpu=used_cpu,
                                             budget_used_api=used_api, max_tasks=a.max_new_tasks_per_cycle)

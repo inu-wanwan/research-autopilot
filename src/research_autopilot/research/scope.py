@@ -52,7 +52,7 @@ unclear or self-contradictory use "ambiguous" / "conflicting" and explain in not
 research conditions, targets, numeric ranges, budgets, metrics, baselines or success thresholds; do not convert
 units or round numbers. conditions: one entry per varied quantity with an approved range or value set (kind range /
 values / fixed) and one entry for any stated maximum number of samples (kind max_count, `count`, `applies_to` = the
-counted parameter); use snake_case names. budget: only explicitly stated limits. autonomy: only if the text states
+counted parameter, which must be the name of a range / values condition); use snake_case names. budget: only explicitly stated limits. autonomy: only if the text states
 limits on autonomous re-planning; otherwise status "ra_default". open_questions: scientific decisions a human must
 make or clarify. Do not list the approval of this research scope itself, and do not list choices the text explicitly
 delegates to Research Autopilot (e.g. "RA plans the initial points"). {UNTRUSTED}
@@ -127,7 +127,18 @@ def verify(scope: ResearchScope, spec) -> ResearchScope:
                                                                           "are not in the cited text", blocking=True))
             c = c.model_copy(update={"status": "ambiguous", "note": "bounds not in the quote"})
         kept.append(c)
-    s.conditions = kept
+    varied = [c.name for c in kept if c.kind in ("range", "values")]
+    fixed_counts = []
+    for c in kept:  # a maximum count must refer to the varied quantity it limits
+        if c.kind == "max_count" and c.applies_to not in varied:
+            if len(varied) == 1:
+                c = c.model_copy(update={"note": (c.note + f" applies_to {c.applies_to!r} mapped to the only varied "
+                                                  f"condition {varied[0]!r}").strip(), "applies_to": varied[0]})
+            else:
+                qs.append(OpenQuestion(field=f"conditions.{c.name}", blocking=True,
+                                       question=f"which varied quantity does the limit {c.name} ({c.count}) count?"))
+        fixed_counts.append(c)
+    s.conditions = fixed_counts
     b = s.budget
     if b.status == "stated":
         if not b.quote or find_quote(b.quote, [text]) is None or not (_num_ok(b.cpu_hours, b.quote) and _num_ok(b.api_usd, b.quote)):

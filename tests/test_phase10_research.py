@@ -406,3 +406,22 @@ def test_unstated_api_budget_becomes_an_explicit_default_in_the_approval(tmp_pat
     assert plan.scope.budget.api_usd == deps.settings.default_budget.api_usd and "RA default" in plan.scope.budget.note
     (req,) = _pending(deps)
     assert "RA default" in req.budget_summary
+
+
+def test_count_limits_are_tied_to_the_varied_quantity_and_never_used_as_parameters(tmp_path):
+    from phase2_fakes import make_issue, make_page
+
+    from research_autopilot.models import TaskSpec
+    from research_autopilot.research.planner import check_tasks, strip_count_parameters
+    spec = TaskSpec.from_sources(make_issue(), make_page(sections=dict(RESEARCH_SECTIONS)))
+    loose = scope(conditions=[scope().conditions[0],
+                              ConditionBound(name="geometry", kind="max_count", count=6, applies_to="geometry",
+                                             quote="At most 6 geometries in total")])
+    s = scope_mod.verify(loose, spec)
+    assert s.conditions[1].applies_to == "bond_length_r" and "mapped" in s.conditions[1].note
+    t = task(values=("0.5", "1.0"))
+    t.parameters["geometry"] = ["2"]
+    t = strip_count_parameters(t, s)
+    assert "geometry" not in t.parameters and check_tasks([t], s, registry={"h2-test": object()}, evidence_ids=set()) == []
+    seven = task(values=tuple(str(0.5 + 0.3 * i) for i in range(7)))
+    assert any("maximum of 6" in p for p in check_tasks([seven], s, registry={"h2-test": object()}, evidence_ids=set()))
