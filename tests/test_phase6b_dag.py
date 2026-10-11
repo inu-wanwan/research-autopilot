@@ -470,3 +470,17 @@ def test_a_consumer_gets_the_validated_outputs_of_its_producer_in_phase3_and_pha
                            .read_text())
     assert {a["artifact_id"] for a in manifest["artifacts"]} >= {f"INU-901:{p}" for p in outputs}  # RA_CATALOG_INPUTS
     assert all(Path(f).is_absolute() for a in manifest["artifacts"] for f in a["files"])  # jobs run in their checkout
+
+
+def test_parent_dag_children_build_on_the_latest_validated_sibling_implementation(tmp_path):
+    deps, *_ = _parent_fixture(tmp_path, count=2)
+    for _ in range(10):
+        poll(deps, prefect_flow_run_id="parent-flow")
+        parents = deps.store.find(db.parent_runs)
+        if parents and parents[0]["status"] == "Completed":
+            break
+    first = next(r for r in deps.store.find(db.workflow_runs, task_id="INU-901"))
+    second = next(r for r in deps.store.find(db.workflow_runs, task_id="INU-902"))
+    produced = deps.store.get_implementation(first["phase3_run_ids"][-1]).implementation_commit
+    task = deps.store.get_implementation(second["phase3_run_ids"][-1]).task
+    assert task.based_on and task.based_on["task_id"] == "INU-901" and task.base_commit == produced

@@ -649,17 +649,24 @@ def _complete(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTas
 
 
 def _research_predecessor(deps: ImplDeps, task_id: str, repo_id: str, wt: WorktreeManager) -> dict | None:
-    """The latest implementation of another task of the same research objective in this repository whose
-    experiment also validated (an approved commit that failed in Phase 4 is not a base to build on)."""
+    """The latest implementation of another task of the same research objective (or the same Phase 6B parent DAG)
+    in this repository whose experiment also validated (an approved commit that failed in Phase 4 is not a base to
+    build on): sibling tasks build one code base instead of each starting from main."""
     from research_autopilot.experiments.models import ExperimentState
     from research_autopilot.storage import db
     runs = list(deps.store.find(db.workflow_runs, task_id=task_id))
-    root = next((r.get("root_task_id") for r in runs if r.get("research_cycle_id")), None)
-    if not root:
+    research_root = next((r.get("root_task_id") for r in runs if r.get("research_cycle_id")), None)
+    parent = next((r.get("parent_task_id") for r in runs if r.get("parent_task_id")), None)
+    if not (research_root or parent):
         return None
+
+    def sibling(r: dict) -> bool:
+        if research_root:
+            return r.get("root_task_id") == research_root and bool(r.get("research_cycle_id"))
+        return r.get("parent_task_id") == parent
     best = None
     for r in deps.store.find(db.workflow_runs):
-        if r.get("root_task_id") != root or not r.get("research_cycle_id") or r.get("task_id") == task_id:
+        if not sibling(r) or r.get("task_id") == task_id:
             continue
         validated = set()
         for eid in r.get("experiment_run_ids", []):
