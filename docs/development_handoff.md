@@ -89,7 +89,7 @@ Phase 8 の検索・取得（PoC 移植の Zotero Connector を含む）・本�
 ### Exact Next Actions
 
 0. Phase 8 は `phase8/literature-research` で実装済み。main への merge と origin への push はユーザー指示待ち（ユーザーは push 前に Phase 8 まで進める方針）。
-0. 購読論文：東京科学大学の自動取得に関する利用条件をユーザーが確認したら、許可範囲を設定で有効化する実装を追加する（現状は requires_human）。
+0. 購読論文：ユーザー決定（2026-10-11）により CAPTCHA が出ない限り Zotero Connector で自動保存、1 回の調査あたり自動取得 10 件まで（`acquire.MAX_RETRIEVALS`）。実出版社ページでの検証は未実施。
 0. 未検証：Eagle（Linux）での bwrap sandbox と catalog scan、本番 PostgreSQL での運用、autopilot poll からの生成自動起動（未実装・仕様外）。
 0. 本番 DB で使う場合は人間が `research-agent catalog adapter register/validate/activate/bind/scan` を実行（`RA_CATALOG_ENVIRONMENT=mac`）。Phase A の A2/A3 で cache を使うなら、人間が Input artifacts に `catalog: kind=orbital-casci-exhaustive-condition repository=active-space-research molecule=N2,BeO,NH3 k=2..10 git_commit=6c0d1dd expect=81` を追記するか判断する（科学仕様の変更にあたるため RA は書かない）。
 1. Phase A の本番投入はユーザー方針により**全 Phase 完了後**。それまで Phase A の実行・E2E はしない。

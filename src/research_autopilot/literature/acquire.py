@@ -1,14 +1,17 @@
 """Acquisition of originals: Zotero reuse -> Zotero Connector -> open-access download -> human request.
 
 Implementations are captured as a commit-pinned snapshot of selected repository files.
-Subscription content is never fetched automatically (spec 2.2 / user decision 2026-10-11): it is recorded as a
-human request until the university's terms for automated access are confirmed.
+Subscription content may be saved through the Zotero Connector (the institution's normal browser access) as long
+as no bot check / CAPTCHA appears (user decision 2026-10-11).  A bot check is recorded, never bypassed, and stops
+further Connector saves for the rest of the run.  Every automatic download attempt counts against a per-run
+limit (at most ``MAX_RETRIEVALS``) so a run cannot fetch without bound.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from research_autopilot.literature.models import Candidate, Failure, Retrieval, Source
@@ -21,6 +24,32 @@ CODE_EXT = {".py", ".m", ".jl", ".r", ".cpp", ".cc", ".c", ".h", ".hpp", ".ipynb
 MAX_FILE_BYTES = 300_000
 MAX_SNAPSHOT_BYTES = 3_000_000
 MAX_FILES = 80
+MAX_RETRIEVALS = 10  # hard upper bound of automatic download attempts per research run (user decision)
+
+
+@dataclass
+class RetrievalLimit:
+    """Per-run budget of automatic downloads (Connector saves, OA downloads, repository snapshots)."""
+
+    remaining: int = MAX_RETRIEVALS
+    bot_check: bool = False  # a CAPTCHA / bot check was seen: no more Connector saves in this run
+
+    def __post_init__(self) -> None:
+        self.remaining = max(0, min(self.remaining, MAX_RETRIEVALS))
+
+    def take(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+def _limit_reached(src: Source, failures: list[Failure]) -> list[Failure]:
+    src.retrieval = Retrieval(method="none", status="requires_human", retrieved_at=utcnow(),
+                              detail=f"automatic retrieval limit ({MAX_RETRIEVALS} per run) reached - "
+                                     "please save it to Zotero manually or rerun")
+    failures.append(Failure(stage="acquisition", target=src.source_id, detail=src.retrieval.detail, needs_human=True))
+    return failures
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -35,9 +64,12 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def acquire_paper(net: Net, src: Source, cand: Candidate, zotero=None) -> list[Failure]:
+def acquire_paper(net: Net, src: Source, cand: Candidate, zotero=None,
+                  limit: RetrievalLimit | None = None) -> list[Failure]:
     """Fill ``src.retrieval``; returns failures (each with a cause) without raising."""
     failures: list[Failure] = []
+    limit = limit if limit is not None else RetrievalLimit()
+    access = "subscription" if cand.is_oa is False else "open_access" if cand.is_oa else "unknown"
     dois = [d for d in (cand.doi, f"10.48550/arxiv.{cand.arxiv_id}" if cand.arxiv_id else None) if d]
     # 1. Reuse a PDF already in Zotero / Drive.
     if zotero is not None:
@@ -51,25 +83,32 @@ def acquire_paper(net: Net, src: Source, cand: Candidate, zotero=None) -> list[F
                         return failures
         except Exception as exc:
             failures.append(Failure(stage="acquisition", target=src.source_id, detail=f"zotero lookup: {exc}"[:300]))
-    # 2. Save through the Zotero Connector (publisher translator + PDF), then read the attachment.
-    if zotero is not None and cand.is_oa is not False:
+    # 2. Save through the Zotero Connector (publisher translator + PDF), then read the attachment.  Subscription
+    #    papers are allowed here; a bot check stops the Connector for the rest of the run.
+    if zotero is not None and not limit.bot_check:
         target = cand.doi if cand.doi and not cand.doi.startswith("10.48550") else (cand.url or cand.doi)
         if target:
+            if not limit.take():
+                return _limit_reached(src, failures)
             try:
                 res = zotero.save(target)
                 path = _saved_pdf(res)
                 if res.get("status") == "ok" and path:
                     _done(src, "zotero_connector", path, _source_url(res), f"Zotero Connector: {res['status']}",
-                          item_key=(res.get("items") or [{}])[0].get("key"))
+                          item_key=(res.get("items") or [{}])[0].get("key"), access=access)
                     return failures
+                blocked = res.get("status") == "blocked_bot_check"
+                limit.bot_check = limit.bot_check or blocked
                 failures.append(Failure(stage="acquisition", target=src.source_id,
                                         detail=f"zotero connector status {res.get('status')}: {res.get('error') or ''}"[:300],
-                                        needs_human=res.get("status") == "blocked_bot_check"))
+                                        needs_human=blocked))
             except Exception as exc:
                 failures.append(Failure(stage="acquisition", target=src.source_id,
                                         detail=f"zotero connector unavailable: {type(exc).__name__}: {exc}"[:300]))
     # 3. Open-access PDF straight from arXiv / the OA location (private cache, never shared).
     if cand.oa_pdf_url and (cand.is_oa or cand.arxiv_id):
+        if not limit.take():
+            return _limit_reached(src, failures)
         try:
             r = net.get(cand.oa_pdf_url, accept="application/pdf")
             if r.status_code == 200 and r.content[:5] == b"%PDF-":
@@ -84,11 +123,12 @@ def acquire_paper(net: Net, src: Source, cand: Candidate, zotero=None) -> list[F
                                     detail=f"OA download returned HTTP {r.status_code} / not a PDF"))
         except Exception as exc:
             failures.append(Failure(stage="acquisition", target=src.source_id, detail=f"OA download: {exc}"[:300]))
-    # 4. Nothing lawful and automatic worked: ask a human.
+    # 4. Nothing automatic worked (or a bot check appeared): ask a human.
+    why = "a bot check / CAPTCHA appeared (not bypassed)" if limit.bot_check else \
+        "no open-access copy, no PDF in Zotero and the Zotero Connector could not save it"
     src.retrieval = Retrieval(method="none", status="requires_human", retrieved_at=utcnow(),
                               access="subscription" if cand.is_oa is False else "unknown",
-                              detail="no open-access copy and no PDF in Zotero; subscription content is not "
-                                     "fetched automatically - please save it to Zotero manually")
+                              detail=f"{why} - please save it to Zotero manually")
     failures.append(Failure(stage="acquisition", target=src.source_id, detail=src.retrieval.detail, needs_human=True))
     return failures
 
@@ -117,8 +157,10 @@ def _source_url(res: dict) -> str | None:
                 None)
 
 
-def snapshot_repository(net: Net, src: Source, full_name: str) -> list[Failure]:
+def snapshot_repository(net: Net, src: Source, full_name: str, limit: RetrievalLimit | None = None) -> list[Failure]:
     """Commit-pinned snapshot of README / license / source files (bounded)."""
+    if limit is not None and not limit.take():
+        return _limit_reached(src, [])
     try:
         repo = net.json(f"https://api.github.com/repos/{full_name}")
         branch = repo.get("default_branch") or "main"

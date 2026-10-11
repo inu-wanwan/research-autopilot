@@ -1,6 +1,6 @@
 # Phase 8 Evidence-grounded Literature Research
 
-仕様は `docs/phase_specs/phase8.md`。ユーザー決定（2026-10-11）：推奨案をすべて採用、連絡先 `takagi.r.f3bb@m.isct.ac.jp`、Notion Notes の分類「文献」はユーザーが作成済み。
+仕様は `docs/phase_specs/phase8.md`。ユーザー決定（2026-10-11）：推奨案をすべて採用、連絡先 `takagi.r.f3bb@m.isct.ac.jp`、Notion Notes の分類「文献」はユーザーが作成済み。追加決定（同日）：CAPTCHA が出ない論文（購読論文を含む）は自動取得してよい。ただし 1 回の調査あたりの自動取得は 10 件まで。
 
 ## 構成（`src/research_autopilot/literature/`）
 
@@ -30,10 +30,11 @@
 ## 取得の方針
 
 1. Zotero に同じ DOI（arXiv は `10.48550/arxiv.<id>`）の PDF があり、ファイルが実在すれば再利用（Zotero は読み取りのみ）。
-2. Zotero Connector で保存（Zotero で `RA_ZOTERO_COLLECTION`、既定 `ResearchAutopilot` が選択されていなければ保存しない）。PDF は ZotMoov によって Drive 同期フォルダへ。
+2. Zotero Connector で保存（Zotero で `RA_ZOTERO_COLLECTION`、既定 `ResearchAutopilot` が選択されていなければ保存しない）。PDF は ZotMoov によって Drive 同期フォルダへ。**購読論文もここで保存する**（ブラウザでの通常の機関アクセス）。bot check / CAPTCHA が出たら回避せず `requires_human` とし、その調査では以後 Connector を使わない。
 3. OA（arXiv / Unpaywall の OA 位置）は `~/.research-autopilot/literature/pdf/` に直接取得（非公開。Git・Notion・Discord には出さない）。
-4. 以上が不可なら `requires_human`（人に Zotero への手動保存を依頼）として記録。**購読論文は自動取得しない**。CAPTCHA は検出して記録するだけで回避しない。
+4. 以上が不可なら `requires_human`（人に Zotero への手動保存を依頼）として記録。CAPTCHA は検出して記録するだけで回避しない。
 5. 参照実装は GitHub API で既定ブランチの commit SHA を取得し、README・LICENSE・ソース（1 ファイル 300 KB、合計 3 MB、80 ファイルまで）を `raw.githubusercontent.com/<repo>/<sha>/...` から保存する。
+6. **取得上限**：Connector 保存・OA 取得・参照実装スナップショットの試行は 1 回の調査で合計 10 件まで（`RA_LITERATURE_MAX_RETRIEVALS` で下げられるが 10 を超えない）。上限到達後の資料は `requires_human`。Zotero 既存 PDF・catalog 済み資料の再利用は数えない。
 
 Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.research-autopilot/zotero/connector` に固定して使う（`zotero fetch-connector` は更新時のみ。更新後は `zotero check` と E2E で回帰確認）。
 
@@ -57,7 +58,7 @@ Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.re
 | 研究タスクから原著論文・参照実装候補を発見 | ✅ 実データ：BOCS（arXiv:1806.08838v2）が arXiv / OpenAlex / Crossref の統合結果で首位、`baptistar/BOCS`（★105）を GitHub で発見 |
 | OA PDF の自動取得 | ✅ テスト（OA 直接取得）。実データでは Connector 経由で取得 |
 | PoC を使った Zotero Connector 保存 | ✅ Mac：BOCS を `ResearchAutopilot` コレクションに保存（11.6 秒、PDF＋同期フォルダ）、2 回目以降は既存 PDF を再利用。**Windows（Eagle）は未検証** |
-| 購読論文の取得可否 | ⚠ 東京科学大学の自動取得に関する利用条件が未確認のため**未対応**と判定し、`requires_human` で記録する実装まで。購読論文での実地検証は未実施 |
+| 購読論文の取得可否 | ✅ テスト：CAPTCHA なしなら Connector で保存（access=subscription）、CAPTCHA なら回避せず `requires_human` で以後 Connector 停止、1 回 10 件上限。**購読論文での実地検証は未実施** |
 | PDF と書誌の対応付け | ✅ DOI / arXiv ID / Zotero item key / 取得元 URL / sha256 |
 | 取得失敗・未対応条件の検出 | ✅ サービス障害・OA なし・Connector 不可・本文なしを記録（テスト）。実ページでの CAPTCHA は未遭遇 |
 | 原文に基づく主張抽出・検証可能な出典 | ✅ 実データ：66 主張中 63 件を原文で照合（照合改善後の再計算では 66/66。保存済みレポートは不変のため 63 のまま） |
@@ -71,7 +72,7 @@ Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.re
 ## 既知の制約・未検証
 
 - Eagle（Windows）での Connector 保存と Drive クラウド到着は未検証（PoC と同じ）。
-- 購読論文：利用条件の確認待ち。確認後に許可範囲を設定で有効化する実装は未着手。
+- 購読論文：実際の出版社ページ（機関アクセス・CAPTCHA）での Connector 保存は未検証。
 - pypdf は数式・表のレイアウトを失うことがある。数式の主張は引用が一致しにくく `unverified` になりやすい（安全側）。
 - 選定は LLM。外れた場合は seed（DOI / arXiv / GitHub）を仕様に書くと確実。
 - Connector 内部 API 依存（5.0.217 に固定）。

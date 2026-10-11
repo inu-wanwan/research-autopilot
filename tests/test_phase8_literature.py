@@ -148,14 +148,56 @@ def test_acquisition_falls_back_to_open_access_and_records_the_connector_failure
     assert any("zotero connector unavailable" in f.detail for f in fails)
 
 
-def test_subscription_content_is_never_fetched_automatically():
-    paywalled = Candidate(candidate_id="doi:10.1/x", title="Paywalled", doi="10.1/x", is_oa=False,
-                          url="https://www.sciencedirect.com/x")
+def _paywalled(n: int = 0):
+    return Candidate(candidate_id=f"doi:10.1/x{n}", title="Paywalled", doi=f"10.1/x{n}", is_oa=False,
+                     url="https://www.sciencedirect.com/x")
+
+
+def _saved(tmp_path):
+    pdf = tmp_path / "Paywalled.pdf"
+    pdf.write_bytes(make_pdf(PAPER_PAGES))
+    return {"status": "ok", "items": [{"key": "K9"}],
+            "attachments": [{"contentType": "application/pdf", "resolvedPath": str(pdf), "sourceUrl": "https://pub/x.pdf"}]}
+
+
+def test_subscription_paper_is_saved_through_the_connector_when_no_bot_check(tmp_path):
     src = Source(source_id="S1", source_type=SourceType.ORIGINAL_PAPER, title="Paywalled")
-    z = FakeZotero()
-    fails = acquire.acquire_paper(net(), src, paywalled, zotero=z)
-    assert src.retrieval.status == "requires_human" and src.retrieval.access == "subscription"
-    assert z.saved == [] and fails[-1].needs_human
+    z = FakeZotero(save_result=_saved(tmp_path))
+    assert acquire.acquire_paper(net(), src, _paywalled(), zotero=z) == []
+    assert src.retrieval.method == "zotero_connector" and src.retrieval.status == "ok"
+    assert src.retrieval.access == "subscription" and src.retrieval.zotero_item_key == "K9" and z.saved == ["10.1/x0"]
+
+
+def test_bot_check_is_not_bypassed_and_stops_further_connector_saves():
+    z = FakeZotero(save_result={"status": "blocked_bot_check", "error": "captcha"})
+    limit = acquire.RetrievalLimit()
+    first = Source(source_id="S1", source_type=SourceType.ORIGINAL_PAPER, title="Paywalled")
+    fails = acquire.acquire_paper(net(), first, _paywalled(1), zotero=z, limit=limit)
+    assert first.retrieval.status == "requires_human" and "CAPTCHA" in first.retrieval.detail
+    assert fails[0].needs_human and limit.bot_check
+    second = Source(source_id="S2", source_type=SourceType.ORIGINAL_PAPER, title="Paywalled")
+    acquire.acquire_paper(net(), second, _paywalled(2), zotero=z, limit=limit)
+    assert z.saved == ["10.1/x1"] and second.retrieval.status == "requires_human"
+
+
+def test_automatic_retrievals_are_capped_at_ten_per_run(tmp_path):
+    limit = acquire.RetrievalLimit(50)
+    assert limit.remaining == acquire.MAX_RETRIEVALS == 10
+    z = FakeZotero(save_result=_saved(tmp_path))
+    srcs = [Source(source_id=f"S{i}", source_type=SourceType.ORIGINAL_PAPER, title="P") for i in range(12)]
+    for i, src in enumerate(srcs):
+        acquire.acquire_paper(net(), src, _paywalled(i), zotero=z, limit=limit)
+    assert len(z.saved) == 10 and [s.retrieval.status for s in srcs[10:]] == ["requires_human"] * 2
+    assert "limit (10 per run)" in srcs[-1].retrieval.detail
+    repo = Source(source_id="R", source_type=SourceType.REFERENCE_IMPLEMENTATION, title="baptistar/BOCS")
+    assert acquire.snapshot_repository(net(), repo, "baptistar/BOCS", limit)[0].needs_human
+
+
+def test_research_run_respects_its_retrieval_limit(tmp_path):
+    deps = _deps(tmp_path)
+    deps.max_retrievals = 1
+    r = research(deps, "BOCS surrogate and acquisition", seeds=["baptistar/BOCS"], write_note=False)
+    assert [s.retrieval.status for s in r.sources] == ["ok", "requires_human"]
 
 
 def test_repository_snapshot_is_commit_pinned():

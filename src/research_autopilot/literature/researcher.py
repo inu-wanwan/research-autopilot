@@ -47,6 +47,7 @@ class ResearcherDeps:
     zotero_factory: Any = None    # () -> ZoteroSession; None disables Zotero (OA download still works)
     notes_writer: Any = None      # NotionWriter-like with create_note(title, blocks, category=...)
     max_sources: int = 4
+    max_retrievals: int = acquire.MAX_RETRIEVALS  # automatic downloads per run, capped at acquire.MAX_RETRIEVALS
     reuse_days: float = 30.0
     extra: dict = field(default_factory=dict)
 
@@ -71,6 +72,7 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
 
     repos: dict[str, str] = {}
     zotero = None
+    limit = acquire.RetrievalLimit(deps.max_retrievals)
     try:
         # 1. discovery
         rec, c0 = stage("search"), deps.llm.spent
@@ -94,11 +96,11 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
             if cand.repo_full_name:
                 repos[src.source_id] = cand.repo_full_name
                 if not _reuse_source(deps, src, repo=cand.repo_full_name):
-                    report.failures += acquire.snapshot_repository(deps.net, src, cand.repo_full_name)
+                    report.failures += acquire.snapshot_repository(deps.net, src, cand.repo_full_name, limit)
             elif not _reuse_source(deps, src, doi=cand.doi, arxiv_id=cand.arxiv_id):
                 if zotero is None and deps.zotero_factory is not None:
                     zotero = deps.zotero_factory()
-                report.failures += acquire.acquire_paper(deps.net, src, cand, zotero=zotero)
+                report.failures += acquire.acquire_paper(deps.net, src, cand, zotero=zotero, limit=limit)
             close(rec, f"{src.source_id}: {src.retrieval.method} {src.retrieval.status}", c0)
             if src.retrieval.status != "ok":
                 report.unresolved.append(f"{src.title}: original not retrieved ({src.retrieval.detail[:160]})")
@@ -212,4 +214,5 @@ def deps_from_env(catalog, notes_writer=None) -> ResearcherDeps:
     return ResearcherDeps(net=from_env(), llm=PricedLlm(model, s.model_pricing, budget, s.agents_tracing),
                           catalog=lit_store.with_literature(catalog), notes_writer=notes_writer,
                           zotero_factory=zotero_factory if use_zotero else None,
-                          max_sources=int(os.environ.get("RA_LITERATURE_MAX_SOURCES") or 4))
+                          max_sources=int(os.environ.get("RA_LITERATURE_MAX_SOURCES") or 4),
+                          max_retrievals=int(os.environ.get("RA_LITERATURE_MAX_RETRIEVALS") or acquire.MAX_RETRIEVALS))
