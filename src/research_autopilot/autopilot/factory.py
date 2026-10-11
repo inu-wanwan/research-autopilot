@@ -2,7 +2,7 @@
 
 from research_autopilot.autopilot.approvals import ApprovalController
 from research_autopilot.autopilot.completion import OpenAICompletionReviewer
-from research_autopilot.autopilot.engine import AutopilotDeps, AutopilotSettings, notify_approval
+from research_autopilot.autopilot.engine import AutopilotDeps, AutopilotSettings, notify_approval, task_urls
 from research_autopilot.autopilot.dependency_inference import OpenAIDependencyInferer
 from research_autopilot.autopilot.flows import PrefectConfirmationChannel
 from research_autopilot.autopilot.linear_ops import LinearOps
@@ -37,10 +37,13 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     channel = PrefectConfirmationChannel(s5.confirm_deployment, s5.prefect_ui_url)
     notifier = get_notifier(store=plan.store)
     impl.notifier = notifier
+    def notify(req, msg):
+        # Real Notion page / Linear issue URLs of the task (not a hard-coded workspace URL).
+        notion_url, linear_url = task_urls(plan.manager, req.task_id) if req.status.value == "pending" else (None, None)
+        notify_approval(plan.store, notifier, req, msg, linear_url, channel.url(req.confirmation_ref), notion_url)
+
     approvals = ApprovalController(plan.store, ops, channel if s5.approval_mode == "linear+form" else None,
-                                   notify=lambda req, msg: notify_approval(plan.store, notifier, req, msg, "https://linear.app",
-                                                                          channel.url(req.confirmation_ref)),
-                                   mode=s5.approval_mode, approver_ids=set(s5.approver_linear_user_ids))
+                                   notify=notify, mode=s5.approval_mode, approver_ids=set(s5.approver_linear_user_ids))
     dependency_inferer = OpenAIDependencyInferer(s5.dag_inference_model or p2.reviewer_model, p2.model_pricing,
                                                  lambda: s5.budget_api_usd, p2.agents_tracing)
     from research_autopilot.research.workflow import ResearchDeps, llm_factory_from_env

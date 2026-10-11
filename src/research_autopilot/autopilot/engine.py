@@ -41,6 +41,7 @@ from research_autopilot.implementation.orchestrator import ImplDeps, implement
 from research_autopilot.models import DecisionStatus, utcnow
 from research_autopilot.notifications import notify_once
 from research_autopilot.notifications.events import EventKind, NotificationEvent
+from research_autopilot.notifications.guidance import approval_event, block_steps, human_event
 from research_autopilot.orchestrator.core import Deps as PlanDeps
 from research_autopilot.orchestrator.core import plan_task
 from research_autopilot.storage import db
@@ -289,6 +290,8 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
                 run.stage = WorkflowStage.DEAD_LETTER
                 run.blocked_reason = f"dead-lettered after {run.attempts} failures in {before.value}: {exc}"
                 _notify(deps, run, EventKind.UNRECOVERABLE_ERROR, f"dead-letter:{run.run_id}", [run.blocked_reason])
+                _notify_human_block(deps, run, run.blocked_reason, f"dead-letter-human:{run.run_id}",
+                                    "システムの失敗が続いたため実行を止めました（自動の再試行は使い切りました）")
             else:
                 _notify(deps, run, EventKind.AUTOMATIC_RETRY,
                         f"retry:{run.run_id}:{before.value}:{run.attempts}",
@@ -310,7 +313,56 @@ def _block(deps: AutopilotDeps, run: WorkflowRun, reason: str) -> None:
     run.stage = WorkflowStage.BLOCKED
     run.blocked_reason = reason
     run.event("blocked", reason)
-    _notify(deps, run, EventKind.UNRECOVERABLE_ERROR, f"blocked:{run.run_id}:{reason[:80]}", [reason])
+    _notify_human_block(deps, run, reason, f"blocked:{run.run_id}:{reason[:80]}", "人の対応が必要なため実行を止めました")
+
+
+def _is_child(run: WorkflowRun) -> bool:
+    return bool(run.parent_task_id or run.research_cycle_id)
+
+
+def _notify_human_block(deps: AutopilotDeps, run: WorkflowRun, reason: str, key: str, headline: str,
+                        rule: str | None = None) -> None:
+    """UX policy: a standalone run that needs a human -> one approvals message with the steps until it continues;
+    a child of a parent DAG / research objective -> logs only (the parent / research run reports and decides)."""
+    if _is_child(run):
+        _notify(deps, run, EventKind.PHASE_TRANSITION, key, [f"子タスクが停止しました（親が対応します）: {reason[:500]}"])
+        return
+    # Resume / Cancel exist only where something consumes them (research objectives); otherwise the steps say
+    # exactly how to start again.
+    resumable = run.chain_depth == 0 and bool(deps.store.find(db.research_plans, task_id=run.task_id))
+    actions = ["resume", "cancel"] if resumable else []
+    notify_once(deps.store, human_event(
+        flow_name="autopilot", task_id=run.task_id, state=run.stage.value, headline=headline, reason=reason,
+        steps=block_steps(rule or reason, resume_button=resumable), links=_links(deps, run.task_id),
+        cost=_cost_line(deps, run), dedupe_key=key, control_task_id=run.task_id, control_actions=actions),
+        deps.notifier)
+
+
+def _links(deps: AutopilotDeps, task_id: str) -> list[str]:
+    notion, linear = task_urls(deps.plan.manager, task_id)
+    return [x for x in (f"Notion: {notion}" if notion else None, f"Linear: {linear}" if linear else None) if x]
+
+
+def task_urls(manager, task_id: str) -> tuple[str | None, str | None]:
+    """Notion page URL and Linear issue URL of a task (None when unavailable; never raises)."""
+    try:
+        bundle = manager.load(task_id)
+    except Exception:  # noqa: BLE001 - links are best-effort decoration of a message
+        return None, None
+    return (getattr(bundle.page, "url", None) if bundle.page else None), getattr(bundle.issue, "url", None)
+
+
+def _cost_line(deps: AutopilotDeps, run: WorkflowRun) -> str | None:
+    try:
+        chain = [r.model_dump(mode="json") for r in _runs(deps) if r.root_task_id == run.root_task_id]
+        u = chain_usage(deps.store, chain)
+        auth = _authorization(deps, run)
+    except Exception:  # noqa: BLE001
+        return None
+    if auth is None:
+        return f"費用: API ${u.api_usd:.2f}、計算 {u.cpu_hours:.2f} CPU-h（承認済みの予算なし）"
+    return (f"費用: API ${u.api_usd:.2f} / 予算 ${auth.budget.api_usd:.2f}、"
+            f"計算 {u.cpu_hours:.2f} / {auth.budget.compute_cpu_hours:g} CPU-h")
 
 
 def _load_spec(deps: AutopilotDeps, task_id: str):
@@ -412,10 +464,7 @@ def _budget_gate(deps: AutopilotDeps, run: WorkflowRun, auth: ResearchAuthorizat
     problems = policy.evaluate_budget(auth, u.api_usd, u.cpu_hours, u.unknown_api_cost_calls)
     if not problems:
         return True
-    _notify(deps, run, EventKind.BUDGET_EXCEEDED, f"budget:{run.run_id}:{run.stage.value}",
-            [f"API: ${u.api_usd:.2f} / ${auth.budget.api_usd:.2f}",
-             f"Compute: {u.cpu_hours:.2f} / {auth.budget.compute_cpu_hours:g} CPU-h",
-             *problems[:3]])
+    # No separate budget notification: the BUDGET approval message (one per request) carries usage and limits.
     issue = deps.linear.get_issue(run.task_id)
     req = deps.approvals.request(kind=ApprovalKind.BUDGET, issue=issue, root_task_id=run.root_task_id,
                                  spec_hash=_spec_hash_of(_load_spec(deps, run.task_id).spec),
@@ -748,16 +797,54 @@ def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
     elif req.kind is ApprovalKind.RESEARCH_SCOPE:
         from research_autopilot.research.workflow import current_approval_hash
         current = current_approval_hash(deps, req)
+    elif req.payload.get("parent_run_id"):
+        # parent completion review: requested with the parent DAG's own spec hash function
+        from research_autopilot.autopilot.dag_runtime import _spec_hash as parent_spec_hash
+        current = parent_spec_hash(bundle.spec)
     else:
         current = _spec_hash_of(bundle.spec) if bundle.spec else "unavailable"
     result = deps.approvals.check(req, issue, history, current)
     if result.decision is None:
-        if req.kind is ApprovalKind.DAG and result.status in {ApprovalStatus.STALE, ApprovalStatus.EXPIRED}:
-            from research_autopilot.autopilot.dag_runtime import close_parent_dag_approval
-            close_parent_dag_approval(deps, req, result.note)
+        if result.status in {ApprovalStatus.STALE, ApprovalStatus.EXPIRED}:
+            _reopen_closed_request(deps, req, result.status, result.note)
         return (req.request_id[:8], result.status.value, result.note)
     _apply_decision(deps, req, result.decision, issue)
     return (req.request_id[:8], result.status.value, result.note)
+
+
+def _reopen_closed_request(deps: AutopilotDeps, req: ApprovalRequest, status: ApprovalStatus, note: str) -> None:
+    """A stale / expired request must not leave its run AWAITING forever: move the run back to the stage that
+    asks again (from the current spec), like research does for research_scope.  The old Discord message is
+    edited to point to the new request by the gateway (``_superseded_by``), not answered with a new note."""
+    if req.payload.get("parent_run_id") or req.kind is ApprovalKind.DAG:
+        from research_autopilot.autopilot.dag_runtime import close_parent_dag_approval
+        close_parent_dag_approval(deps, req, note)
+        return
+    if req.kind is ApprovalKind.RESEARCH_SCOPE:
+        return  # research.orchestration.tick re-plans and asks again
+    if req.kind is ApprovalKind.PROPOSAL:
+        bundle = _load_spec(deps, req.task_id)
+        if bundle.spec is None:
+            return  # nothing current to approve (the proposal page is unusable); a new proposal is needed
+        deps.approvals.request(
+            kind=ApprovalKind.PROPOSAL, issue=deps.linear.get_issue(req.task_id), root_task_id=req.root_task_id,
+            spec_hash=_spec_hash_of(bundle.spec), title=req.title,
+            what_changes=req.what_changes, diff=req.diff_from_original, budget_summary=req.budget_summary,
+            payload={k: v for k, v in req.payload.items() if not k.startswith("_")})
+        return
+    run = next((r for r in _runs(deps) if r.waiting_for == req.request_id), None)
+    if run is None or run.stage not in WAITING:
+        return
+    resume = run.resume_stage
+    if req.kind is ApprovalKind.ONBOARDING or not resume:
+        run.stage = WorkflowStage.DISCOVERED  # onboarding is asked again from the current spec
+    elif resume == "completion_approved":
+        run.stage = WorkflowStage.COMPLETING  # the completion review is asked again
+    else:
+        run.stage = WorkflowStage(resume)  # e.g. the budget gate of that stage asks again
+    run.waiting_for, run.resume_stage = None, None
+    run.event("rerequest", f"{req.kind.value} request {req.request_id[:8]} {status.value}: asking again")
+    _save(deps, run)
 
 
 def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: ApprovalDecision, issue) -> None:
@@ -819,6 +906,9 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: Approva
         run.blocked_reason = f"revision requested by {actor}: edit the Notion spec / plan, then re-run"
         run.waiting_for = None
         run.event("revision", run.blocked_reason)
+        _notify_human_block(deps, run, f"{req.kind.value} の修正依頼（{actor}）: {approval.comment or '(コメントなし)'}",
+                            f"revision:{req.request_id}", "承認依頼に修正が求められたため止めています",
+                            rule="revision requested")
     _save(deps, run)
 
 
@@ -849,6 +939,13 @@ def _external_tick(deps: AutopilotDeps) -> dict:
             run.blocked_reason = (f"external code execution {item['status']} ({item['request_id'][:8]}): "
                                   "change the experiment or ask again with a different scope")
             run.event("external_code", run.blocked_reason)
+            label = {"rejected": "却下されました", "revision_requested": "修正を求められました",
+                     "stale": "対象のコードが変わったため失効しました",
+                     "expired": "期限切れで失効しました"}.get(item["status"], item["status"])
+            _notify_human_block(deps, run, f"外部コードの実行依頼 {item['request_id'][:8]} が{label}"
+                                           f"（{item.get('note') or ''}）",
+                                f"external-decision:{item['request_id']}", "外部コードを実行できないため止めています",
+                                rule="external code")
         _save(deps, run)
     try:
         out["updates"] = refresh(deps.external)
@@ -871,16 +968,24 @@ def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str,
                 deps.notifier)
 
 
-def notify_approval(deps_store, notifier, req: ApprovalRequest, message: str, linear_url: str, form_url: str | None) -> None:
-    key = f"approval:{req.request_id}:{message[:40]}"
-    notify_once(deps_store,
-                NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name="autopilot",
-                                  flow_run_name=req.task_id, state_name=f"{req.kind.value}:{req.status.value}",
-                                  details=[f"Linear: {linear_url}/issue/{req.task_id}", f"Approval: {req.title}",
-                                           *[f"change: {x}" for x in req.what_changes[:5]],
-                                           *[f"diff: {x}" for x in req.diff_from_original[:5]],
-                                           f"budget: {req.budget_summary}", f"note: {message}"],
-                                  dedupe_key=key, approval_request_id=req.request_id), notifier)
+def notify_approval(deps_store, notifier, req: ApprovalRequest, message: str, linear_url: str | None = None,
+                    form_url: str | None = None, notion_url: str | None = None) -> None:
+    """The approvals message of a new request (one template per kind; see notifications.guidance).
+
+    ``linear_url`` is the issue URL (a bare workspace URL is completed with ``/issue/<id>`` for old callers).
+    A stale / expired request gets no new message: the gateway edits the original one to point to its
+    replacement (UX policy 1.4)."""
+    if req.status is not ApprovalStatus.PENDING:
+        return
+    links = []
+    notion = req.payload.get("plan_url") or req.payload.get("notion_url") or notion_url
+    if notion:
+        links.append(f"Notion: {notion}")
+    if linear_url:
+        links.append("Linear: " + (linear_url if "/issue/" in linear_url
+                                   else f"{linear_url.rstrip('/')}/issue/{req.task_id}"))
+    notify_once(deps_store, approval_event(req, links=links, form_url=form_url,
+                                           dedupe_key=f"approval:{req.request_id}:{message[:40]}"), notifier)
 
 
 def status_report(deps: AutopilotDeps) -> dict:

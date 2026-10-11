@@ -58,8 +58,8 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
         provisional.parent_execution_run_id = None
         _save_dag(deps, provisional, blocked_request_id=req.request_id)
         deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason[:1900], acknowledge=True)
-        _event(deps, bundle.issue.identifier, EventKind.UNRECOVERABLE_ERROR,
-               f"parent-dag-blocked:{req.request_id}", ExecutionStatus.BLOCKED, [reason[:500]])
+        _human(deps, bundle.issue.identifier, f"parent-dag-blocked:{req.request_id}", ExecutionStatus.BLOCKED,
+               "親タスクの DAG を作れないため開始していません", reason, _dag_problem_steps(provisional.problems))
         return None, []
     execution, reason = accept(deps.store, page=page, issue=bundle.issue, spec_hash=_spec_hash(bundle.spec))
     if execution is None:
@@ -140,6 +140,10 @@ def advance_parents(deps) -> list[WorkflowRun]:
                 reasons = [*parent.completion_reasons, *_child_failure_reasons(deps, parent, statuses)]
                 _sync_parent_status(deps, parent, derived,
                                     "; ".join(reasons) or "child execution did not complete", terminal=True)
+                if not parent.research_cycle_id:  # a research cycle is reported by the research run
+                    _human(deps, parent.parent_task_id, f"parent-ended:{parent.parent_run_id}", derived,
+                           "子タスクが完了しなかったため親タスクを止めました",
+                           "; ".join(reasons) or "child execution did not complete", _child_failure_steps(statuses))
                 continue
         _sync_parent_status(deps, parent, derived, None)
         created.extend(schedule_ready(deps, parent))
@@ -428,6 +432,9 @@ def apply_parent_approval(deps, request, approval) -> bool:
         if current_dag_approval_hash(deps, request) != request.spec_hash:
             parent.completion_reasons.append("DAG approval is stale because a parent/child specification changed")
             _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED, parent.completion_reasons[-1], terminal=True)
+            _human(deps, parent.parent_task_id, f"parent-dag-stale:{request.request_id}", ExecutionStatus.BLOCKED,
+                   "DAG の承認は届きましたが、その後に仕様が変わったため開始していません",
+                   parent.completion_reasons[-1], _DAG_RESTART_STEPS)
             return True
         dag.inference_approved = True
         dag.status = DAGStatus.VALID
@@ -451,6 +458,12 @@ def apply_parent_approval(deps, request, approval) -> bool:
         parent.completion_reasons.append(f"revision requested by {approval.actor}")
         _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED,
                             parent.completion_reasons[-1], terminal=True)
+        _human(deps, parent.parent_task_id, f"parent-revise:{request.request_id}", ExecutionStatus.BLOCKED,
+               f"親タスクの{'DAG' if purpose == 'dag' else '完了レビュー'}に修正が求められたため止めています",
+               f"revision requested by {approval.actor}: {approval.comment or '(コメントなし)'}",
+               _DAG_RESTART_STEPS if purpose == "dag" else [
+                   "コメントの修正内容を確認する", "Notion の親タスクの受け入れ基準または子タスクの仕様を直す",
+                   "親タスクで Run Autopilot を押す（子タスクを実行し直して完了レビューに進む）"])
     return True
 
 
@@ -474,16 +487,28 @@ def current_dag_approval_hash(deps, request) -> str:
 
 
 def close_parent_dag_approval(deps, request, note: str) -> None:
-    """Stop a parent whose inferred DAG approval expired or became stale."""
-    if request.payload.get("approval_purpose") != "dag":
-        return
+    """A parent approval expired or became stale.
+
+    * DAG approval: the frozen DAG no longer matches the specs, so the parent stops and the human is told how to
+      start again (Run Autopilot on the parent re-infers the DAG and asks again).
+    * Completion review: asked again (new request version) so the parent never stays Awaiting forever."""
     raw = deps.store.get(db.parent_runs, request.payload.get("parent_run_id", ""))
     if not raw:
         return
     parent = ParentRun.model_validate(raw)
+    if parent.waiting_for not in (None, request.request_id) or parent.status in (
+            ExecutionStatus.COMPLETED, ExecutionStatus.CANCELED, ExecutionStatus.FAILED, ExecutionStatus.BLOCKED):
+        return
     parent.waiting_for = None
+    if request.payload.get("approval_purpose") != "dag":
+        _request_parent_completion_approval(deps, parent)
+        return
     parent.completion_reasons.append(note)
     _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED, note, terminal=True)
+    expired = request.status == "expired"
+    _human(deps, parent.parent_task_id, f"parent-dag-closed:{request.request_id}", ExecutionStatus.BLOCKED,
+           "DAG の承認依頼が" + ("期限切れになった" if expired else "仕様の変更で失効した") + "ため親タスクを止めました",
+           note, _DAG_RESTART_STEPS)
 
 
 def _complete_parent(deps, parent: ParentRun, dag: TaskDAG) -> None:
@@ -569,6 +594,44 @@ def _spec_hash(spec) -> str:
 
 def _prefect_url(deps, flow_id: str | None) -> str | None:
     return f"{deps.settings.prefect_ui_url.rstrip('/')}/runs/flow-run/{flow_id}" if flow_id and deps.settings.prefect_ui_url else None
+
+
+_DAG_RESTART_STEPS = [
+    "Notion の親タスクと子タスクの仕様・依存関係（どの子がどの子の出力を使うか）を確認し、必要なら直す",
+    "親タスクで Run Autopilot を押す（DAG を推論し直し、新しい承認依頼が届く）",
+]
+
+
+def _dag_problem_steps(problems: list[DAGProblem]) -> list[str]:
+    """One step per problem, naming the child task (or the parent) whose Notion page must change."""
+    steps = [f"{p.task_id or '親タスク'} の Notion ページを直す: {p.message}（{p.code}）" for p in problems[:6]]
+    if len(problems) > 6:
+        steps.append(f"ほか {len(problems) - 6} 件（下の理由を参照）")
+    steps.append("親タスクで Run Autopilot を押す（DAG を作り直す）")
+    return steps
+
+
+def _child_failure_steps(statuses: dict[str, ExecutionStatus]) -> list[str]:
+    failed = sorted(t for t, s in statuses.items()
+                    if s in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED})
+    return [f"止まった子タスク（{', '.join(failed) or '下の理由を参照'}）の理由を確認する",
+            "その子タスクの Notion の仕様（または環境）を直す",
+            "親タスクで Run Autopilot を押す（完了した子タスクの成果物は再利用される）"]
+
+
+def _human(deps, task_id: str, key: str, status: ExecutionStatus, headline: str, reason: str,
+           steps: list[str]) -> None:
+    """Approvals message with steps for a parent that needs a human (UX policy)."""
+    from research_autopilot.autopilot.engine import task_urls
+    from research_autopilot.notifications.guidance import human_event
+    notion, linear = task_urls(deps.plan.manager, task_id)
+    links = [x for x in (f"Notion: {notion}" if notion else None, f"Linear: {linear}" if linear else None) if x]
+    try:
+        notify_once(deps.store, human_event(flow_name="autopilot-parent", task_id=task_id, state=status.value,
+                                            headline=headline, reason=reason, steps=steps, links=links,
+                                            dedupe_key=key), deps.notifier)
+    except Exception:  # notification failure never changes the parent state
+        pass
 
 
 def _event(deps, task_id: str, kind: EventKind, key: str, status: ExecutionStatus, details: list[str]) -> None:
