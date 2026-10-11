@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 6A（Explicit Execution Control）を実装中。Eagle と TSUBAME は未実施。
+Phase 6B（Parent Task DAG Execution）を実装中。Eagle と TSUBAME は未実施。
 
 ## Current Task
 
-Notion の明示的な開始要求を ExecutionRequest / ExecutionRun として永続化し、Phase 5 自動候補起動を無効化する。
+親 Notion task の明示的開始から既存 child relation を取得し、検証済み DAG と structured artifact handoff により既存 Phase 2〜5 を実行する。
 
 ## Status
 
-Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBのプロパティ読み取りを実施したが、`Run Autopilot` Button は integration に見えていないため、手動設定が必要。Eagle deploy、main merge、実タスク起動は未実施。
+Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff / parent completion gate と Fake integration を実装・検証済み。実 Phase A は read-only dry-run し、現行仕様不足のため安全に Blocked となることを確認。本番実行、Eagle deploy、main merge は未実施。
 
 ## Last Updated
 
@@ -30,13 +30,23 @@ Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBの�
 
 ## Git Branch / Commit
 
-- 作業ブランチ：`codex/phase6a-explicit-execution-control`
+- 作業ブランチ：`codex/phase6b-parent-dag`
 - Discord 実装 commit：`d5e3138`
 - Gateway fail-closed 修正 commit：`a294624`
 - 結果 UX 改善 commit：`800ac7f`、`fa19f3a`
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 6B Parent Task DAG Execution（2026-10-11 / Codex）
+
+- ユーザー提供仕様を `docs/phase_specs/phase6b.md` に保存。Notion `親タスク` / `サブタスク` relation を reader model に追加し、双方向 identity、Linear project、scope、canonical scientific/implementation spec を fail-closed で検証する。
+- version/hash 付き `TaskDAG`、`ParentRun`、`ArtifactHandoff` と PostgreSQL tables を追加。子は既存 ExecutionRequest / ExecutionRun / WorkflowRun と Phase 2〜5 を再利用し、request source `parent_dag` と parent/dag metadata で関連付ける。
+- Linear `blocked-by` だけを executable edge とし、A番号や prose から依存を推測しない。cycle、DAG 外 dependency、duplicate、circular parent、cross-project、identity、repository/spec/acceptance を検証する。
+- Poller は process restart 後も ParentRun を復元し、ready node だけを schedule する。global concurrency と同一 repository serialization を適用。artifact は producer/consumer/path/SHA-256/commit/schema/scientific metadata/validation status を保存し、schedule 時と実行直前に再検証する。
+- 親 status を child から導出し、Notion/ExecutionRun に同期。全 mandatory child 完了後に deterministic artifact evidence 付き Parent Completion Reviewer を実行し、不成立なら既存 Discord Completion Review、成立後は Notes / Linear Done / Notion Completed を行う。
+- 実 Notion / Linear read-only dry-run：INU-274 の4子 relation、identity、同一 project は正常。A1〜A4 の Linear blocked-by は0件。親 Acceptance Criteria、各子 `autopilot` label / canonical Specification / Repository が不足し、4-node DAG hash `bbfd39b...237a` は Blocked。本番 task は実行・変更していない。詳細は `docs/operations/phase6b_parent_dag.md`。
+- 着手前 baseline：`uv run pytest` は 355 passed。実装後の全回帰は 362 passed / 1 dependency warning。子 Prefect URL の最終追加後に Phase 6A/6B 13 tests と `git diff --check` が成功。ruff は dev dependency に存在せず未実行（`python -m compileall -q src tests` は成功）。
 
 ### Phase 6A Explicit Execution Control（2026-10-11 / Codex）
 
@@ -48,8 +58,8 @@ Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBの�
 
 ### Exact Next Actions
 
-1. 次の `[TEST]` Button E2E で、修正後の `Last Run` URL を確認する。本番/Eagle には deploy しない。
-2. Phase 6A の異常系（Notion acknowledgement API failure / stale projection）を HTTP Fake で追加し、全 pytest を再実行する。
+1. Phase A を実行可能にする場合は、人間が不足仕様、`autopilot` label、Linear blocked-by を承認・設定する。
+2. 設定後に INU-274 で human E2E を行う。本番/Eagle には deploy せず、まず test-only / dry-run で DAG hash と edge を再確認する。
 
 ### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
 
@@ -239,6 +249,7 @@ Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBの�
 
 ## Remaining Work
 
+- **Phase A source-data blocker**：INU-274 に canonical Acceptance Criteria、INU-275〜278 に `autopilot` label / canonical Specification / Repository、A1〜A4 の Linear blocked-by がない。科学仕様と依存関係は人間承認なしに補完しない。
 - **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker / discord-bot image、DB の新規 Interaction table、Bot token と4チャンネル、Codex / Claude CLI の認証、volume、上限と予約を確認する。
 - 実 Discord でユーザーが承認ボタン / revision modal を操作し、polling が再開して Linear と元メッセージを更新する一連の確認（Fake E2E では確認済み）。本番タスクを作成・変更せずに止めている。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。

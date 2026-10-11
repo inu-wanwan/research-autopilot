@@ -17,16 +17,19 @@ docs/
 │   ├── phase2_planning.md   #   Phase 2 タスク計画の運用
 │   ├── phase3_implementation.md # Phase 3 実装・レビュー・Phase 4 インターフェース
 │   ├── phase4_experiments.md # Phase 4 実験実行・分析・Phase 5 handoff
-│   └── phase5_autopilot.md  # Phase 5 自律ワークフローの運用ハンドブック
+│   ├── phase5_autopilot.md  # Phase 5 自律ワークフローの運用ハンドブック
+│   ├── phase6a_execution_control.md # Phase 6A 明示実行 UI / 状態同期
+│   └── phase6b_parent_dag.md # Phase 6B 親子 DAG、artifact handoff、dry-run report
 └── phase_specs/             # Phase 別の仕様書（各 Phase の実装依頼時に作成）
     ├── phase1.md
     ├── phase2.md
     ├── phase3.md
     ├── phase4.md
-    └── phase5.md
+    ├── phase5.md
+    └── phase6b.md
 ```
 
-`phase_specs/` 以下は、各 Phase の実装を依頼する時点でユーザーが提供する要件定義を格納します。現時点では `phase1.md`〜`phase5.md` が存在します。
+`phase_specs/` 以下は、各 Phase の実装を依頼する時点でユーザーが提供する要件定義を格納します。Phase 6A は依頼本文に基づいて実装され、Phase 6B の提供仕様は `phase6b.md` に保存しています。
 
 ## 各ファイルの役割
 
