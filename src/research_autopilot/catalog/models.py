@@ -173,6 +173,7 @@ class GenerationRun(BaseModel):
     reason: str                     # why generation was needed (detection result)
     model: str | None = None
     survey_hash: str | None = None
+    repository_commit: str | None = None
     attempts: list[GenerationAttempt] = Field(default_factory=list)
     outcome: Literal["activated", "awaiting_human", "rejected", "skipped", "failed"] = "failed"
     adapter_id: str | None = None   # final adapter (activated or awaiting human)
@@ -204,9 +205,10 @@ class ArtifactQuery(BaseModel):
     repository_id: str | None = None
     filters: dict[str, list[Any]] = Field(default_factory=dict)  # identity field -> accepted values
     expect_count: int | None = None  # every combination must resolve to exactly this many artifacts
-    # "human": only artifacts verified by human-made / human-reviewed adapters may be reused (default).
-    # "any": the requirement explicitly accepts checks written by an unreviewed generated adapter.
-    trust: Literal["human", "any"] = "human"
+    # "any" (default): artifacts verified by any active adapter, generated ones included, may be reused; the
+    # scientific validity of results stays with the downstream Scientific Reviewer / Completion gate.
+    # "human": only artifacts verified by human-made / human-reviewed adapters (explicit opt-in per requirement).
+    trust: Literal["human", "any"] = "any"
     raw: str = ""
 
 

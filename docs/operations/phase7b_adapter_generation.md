@@ -44,12 +44,23 @@ detect → survey（read-only・上限付き）→ AI 提案（declarative 優�
 - **generated python**：sandbox で検証し `validated` のまま `awaiting_human`。`adapter activate --actor <人間>` のみ有効化可（`autopilot` は拒否）。有効化後も RA 本体では import せず、discovery は毎回 sandbox で実行し、member は親プロセスで再ハッシュする。
 - 検証失敗の version は `rejected`。既存 active Adapter は変更されない。
 
-### Artifact 再利用との独立（trust policy）
+### Artifact の再利用（trust）
 
-Adapter の有効化と Artifact の科学的妥当性は独立した判断（仕様 §3）。実モデル試行で、自動有効化された generated Adapter が手作り Adapter より弱い check（base cache との照合や収束確認なし）で旧 run を verified にした例が確認されたため（後述）、次を既定とした。
+ユーザー決定（2026-10-11）：generated Adapter が verified にした artifact も**既定で自動再利用する**。科学的妥当性の判断は下流の Scientific Analyst / Scientific Reviewer / Completion gate の責務とする。
 
-- 人間がレビューしていない generated Adapter（`autopilot` が有効化、`endorsed_by` なし）だけが verified にした artifact は、Planner / Executor の解決で再利用しない。発見・検索・カタログ化は行う。
-- 再利用するには人間が `research-agent catalog adapter endorse <id> --actor <you>` で check をレビュー済みと記録するか、タスク要求に `trust=any` を明示する（人間が書く仕様側の判断）。
+- 要求の既定は `trust=any`。人間作成・レビュー済み Adapter の check だけを使いたい要求は `trust=human` を明示し、その場合は `adapter endorse`（人間）が必要。
+- 参考：実モデル試行で、生成 Adapter が手作り Adapter より弱い check（base cache 照合・収束確認なし）で旧 run を verified にした例がある（後述）。どの run を使うかは要求側の provenance pin（例：`git_commit=6c0d1dd`）で決まり、未 pin なら ambiguous で止まる。
+
+## 自律運用（CLI 不要）
+
+タスクの Input artifacts に `catalog:` 要求があると、Phase 2 は Planner の前に、要求が名指しする各 repository（`repository=`）について次を自動実行してから解決する（`catalog.integration.ensure_repository`）。
+
+1. `detect` が `unbound` / `no_active_adapter` / `scan_failed` / `no_artifacts` なら Adapter を生成（declarative のみ。python 提案は「declarative で書き直せ」と差し戻し）。合格すれば自動有効化。
+2. 同じ repository commit で生成が rejected / failed になっていれば 24 時間は再生成しない（課金ループ防止）。その旨を Blocked 理由に含める。
+3. 最新 scan が無い・有効 Adapter が変わった・git HEAD が変わった（非 git は 24 時間経過）なら再 scan。
+4. 解決。不可なら `DATA_INCONSISTENCY` で Blocked（Planner は呼ばない）。理由に upkeep の経過を付ける。
+
+人間作成 Adapter が active な場合や regression の場合、生成物は `awaiting_human` で保留されるが、既存 Adapter が使われ続けるため流れは止まらない。python Adapter が必要なリポジトリだけは自律では導入できず、タスクが Blocked になる（仕様上、python の有効化は人間承認が必須）。`RA_CATALOG_AUTO_GENERATE=false` で自動生成を止められる。Repository の registry 登録は事前設定として人間が行う。
 
 ## sandbox（`catalog/sandbox.py`）
 
@@ -68,7 +79,7 @@ research-agent catalog detect                         # 全登録 repository の
 research-agent catalog generate <repo> --focus "<what matters>" --budget-usd 1.0
 research-agent catalog generations <repo>             # 試行・問題点・費用・結果の履歴
 research-agent catalog adapter activate <id> --actor <you>   # python / awaiting_human の有効化
-research-agent catalog adapter endorse <id> --actor <you>    # generated check のレビュー記録
+research-agent catalog adapter endorse <id> --actor <you>    # trust=human 要求向けのレビュー記録（任意）
 ```
 
 環境変数：`RA_ADAPTER_GENERATOR_MODEL`（既定 `RA_REVIEWER_MODEL`、`RA_MODEL_PRICING` に単価必須）、`RA_ADAPTER_GENERATION_BUDGET_USD`（既定 1.0）。通知は `awaiting_human` → approvals、`activated` → logs、`rejected`/`failed` → errors（Discord ボタンは付かない）。
@@ -90,11 +101,11 @@ research-agent catalog adapter endorse <id> --actor <you>    # generated check �
 
 - 1 本目（@0.9.0）は結果 JSON の構造整合（geometry・k・件数・有限値）を検査したが、base cache との照合と収束確認がなく、手作り Adapter が inconsistent とする旧 run（6c17c30・3a61c10）も含む 204 件を verified にした。trust policy 導入の根拠。
 - 2 本目（新 DB、@0.1.0）は結果と cache entry の 2 rule を作り、cache 側で収束・形式 version・軌道並びを検査（旧形式 55,489 件は verified にならない）。ただし cache を subset ごとの artifact とし 165,031 artifact になったため、その後 `artifact_granularity` gate（50,000）を追加した。**この gate は当該試行の後に追加したもので、@0.1.0 は現行 gate では不合格になる。** 結果↔cache の cross_reference は generator が根拠不足として未作成（unresolved に記録）。
-- いずれも trust policy により、人間の endorse か `trust=any` がない限り Planner / Executor には渡らない。科学的再利用には手作り Adapter（`active-space-phase4-orbital`）を使う。
+- 既定（`trust=any`）では Planner / Executor に渡る。科学的妥当性は下流 Reviewer の責務（ユーザー決定）。
 
 ## 既知の制約
 
 - Linux（Eagle）の bwrap sandbox は未検証。bwrap が無ければ python Adapter は検証できない（安全側）。
-- generator が作る check の科学的十分性は自動では判断できない（trust policy で再利用を止める）。
+- generator が作る check の科学的十分性は自動では判断しない（下流 Reviewer の責務。必要なら要求側で `trust=human`）。
 - survey は約 9 万文字に要約するため、大規模 repository では focus の指定が品質に影響する。
-- autopilot poll からの自動起動はしていない（CLI / 関数呼び出し）。
+- 生成・再 scan はタスクが要求したときに起動する（定期的な全 repository 巡回はしない）。

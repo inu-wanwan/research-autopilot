@@ -361,7 +361,9 @@ def _next_version(ctx: CatalogContext, name: str) -> str:
 
 def generate_adapter(ctx: CatalogContext, repository_id: str, generator: AdapterGenerator, *,
                      focus: str | None = None, max_attempts: int = 3, force: bool = False,
-                     notifier=None) -> GenerationRun:
+                     notifier=None, allow_python: bool = True) -> GenerationRun:
+    """``allow_python=False`` (autonomous mode): python proposals are sent back for a declarative rewrite,
+    because a python adapter can never be activated without a human."""
     """Generate, validate and (policy permitting) activate an adapter for one registered repository."""
     store = ctx.store
     store.init_schema()
@@ -380,6 +382,8 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
     current_generated = next((a for a in active if a.origin is AdapterOrigin.GENERATED), None)
     survey = survey_repository(root, focus)
     run.survey_hash = stable_hash(survey)
+    from research_autopilot.catalog.service import _git_head
+    run.repository_commit = _git_head(root.resolve())
     name = generated_name(repository_id)
     feedback: list[str] = []
     previous: dict | None = None
@@ -401,6 +405,11 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
                     "python_source": p.python_source[:MAX_SOURCE_CHARS]}
         att.kind, att.rationale = p.kind, p.rationale[:2000]
         att.assumptions, att.unresolved = p.assumptions[:20], p.unresolved[:20]
+        if p.kind == "python" and not allow_python:
+            att.problems = ["python adapters cannot be adopted autonomously (they always need a human); "
+                            "express the adapter declaratively"]
+            feedback = _accumulate(feedback, att.problems)
+            continue
         meta = {"model": out.model, "prompt_version": PROMPT_VERSION, "survey_hash": run.survey_hash,
                 "generation_id": run.generation_id, "attempt": attempt, "focus": focus,
                 "rationale": att.rationale, "assumptions": att.assumptions, "unresolved": att.unresolved}
@@ -519,6 +528,16 @@ def _notify(ctx: CatalogContext, run: GenerationRun, notifier) -> None:
                     notifier=notifier)
     except Exception:  # notification failure never changes the outcome
         pass
+
+
+def recently_failed(store, repository_id: str, commit: str | None, cooldown_hours: float) -> GenerationRun | None:
+    """A rejected/failed generation for the same repository commit within the cooldown (avoid paid loops)."""
+    from datetime import timedelta
+    cutoff = utcnow() - timedelta(hours=cooldown_hours)
+    for run in reversed(history(store, repository_id)):
+        if run.outcome in ("rejected", "failed") and run.repository_commit == commit and run.started_at >= cutoff:
+            return run
+    return None
 
 
 def history(store, repository_id: str) -> list[GenerationRun]:

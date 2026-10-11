@@ -34,6 +34,12 @@ class CatalogContext:
     registry: dict  # repo id -> RepoConfig
     environment: str = DEFAULT_ENVIRONMENT
     env_roots: dict[str, dict[str, str]] = field(default_factory=dict)  # test override: env -> repo -> root
+    # Phase 7B autonomous upkeep (used by Planner integration): build the AI generator only when needed.
+    generator_factory: Any = None        # callable -> AdapterGenerator; None disables autonomous generation
+    generation_attempts: int = 3
+    generation_cooldown_hours: float = 24.0
+    scan_max_age_hours: float = 24.0     # non-git roots: rescan when the last scan is older than this
+    notifier: Any = None
 
     def root(self, repository_id: str, environment: str | None = None) -> Path | None:
         env = environment or self.environment

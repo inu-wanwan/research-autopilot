@@ -31,7 +31,7 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 ## Git Branch / Commit
 
 - 作業ブランチ：`phase7/artifact-catalog`（main `2f662bc` から分岐）
-- Phase 7B commit：`546c9b8`（生成・検証・sandbox）→ `2c53c93`（feedback 改善・trust policy・粒度 gate）→ docs commit
+- Phase 7B commit：`546c9b8`（生成・検証・sandbox）→ `2c53c93`（feedback 改善・trust policy・粒度 gate）→ `ffd47c8`（docs）→ 自律運用 commit。main に fast-forward merge 済み（push 未実施）
 - Phase 7A commit：`b66fd2c`（仕様）→ `e1b5782`（core）→ `41bb60d`（連携）→ `a711a33`（CLI）→ docs commit
 - Phase 6B：`codex/phase6b-parent-dag` を main に fast-forward 済み
 - Discord 実装 commit：`d5e3138`
@@ -44,7 +44,7 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 ### Phase 7B Autonomous Adapter Generation（2026-10-11 / Claude Code）
 
 - `catalog/generation.py`（detect、OpenAI generator、autovalidate、有効化判断、`catalog_generations` 記録、通知）、`catalog/survey.py`、`catalog/sandbox.py`、CLI `catalog detect|generate|generations|adapter endorse`、`RA_ADAPTER_GENERATOR_MODEL` / `RA_ADAPTER_GENERATION_BUDGET_USD`。
-- ポリシー：generated declarative は全 gate 合格かつ人間作成 Adapter を置き換えず verified を減らさない場合のみ自動有効化。generated python は macOS `sandbox-exec`（Linux は bwrap、未検証）でのみ実行し、人間の有効化が必須。未レビュー generated Adapter のみで verified の artifact は既定で再利用しない（endorse / `trust=any`）。
+- ポリシー：generated declarative は全 gate 合格かつ人間作成 Adapter を置き換えず verified を減らさない場合のみ自動有効化。generated python は macOS `sandbox-exec`（Linux は bwrap、未検証）でのみ実行し、人間の有効化が必須。generated Adapter の artifact も既定で再利用（ユーザー決定、科学的妥当性は下流 Reviewer の責務。`trust=human` で限定可）。Phase 2 が要求された repository の Adapter 生成・再 scan を自動実行し CLI 操作不要（python Adapter は自律導入しない）。
 - 検証済み：`uv run pytest` 424 passed / 1 dependency warning（Phase 7B 24 件を含む）。sandbox の書き込み・外部読み取り・network・subprocess・fork 拒否を Mac で確認。実モデル（`gpt-5.6-sol`、計約 $2.13）：合成 3 構造で自動有効化、active_space_research でも自動有効化。初回は全提案が gate で拒否され、feedback 改善後に成功。生成 Adapter は手作りより弱い check で旧 run を verified にしたため trust policy を導入。詳細・未検証事項は `docs/operations/phase7b_adapter_generation.md`。
 - 実モデル試行の作業用 DB・合成 repository は scratchpad のみ（本番 DB・研究 repo は不変、研究 repo は clean）。
 

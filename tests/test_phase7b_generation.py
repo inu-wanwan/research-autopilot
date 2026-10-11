@@ -300,18 +300,18 @@ def test_empty_pointer_addresses_the_whole_list_element_and_field_capture_clash_
         declarative.parse(d)
 
 
-def test_auto_activated_generated_checks_are_not_scientific_endorsement(tmp_path):
+def test_generated_adapter_artifacts_are_reused_by_default_and_human_trust_is_opt_in(tmp_path):
     ctx = context(tmp_path, {"repo": casci_repo(tmp_path / "repo")})
     run = generation.generate_adapter(ctx, "repo", FakeGenerator(decl(CASCI_ADAPTER)))
     service.scan(ctx, "repo")
     q = "catalog: kind=toy-condition k=2..3 expect=2"
-    res = service.resolve(ctx, service.parse_requirements(q))
-    assert not res.artifacts and all("no human has reviewed" in p for p in res.problems if "expected" not in p)
-    assert service.resolve(ctx, service.parse_requirements(q + " trust=any")).ok  # explicit, human-written opt-in
+    assert service.resolve(ctx, service.parse_requirements(q)).ok  # default: generated checks are enough
+    strict = service.resolve(ctx, service.parse_requirements(q + " trust=human"))
+    assert not strict.artifacts and any("no human has reviewed" in p for p in strict.problems)
     with pytest.raises(adapters.AdapterError, match="human"):
         adapters.endorse(ctx.store, run.adapter_id, actor=adapters.AUTOPILOT_ACTOR)
     adapters.endorse(ctx.store, run.adapter_id, actor=HUMAN)
-    assert service.resolve(ctx, service.parse_requirements(q)).ok
+    assert service.resolve(ctx, service.parse_requirements(q + " trust=human")).ok
 
 
 def test_too_fine_artifact_granularity_is_rejected_with_guidance(tmp_path, monkeypatch):
@@ -323,3 +323,76 @@ def test_too_fine_artifact_granularity_is_rejected_with_guidance(tmp_path, monke
     run = generation.generate_adapter(ctx, "repo", FakeGenerator(decl(per_file)), max_attempts=1)
     assert run.outcome == "rejected"
     assert any("artifact_granularity" in p and "group member files" in p for p in run.attempts[0].problems)
+
+
+
+# ---------------------------------------------------------------- autonomous upkeep from the Planner
+
+
+REQ = "- catalog: kind=toy-condition repository=repo molecule=H2 geometry_id=h2-r0.7 k=2..3 expect=2"
+
+
+def _planning(tmp_path, gen, repo_builder=casci_repo):
+    from phase2_fakes import FakeLinear, FakeNotion, make_deps, make_issue, make_page, make_plan, review
+
+    from research_autopilot.implementation.models import RepoConfig
+    page = make_page()
+    page = page.model_copy(update={"sections": {**page.sections, "input_artifacts": REQ}})
+    deps = make_deps(tmp_path, FakeNotion(page), FakeLinear(make_issue()), [make_plan()] * 3, [review("approved")] * 3)
+    repo = repo_builder(tmp_path / "repo")
+    deps.store.init_schema()
+    deps.catalog = service.CatalogContext(store=deps.store, registry={"repo": RepoConfig(id="repo", path=str(repo))},
+                                          environment="mac", generator_factory=lambda: gen, notifier=FakeNotifier())
+    return deps, repo
+
+
+def test_planner_generates_activates_scans_and_resolves_without_any_human_step(tmp_path):
+    from research_autopilot.models import DecisionStatus
+    from research_autopilot.orchestrator.core import plan_task
+    gen = FakeGenerator(py(GOOD_PY), decl(CASCI_ADAPTER))  # python first: sent back for a declarative rewrite
+    deps, _ = _planning(tmp_path, gen)
+    rec = plan_task(deps, task_id="INU-900", mode="dry_run")
+    assert rec.decision.status is DecisionStatus.READY, [r.message for r in rec.decision.reasons]
+    run = generation.history(deps.store, "repo")[0]
+    assert run.outcome == "activated" and "cannot be adopted autonomously" in run.attempts[0].problems[0]
+    assert adapters.active_for(deps.store, "repo")[0].origin is AdapterOrigin.GENERATED
+    assert "Resolved catalog artifacts (2" in deps.planner.calls[0][0].input_artifacts
+    # A second task finds everything ready: no generation, no rescan.
+    plan_task(deps, task_id="INU-900", mode="dry_run")
+    assert len(gen.payloads) == 2 and len(deps.store.find(db.catalog_scans)) == 1
+
+
+def test_failed_autonomous_generation_blocks_the_task_and_is_not_retried_for_the_same_commit(tmp_path):
+    from research_autopilot.models import DecisionStatus
+    from research_autopilot.orchestrator.core import plan_task
+    wrong = copy.deepcopy(CASCI_ADAPTER)
+    wrong["artifacts"][0]["pattern"] = "nothing/{x}/*.json"
+    wrong["artifacts"][0].update(identity=["x"], provenance=[], metadata=[], captures={},
+                                 checks=[{"type": "equals", "field": "x", "value": "y"}])
+    gen = FakeGenerator(*[decl(wrong)] * 3)
+    deps, _ = _planning(tmp_path, gen)
+    rec = plan_task(deps, task_id="INU-900", mode="dry_run")
+    assert rec.decision.status is DecisionStatus.BLOCKED
+    assert any("adapter generation rejected" in r.message for r in rec.decision.reasons)
+    assert deps.planner.calls == [] and len(gen.payloads) == 3
+    rec = plan_task(deps, task_id="INU-900", mode="dry_run")
+    assert any("not retried" in r.message for r in rec.decision.reasons) and len(gen.payloads) == 3
+
+
+def test_new_repository_commit_triggers_a_rescan(tmp_path):
+    import subprocess
+
+    from research_autopilot.catalog.integration import ensure_repository
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+    gen = FakeGenerator(decl(CASCI_ADAPTER))
+    deps, repo = _planning(tmp_path, gen)
+    git("init", "-q"); git("add", "."); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "a")
+    ensure_repository(deps.catalog, "repo")
+    assert ensure_repository(deps.catalog, "repo") == []  # nothing changed: no work
+    casci_repo(repo, conditions=(("H2", "h2-r0.7", 4),))
+    git("add", "."); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "b")
+    notes = ensure_repository(deps.catalog, "repo")
+    assert any("rescanned" in n for n in notes)
+    assert service.resolve(deps.catalog, service.parse_requirements("catalog: kind=toy-condition k=4")).ok
