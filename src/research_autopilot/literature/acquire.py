@@ -157,6 +157,38 @@ def _source_url(res: dict) -> str | None:
                 None)
 
 
+def snapshot_document(net: Net, src: Source, url: str, limit: RetrievalLimit | None = None) -> list[Failure]:
+    """Dated snapshot of one official documentation page (HTML is reduced to text, a PDF is kept as is)."""
+    if limit is not None and not limit.take():
+        return _limit_reached(src, [])
+    try:
+        r = net.get(url, accept="text/html,application/xhtml+xml,application/pdf,text/plain")
+        if r.status_code != 200:
+            raise ValueError(f"HTTP {r.status_code}")
+        digest = sha256_bytes(r.content)
+        is_pdf = r.content[:5] == b"%PDF-"
+        path = CACHE / "docs" / f"{digest}.{'pdf' if is_pdf else 'txt'}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            if is_pdf:
+                path.write_bytes(r.content)
+            else:
+                from research_autopilot.literature.text import html_text
+                ctype = r.headers.get("content-type", "")
+                body = r.content.decode(r.encoding or "utf-8", errors="replace")
+                path.write_text(html_text(body) if "html" in ctype or "<html" in body[:2000].lower() else body)
+        src.version = f"retrieved {utcnow().date().isoformat()} sha256:{digest[:12]}"
+        src.retrieval = Retrieval(method="document_snapshot", status="ok", retrieved_at=utcnow(), sha256=sha256_file(path),
+                                  local_path=str(path), origin_url=url, access="open_access",
+                                  detail=f"official documentation snapshot ({'pdf' if is_pdf else 'text'}, "
+                                         f"{len(r.content)} bytes)")
+        return []
+    except Exception as exc:
+        src.retrieval = Retrieval(method="document_snapshot", status="failed", retrieved_at=utcnow(),
+                                  detail=f"{type(exc).__name__}: {exc}"[:300])
+        return [Failure(stage="acquisition", target=src.source_id, detail=src.retrieval.detail)]
+
+
 def snapshot_repository(net: Net, src: Source, full_name: str, limit: RetrievalLimit | None = None) -> list[Failure]:
     """Commit-pinned snapshot of README / license / source files (bounded)."""
     if limit is not None and not limit.take():

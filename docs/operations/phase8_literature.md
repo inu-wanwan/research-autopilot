@@ -9,7 +9,7 @@
 | `net.py` | 許可リスト方式の HTTPS クライアント（リダイレクト先も再検査、cookie・認証情報なし、mailto 付き、host ごとの間隔、サイズ上限、GitHub token は任意） |
 | `search.py` | arXiv / Crossref / OpenAlex / Unpaywall / GitHub の検索、DOI・arXiv ID・正規化タイトルでの重複統合、preprint ↔ 出版版の関連付け。失敗したサービスは記録して続行 |
 | `zotero/` | **PoC（`zotero-connector-poc` @ 58b3871、方式 C）を移植**。保存・判定・CAPTCHA 検出のロジックは検証済みのまま、設定だけ RA の環境変数に移した。保存先コレクションの事前確認、DOI 既存時は保存しない（重複防止） |
-| `acquire.py` | 原文取得：Zotero 既存 PDF → Zotero Connector → OA 直接取得（非公開キャッシュ）→ 人への依頼。参照実装は commit 固定のスナップショット |
+| `acquire.py` | 原文取得：Zotero 既存 PDF → Zotero Connector → OA 直接取得（非公開キャッシュ）→ 人への依頼。参照実装は commit 固定のスナップショット、公式ドキュメントは取得日・sha256 付きのページスナップショット |
 | `text.py` | pypdf によるページ単位の本文抽出（sha256 でキャッシュ）、実装ファイルの読み込み、引用照合 |
 | `analysis.py` | LLM：資料選定・主張抽出・統合。外部テキストは信頼しないデータとして区切って渡す。引用の決定論的照合 |
 | `researcher.py` | 全体の流れと段階記録・費用・失敗の保持 |
@@ -36,6 +36,8 @@
 5. 参照実装は GitHub API で既定ブランチの commit SHA を取得し、README・LICENSE・ソース（1 ファイル 300 KB、合計 3 MB、80 ファイルまで）を `raw.githubusercontent.com/<repo>/<sha>/...` から保存する。
 6. **取得上限**：Connector 保存・OA 取得・参照実装スナップショットの試行は 1 回の調査で合計 10 件まで（`RA_LITERATURE_MAX_RETRIEVALS` で下げられるが 10 を超えない）。上限到達後の資料は `requires_human`。Zotero 既存 PDF・catalog 済み資料の再利用は数えない。
 
+7. **公式ドキュメント**：タスク仕様（`## Literature`）や Planner の依頼に https URL（doi.org・arXiv・GitHub 以外）があれば公式資料の seed とし、許可リスト上のホスト（既定で `pyscf.org`・`readthedocs.io`・`docs.python.org` 等、追加は `RA_LITERATURE_EXTRA_HOSTS`）に限って取得する。HTML は script・style・nav などを除いた本文テキストに変換して `~/.research-autopilot/literature/docs/` に保存（PDF ならそのまま）。主張は `<URL> part N` を出典として照合する。許可リスト外の URL は取得せず失敗として記録する。
+
 Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.research-autopilot/zotero/connector` に固定して使う（`zotero fetch-connector` は更新時のみ。更新後は `zotero check` と E2E で回帰確認）。
 
 ## Research Artifact と再利用
@@ -46,6 +48,10 @@ Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.re
 
 ## Planner 連携
 
+- 調査の選定には、問いに加えてタスクの Purpose を文脈として渡す（問いだけで選ばない）。検索で得た候補一覧はレポートの `candidates` に残し、発見・選定の過程を第三者が追えるようにする。
+- 文献調査の費用（再利用時は 0）は計画 run の `literature_cost_usd` として記録し、`estimated_cost_usd` と Phase 5 の chain 予算（`autopilot/budget.py`）に含める。
+- Planner の `literature_requests` に含まれる DOI・arXiv ID・GitHub・ドキュメント URL も seed として扱う。
+
 - タスク仕様に `## Literature` / `## Literature research` / `## 文献調査` があれば、その本文を問い（DOI・arXiv ID・GitHub URL は seed）として計画前に調査する。
 - Planner の出力 `literature_requests`（任意）があれば最大 2 問を調査し、1 回だけ再計画する。
 - handoff に `literature_reports`（report id）を記録。調査の失敗は計画を止めず、Planner への文脈（根拠不足）とイベントに残す。
@@ -55,6 +61,7 @@ Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.re
 
 | 受け入れ条件 | 状態 |
 |---|---|
+| 公式ドキュメントの取得・解析（要件 2.1 / 2.3） | ✅ テスト：HTML の本文抽出（script・nav 除去）、`<URL> part N` で照合、許可リスト外は失敗記録。実サイト：pyscf.org の MCSCF ページを取得・本文抽出（4 part）。**LLM 抽出まで含む実データ E2E は未実施** |
 | 研究タスクから原著論文・参照実装候補を発見 | ✅ 実データ：BOCS（arXiv:1806.08838v2）が arXiv / OpenAlex / Crossref の統合結果で首位、`baptistar/BOCS`（★105）を GitHub で発見 |
 | OA PDF の自動取得 | ✅ テスト（OA 直接取得）。実データでは Connector 経由で取得 |
 | PoC を使った Zotero Connector 保存 | ✅ Mac：BOCS を `ResearchAutopilot` コレクションに保存（11.6 秒、PDF＋同期フォルダ）、2 回目以降は既存 PDF を再利用。**Windows（Eagle）は未検証** |

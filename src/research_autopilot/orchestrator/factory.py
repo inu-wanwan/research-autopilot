@@ -56,6 +56,6 @@ def _literature(settings: Settings, catalog):
         writer = NotionWriter(settings.notion_api_token.get_secret_value(), settings.notion_tasks_data_source_id,
                               notes_ds)
 
-    def run(question: str, task_id: str | None, seeds: list[str]):
-        return research(deps_from_env(catalog, writer), question, task_id=task_id, seeds=seeds)
+    def run(question: str, task_id: str | None, seeds: list[str], purpose: str | None = None):
+        return research(deps_from_env(catalog, writer), question, task_id=task_id, seeds=seeds, purpose=purpose)
     return run

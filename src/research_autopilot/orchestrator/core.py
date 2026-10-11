@@ -127,13 +127,13 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                 x for x in (spec.input_artifacts, planner_context(resolution)) if x)})
         reports = []
         if spec.literature:  # Phase 8: the task asks for literature research before planning
-            reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier)
+            reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
         outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         requests = (outcome.plan.plan.literature_requests if outcome.status is DecisionStatus.READY and outcome.plan
                     else [])
         if requests and deps.literature is not None:  # the Planner asked for evidence: research, re-plan once
-            reports += _research(deps, record, [(q, False) for q in requests[:2]], bundle.issue.identifier)
+            reports += _research(deps, record, [(q, False) for q in requests[:2]], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
             outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         if outcome.status is not DecisionStatus.READY:
@@ -188,19 +188,22 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
         deps.store.release_lease(bundle.issue.identifier, record.plan_run_id)
 
 
-def _research(deps: Deps, record: PlanRunRecord, questions: list[tuple[str, bool]], task_id: str) -> list:
+def _research(deps: Deps, record: PlanRunRecord, questions: list[tuple[str, bool]], task_id: str,
+              purpose: str | None = None) -> list:
     """Run the Researcher for each question; a failure becomes planner-visible context, never a crash."""
     from research_autopilot.literature.integration import seeds_from
     out = []
-    for question, from_spec in questions:
+    for question, _from_spec in questions:
         if deps.literature is None:
             record.events.append(RunEvent(kind="literature", message="literature research requested but not configured"))
             continue
         try:
-            report = deps.literature(question, task_id, seeds_from(question) if from_spec else [])
+            report = deps.literature(question, task_id, seeds_from(question), purpose=purpose)
         except Exception as exc:
             record.events.append(RunEvent(kind="literature", message=f"research failed: {type(exc).__name__}: {exc}"[:300]))
             continue
+        if not report.reused:
+            record.literature_cost_usd = round(record.literature_cost_usd + report.total_cost_usd, 6)
         record.events.append(RunEvent(kind="literature", message=(
             f"report {report.report_id} ({'reused, no new cost' if report.reused else f'${report.total_cost_usd:.4f}'}): "
             f"{len(report.sources)} source(s), {len(report.verified_claims)} verified claim(s), "
@@ -315,7 +318,9 @@ def _finish(deps: Deps, record: PlanRunRecord) -> None:
     record.cost = CostSummary(
         input_tokens=sum(c.input_tokens for c in calls),
         output_tokens=sum(c.output_tokens for c in calls),
-        estimated_cost_usd=(round(sum(x for x in costs if x is not None), 6) if complete else None) if calls else 0.0,
+        # Phase 8 literature cost belongs to the plan run so the Phase 5 chain budget counts it.
+        estimated_cost_usd=round((sum(x for x in costs if x is not None) if complete else 0.0) + record.literature_cost_usd, 6)
+        if complete or not calls else None,
         cost_complete=complete,
     )
     record.finished_at = utcnow()

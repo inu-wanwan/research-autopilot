@@ -294,13 +294,18 @@ def test_literature_section_is_researched_before_planning_and_recorded_in_the_ha
     asked = []
     rdeps = _deps(tmp_path / "lit")
 
-    def literature(question, task_id, seeds):
+    def literature(question, task_id, seeds, purpose=None):
+        assert purpose  # selection is guided by the task's purpose
         asked.append((question, task_id, seeds))
         return research(rdeps, question, task_id=task_id, seeds=seeds, write_note=False)
     deps.literature = literature
     rec = plan_task(deps, task_id="INU-900", mode="dry_run")
     assert rec.decision.status is DecisionStatus.READY
     assert asked[0][1:] == ("INU-900", ["1806.08838", "baptistar/BOCS"])
+    # the research cost is part of the plan run, so the Phase 5 chain budget counts it
+    from research_autopilot.autopilot.budget import chain_usage
+    assert rec.literature_cost_usd > 0
+    assert chain_usage(deps.store, [{"plan_run_id": rec.plan_run_id}]).api_usd >= rec.literature_cost_usd
     planner_input = deps.planner.calls[0][0].input_artifacts
     assert "LITERATURE EVIDENCE" in planner_input and "VERIFIED" in planner_input
     handoff = ExecutionHandoff.model_validate_json(open(rec.handoff_path).read())
@@ -316,7 +321,7 @@ def test_planner_literature_requests_trigger_one_research_round_and_replan(tmp_p
     asking = make_plan().model_copy(update={"literature_requests": ["What prior does BOCS use?"]})
     deps = _plan_deps(tmp_path, planner_script=[asking, asking, make_plan()])
     asked = []
-    deps.literature = lambda q, t, s: asked.append(q) or research(_deps(tmp_path / "lit"), q, write_note=False)
+    deps.literature = lambda q, t, s, **kw: asked.append(q) or research(_deps(tmp_path / "lit"), q, write_note=False)
     rec = plan_task(deps, task_id="INU-900", mode="dry_run")
     assert asked == ["What prior does BOCS use?"]  # exactly one round, even though the re-plan asks again
     assert "LITERATURE EVIDENCE" in deps.planner.calls[-1][0].input_artifacts
@@ -327,9 +332,34 @@ def test_research_failure_is_planner_context_not_a_crash(tmp_path):
     from research_autopilot.orchestrator.core import plan_task
     deps = _plan_deps(tmp_path, "anything")
 
-    def boom(*a):
+    def boom(*a, **kw):
         raise RuntimeError("network down")
     deps.literature = boom
     rec = plan_task(deps, task_id="INU-900", mode="dry_run")
     assert rec.decision.status.value == "ready"
     assert any("research failed" in e.message for e in rec.events)
+
+
+def test_official_documentation_page_is_snapshotted_and_quotes_are_verified(tmp_path):
+    deps = _deps(tmp_path)
+    r = research(deps, "How does PySCF define the CASSCF active space?",
+                 seeds=["https://pyscf.org/user/mcscf.html"], write_note=False)
+    doc = next(s for s in r.sources if s.source_type.value == "official_doc")
+    assert doc.retrieval.method == "document_snapshot" and doc.retrieval.status == "ok" and doc.retrieval.sha256
+    text = __import__("pathlib").Path(doc.retrieval.local_path).read_text()
+    assert "ignore previous instructions" not in text and "Home | API" not in text and "active orbitals" in text
+    claim = next(c for c in r.claims if c.source_id == doc.source_id)
+    assert claim.status == "verified" and claim.origin == "documentation"
+    assert claim.locator == "https://pyscf.org/user/mcscf.html part 1"
+    assert any(c.get("doc_url") for c in r.candidates)  # the search result is kept for audit
+
+
+def test_documentation_seed_outside_the_allowlist_is_a_recorded_failure(tmp_path):
+    r = research(_deps(tmp_path), "anything", seeds=["https://evil.example.com/doc"], write_note=False)
+    assert any("not on the literature allowlist" in f.detail for f in r.failures)
+
+
+def test_seeds_include_documentation_urls_but_not_scholarly_urls():
+    assert seeds_from("see https://pyscf.org/user/mcscf.html, https://doi.org/10.1021/acs.jctc.1c00001 and "
+                      "https://arxiv.org/abs/1806.08838") == [
+        "https://pyscf.org/user/mcscf.html", "10.1021/acs.jctc.1c00001", "1806.08838"]

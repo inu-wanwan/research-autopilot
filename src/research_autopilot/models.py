@@ -388,6 +388,7 @@ class PlanRunRecord(BaseModel):
     events: list[RunEvent] = Field(default_factory=list)
     decision: WorkflowDecision | None = None
     cost: CostSummary | None = None
+    literature_cost_usd: float = 0.0  # Phase 8 research run for this plan (reused reports cost nothing)
     artifact_path: str | None = None
     handoff_path: str | None = None
 
