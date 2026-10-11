@@ -36,6 +36,20 @@ def test_phase3_prompts_keep_implementation_and_experiment_roles_separate():
     assert "bounded technical implementation work" in REVIEWER_RULES
 
 
+def test_prompts_describe_how_phase4_actually_builds_the_environment():
+    import inspect
+
+    from research_autopilot.experiments import environment
+    from research_autopilot.implementation.prompts import IMPLEMENTER_RULES, REVIEWER_RULES
+
+    install = inspect.getsource(environment._install)
+    assert "install_argv" not in install  # Phase 4 never runs the declared install command ...
+    for rules in (IMPLEMENTER_RULES, REVIEWER_RULES):  # ... so neither role may build a contract on it
+        assert "install_argv is not executed" in rules.lower()
+        assert "uv pip freeze" in rules and "uv sync --frozen" in rules
+    assert "Do not require a lock file" in REVIEWER_RULES
+
+
 def test_process_output_is_persisted_incrementally_and_reported(tmp_path):
     progress = []
     log = tmp_path / "backend.log"
