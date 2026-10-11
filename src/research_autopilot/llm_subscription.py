@@ -1,0 +1,151 @@
+"""Structured LLM calls on the ChatGPT/Codex subscription (``codex exec``), with API fallback routing.
+
+User decision (2026-10-12, until production): use the subscription as much as possible and fall back to the
+pay-as-you-go OpenAI API only when it is impossible. ``RA_LLM_SUBSCRIPTION_FIRST=codex`` turns this on for every
+structured call that goes through ``planning.agents._AgentsSdkBase`` (planner / reviewer, analyst, scientific
+reviewer, completion reviewer, dependency inferer, adapter generator, literature / research / external LLM).
+
+The CLI runs read-only in an empty temporary directory with the sanitized environment (no API key is passed), so
+it uses its own subscription login (default ``CODEX_HOME``). A subscription call costs 0 USD for the budgets.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+from pydantic import BaseModel, ValidationError
+
+log = logging.getLogger(__name__)
+
+ENV_FLAG = "RA_LLM_SUBSCRIPTION_FIRST"
+COOLDOWN_SECONDS = 15 * 60  # after a usage limit / auth problem the subscription is skipped for this long
+DEFAULT_TIMEOUT = 900
+DEFAULT_EFFORT = "medium"
+
+# Failures after which the next calls go straight to the API for COOLDOWN_SECONDS (they will not heal per call).
+_STICKY = {"quota_exhausted", "auth_error", "not_installed"}
+
+_lock = threading.Lock()
+_skip_until = 0.0
+_skip_reason = ""
+
+
+class SubscriptionCallError(Exception):
+    """A subscription call that did not produce a valid result; ``status`` says why."""
+
+    def __init__(self, status: str, detail: str = "") -> None:
+        super().__init__(f"{status}: {detail}" if detail else status)
+        self.status, self.detail = status, detail
+
+
+def subscription_mode() -> str | None:
+    """``"codex"`` when structured calls should try the subscription first, else ``None`` (default: off)."""
+    v = os.environ.get(ENV_FLAG, "").strip().lower()
+    return "codex" if v in ("codex", "1", "true", "yes", "on") else None
+
+
+def strict_schema(output_type: type[BaseModel]) -> dict:
+    """Strict structured-output schema for ``codex --output-schema`` (which rejects 'default' keywords)."""
+    from agents.agent_output import AgentOutputSchema
+
+    from research_autopilot.implementation.reviewer import _strip_defaults
+    return _strip_defaults(AgentOutputSchema(output_type).json_schema())
+
+
+def cooldown_remaining() -> float:
+    with _lock:
+        return max(0.0, _skip_until - time.monotonic())
+
+
+def mark_unavailable(reason: str, seconds: float = COOLDOWN_SECONDS) -> None:
+    global _skip_until, _skip_reason
+    with _lock:
+        _skip_until, _skip_reason = time.monotonic() + seconds, reason
+
+
+def reset() -> None:
+    """Forget a cached unavailability (tests, or after re-login)."""
+    global _skip_until, _skip_reason
+    with _lock:
+        _skip_until, _skip_reason = 0.0, ""
+
+
+def _executable() -> str:
+    return os.environ.get("RA_LLM_SUBSCRIPTION_CODEX", "").strip() or "codex"
+
+
+def codex_structured(model: str, instructions: str, prompt: str, output_type: type[BaseModel],
+                     timeout: int = DEFAULT_TIMEOUT, reasoning_effort: str | None = None,
+                     executable: str | None = None) -> tuple[BaseModel, dict]:
+    """One ``codex exec`` structured call on the subscription login. Returns (parsed output, usage dict).
+
+    Raises ``SubscriptionCallError`` with status quota_exhausted / rate_limited / auth_error / transient_error /
+    process_error / timeout / not_installed / invalid_output.
+    """
+    from research_autopilot.implementation.backends.base import classify_error_text, run_process, sanitized_env, tail
+    from research_autopilot.implementation.backends.codex import parse_events
+
+    exe = executable or _executable()
+    if not shutil.which(exe):
+        raise SubscriptionCallError("not_installed", f"{exe} not on PATH")
+    with tempfile.TemporaryDirectory(prefix="ra-llm-sub-") as tmp:
+        root = Path(tmp)
+        work = root / "work"
+        work.mkdir()
+        schema = root / "schema.json"
+        schema.write_text(json.dumps(strict_schema(output_type)), encoding="utf-8")
+        cmd = [exe, "exec", "--json", "--ephemeral", "--ignore-user-config", "-s", "read-only",
+               "--skip-git-repo-check", "-C", str(work), "-m", model,
+               "-c", f'model_reasoning_effort="{reasoning_effort or DEFAULT_EFFORT}"',
+               "--output-schema", str(schema), "-"]
+        stdin = f"{instructions.strip()}\n\n---\nINPUT:\n{prompt}\n"
+        out = run_process(cmd, work, stdin, timeout, root / "codex.log", lambda pid: None, env=sanitized_env())
+    usage_obj, message, errors = parse_events(out.stdout)
+    usage = usage_obj.model_dump()
+    if out.timed_out:
+        raise SubscriptionCallError("timeout", f"timed out after {timeout}s")
+    if out.exit_code != 0 or errors:
+        text = " ".join(errors) + " " + tail(out.stderr, 2000)
+        status = classify_error_text(text) or "process_error"
+        raise SubscriptionCallError(status, tail(" | ".join(errors) or out.stderr, 300))
+    try:
+        return output_type.model_validate(json.loads(message)), usage
+    except (ValueError, ValidationError) as exc:
+        raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
+
+
+def try_structured(model: str, instructions: str, prompt: str, output_type: type[BaseModel],
+                   timeout: int = DEFAULT_TIMEOUT, reasoning_effort: str | None = None
+                   ) -> tuple[BaseModel, dict] | None:
+    """Subscription attempt for one structured call; ``None`` means "use the API path".
+
+    Invalid output is retried once; usage limits / auth problems are cached for COOLDOWN_SECONDS so later calls
+    skip the subprocess. Never raises for a subscription failure.
+    """
+    if subscription_mode() != "codex":
+        return None
+    if (left := cooldown_remaining()) > 0:
+        log.info("subscription skipped for %ds more (%s); using the API", int(left), _skip_reason)
+        return None
+    for attempt in (1, 2):
+        try:
+            return codex_structured(model, instructions, prompt, output_type, timeout, reasoning_effort)
+        except SubscriptionCallError as exc:
+            if exc.status == "invalid_output" and attempt == 1:
+                log.warning("subscription output invalid (%s); retrying once", exc.detail[:120])
+                continue
+            if exc.status in _STICKY:
+                mark_unavailable(exc.status)
+            log.warning("subscription call failed (%s: %s); falling back to the API", exc.status, exc.detail[:200])
+            return None
+        except OSError as exc:  # could not start the CLI at all
+            log.warning("subscription call could not start (%s); falling back to the API", exc)
+            return None
+    return None

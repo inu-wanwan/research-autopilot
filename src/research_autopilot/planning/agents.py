@@ -5,6 +5,10 @@ Both return Pydantic-validated outputs. Errors are normalized to:
 - InvalidAgentOutput: the model's output failed schema / consistency validation.
 - TransientAgentError: rate limit, timeout, connection or 5xx (safe to retry).
 - AgentConfigError: auth, quota, unknown model -- retrying will not help.
+
+With ``RA_LLM_SUBSCRIPTION_FIRST=codex`` every call first tries the ChatGPT/Codex subscription
+(``llm_subscription``) and uses the API path below only when that is impossible; the errors above describe the
+API path (a failed subscription attempt never raises, it falls back).
 """
 
 import json
@@ -50,6 +54,7 @@ class AgentRun(Generic[T]):
     output: T
     usage: Usage
     model: str
+    billing: str = "api"  # "subscription" = ChatGPT/Codex plan (0 USD for budgets), "api" = pay-as-you-go
 
 
 class Planner(Protocol):
@@ -171,11 +176,31 @@ def _spec_payload(spec: TaskSpec) -> dict:
 
 
 class _AgentsSdkBase:
+    reasoning_effort: str | None = None  # subscription path; None = llm_subscription.DEFAULT_EFFORT
+
     def __init__(self, model: str, tracing: bool = False) -> None:
         self.model = model
         self._run_config = RunConfig(tracing_disabled=not tracing, workflow_name="research-autopilot")
 
-    def _run(self, agent: Agent, prompt: str, output_type: type[T]) -> AgentRun[T]:
+    def _run(self, agent: Agent, prompt: str, output_type: type[T],
+             api_refusal: Exception | None = None) -> AgentRun[T]:
+        """Subscription first (when enabled), then the API. ``api_refusal`` is raised instead of an API call
+        (e.g. an unpriced model) when the subscription could not serve the call."""
+        from research_autopilot import llm_subscription
+
+        sub = llm_subscription.try_structured(self.model, str(agent.instructions or ""), prompt, output_type,
+                                              reasoning_effort=self.reasoning_effort)
+        if sub is not None:
+            out, u = sub
+            usage = Usage(input_tokens=u.get("input_tokens", 0), output_tokens=u.get("output_tokens", 0),
+                          cached_input_tokens=u.get("cached_input_tokens", 0),
+                          reasoning_tokens=u.get("reasoning_tokens", 0), requests=1)
+            return AgentRun(output=out, usage=usage, model=self.model, billing="subscription")
+        if api_refusal is not None:
+            raise api_refusal
+        return self._run_api(agent, prompt, output_type)
+
+    def _run_api(self, agent: Agent, prompt: str, output_type: type[T]) -> AgentRun[T]:
         try:
             result = Runner.run_sync(agent, prompt, run_config=self._run_config, max_turns=1)
         except ModelBehaviorError as exc:
