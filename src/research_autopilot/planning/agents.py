@@ -97,7 +97,8 @@ Rules:
   * each statement is checkable: name the exact output fields, settings, behaviours and tolerances (e.g.
     "each result records rhf.conv_tol, rhf.max_cycle, fci.conv_tol, fci.max_cycle and the convergence flags"),
     never "appropriate", "reproducible", "complete", or "A or B" choices left open -- decide them.
-  * each item's source quotes the task specification verbatim (or is 'phase4_contract'); do not add
+  * each item's source quotes the task specification verbatim (or is 'phase4_contract'): copy one contiguous
+    passage from any section (markdown, quote marks and list markers are ignored); do not add
     requirements the specification does not ask for (no extra provenance, schemas or tooling "for safety").
   * prefer check="test" (a repository test asserts it); use "review" only for what a test cannot show.
   * only use libraries that ENVIRONMENT FACTS list as available in the test environment, or that the plan

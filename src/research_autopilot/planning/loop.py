@@ -57,7 +57,11 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
     feedback: list[RevisionRequest] = list(seed[1]) if seed else []
     last_review: ReviewAttempt | None = None
 
-    for iteration in range(settings.max_replans + 1):
+    review_feedback: list[RevisionRequest] = list(feedback)
+    dod_rejections = 0
+    dod_problems: list[str] = []
+    iteration = 0
+    while iteration <= settings.max_replans:
         try:
             plan_run = _call(record, settings, "planner", planner.model, iteration, sleep,
                              lambda: planner.plan(spec, previous, feedback))
@@ -66,14 +70,20 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
         attempt = PlanAttempt(plan_id=new_id(), iteration=iteration, plan=plan_run.output)
         record.plans.append(attempt)
 
-        # The Definition of Done must be checkable and grounded before a reviewer looks at the plan.
+        # The Definition of Done must be checkable and grounded before a reviewer looks at the plan. A DoD-only
+        # rejection re-plans without consuming a review iteration (capped separately).
         if dod_problems := dod.problems(spec, attempt.plan):
-            previous, feedback = attempt.plan, [RevisionRequest(
+            dod_rejections += 1
+            record.events.append(RunEvent(kind="replan", message=(
+                f"iteration {iteration}: definition of done rejected ({len(dod_problems)} problem(s), "
+                f"rejection {dod_rejections}/{dod.MAX_DOD_REJECTIONS})")))
+            previous = attempt.plan
+            feedback = review_feedback + [RevisionRequest(
                 aspect="evaluation", severity="major", issue=f"Definition of Done: {p}",
                 requested_change="Fix the definition_of_done as described (see the planner rules).", step_ids=[])
                 for p in dod_problems]
-            record.events.append(RunEvent(kind="replan", message=(
-                f"iteration {iteration}: definition of done rejected ({len(dod_problems)} problem(s))")))
+            if dod_rejections > dod.MAX_DOD_REJECTIONS:
+                break
             continue
 
         try:
@@ -95,12 +105,19 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
                 details={"plan_id": attempt.plan_id, "iteration": iteration},
             )])
         previous, feedback = attempt.plan, review_run.output.revision_requests
+        review_feedback = list(feedback)
         record.events.append(RunEvent(kind="replan", message=(
             f"iteration {iteration}: revision_required ({len(feedback)} requests)")))
+        iteration += 1
 
+    if dod_problems:
+        message = ("the plan's Definition of Done was not acceptable after "
+                   f"{dod_rejections} attempt(s): " + "; ".join(dod_problems))
+    else:
+        message = f"plan not approved after {settings.max_replans} replans"
     return LoopOutcome(DecisionStatus.BLOCKED, plan=attempt, review=last_review, reasons=[BlockedReason(
         code=BlockedCode.REVISION_LIMIT,
-        message=f"plan not approved after {settings.max_replans} replans",
+        message=message,
         details={"last_plan_id": attempt.plan_id,
                  "open_requests": [r.model_dump(mode="json") for r in feedback]},
     )])

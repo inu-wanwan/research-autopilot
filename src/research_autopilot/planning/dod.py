@@ -5,10 +5,14 @@ baseline items that its own checks already prove, so neither the implementer nor
 """
 
 import re
+import unicodedata
 
 from research_autopilot.models import DoneCriterion, ExecutionPlan, TaskSpec
 
 MAX_TASK_CRITERIA = 10
+# Re-plans per planning run after a Definition-of-Done-only rejection (they do not consume a max_replans
+# iteration); the next DoD rejection ends the run.
+MAX_DOD_REJECTIONS = 2
 PHASE4_CONTRACT = "phase4_contract"
 
 # Proven by Phase 3's deterministic checks / Phase 4's validator; the reviewer does not re-judge them.
@@ -28,16 +32,24 @@ BASELINE: list[DoneCriterion] = [
 ]
 
 _VAGUE = re.compile(r"\b(appropriate(ly)?|reasonabl[ey]|as needed|if possible|etc\.?)\b|適切に|必要に応じ", re.I)
+_MARKUP = re.compile(r"\*\*|__|[`#*_「」『』“”‘’\"']")
+_LINE_MARK = re.compile(r"^\s*(?:[-*+・•]|\d+[.)]|[(（]\d+[)）])\s*", re.M)
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"^[\s\-*・\d.)]+", "", text or "")).strip().strip("。.")
+    """Comparable form of a spec quote: NFKC, no markdown / quote marks / list markers, one-space whitespace."""
+    text = unicodedata.normalize("NFKC", text or "")
+    text = _MARKUP.sub("", _LINE_MARK.sub("", text))
+    return re.sub(r"\s+", " ", text).strip().strip("。.").strip()
 
 
 def spec_text(spec: TaskSpec) -> str:
-    fields = (spec.purpose, spec.specification, spec.acceptance_criteria, spec.scientific_invariants,
-              spec.artifact_requirements, spec.non_goals)
-    return _norm(" ".join(f for f in fields if f))
+    fields = [spec.title, spec.preamble, spec.purpose, spec.background, spec.scientific_rationale,
+              spec.specification, spec.acceptance_criteria, spec.dependencies_note, spec.scientific_invariants,
+              spec.artifact_requirements, spec.non_goals, spec.file_scope, spec.input_artifacts, spec.literature,
+              spec.research_objective, spec.budget, spec.success_criteria, spec.stop_conditions, spec.autonomy,
+              *spec.other_sections.values()]
+    return _norm("\n".join(f for f in fields if f))
 
 
 def problems(spec: TaskSpec, plan: ExecutionPlan) -> list[str]:
@@ -54,7 +66,7 @@ def problems(spec: TaskSpec, plan: ExecutionPlan) -> list[str]:
         if not re.fullmatch(r"D\d+", c.id):
             out.append(f"{c.id}: ids are D1, D2, ... (B ids are reserved for the system baseline)")
         source = _norm(c.source)
-        if source != PHASE4_CONTRACT and (len(source) < 4 or source not in text):
+        if c.source.strip() != PHASE4_CONTRACT and (len(source) < 4 or source not in text):
             out.append(f"{c.id}: source must quote the task specification verbatim (or be '{PHASE4_CONTRACT}'); "
                        f"not found: {c.source[:120]!r}")
         if _VAGUE.search(c.statement):
