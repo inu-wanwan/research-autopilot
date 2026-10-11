@@ -76,6 +76,7 @@ class ImplementationTask(BaseModel):
     plan: ExecutionPlan
     sources: list[SourceRef]
     catalog_artifacts: list[dict] = Field(default_factory=list)  # Phase 7A verified read-only inputs
+    external_implementations: list[dict] = Field(default_factory=list)  # Phase 9 Registry entries usable via external_code
 
 
 class BackendStatus(BaseModel):

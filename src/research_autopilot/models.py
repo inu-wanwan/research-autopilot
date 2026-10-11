@@ -389,6 +389,7 @@ class PlanRunRecord(BaseModel):
     decision: WorkflowDecision | None = None
     cost: CostSummary | None = None
     literature_cost_usd: float = 0.0  # Phase 8 research run for this plan (reused reports cost nothing)
+    external_cost_usd: float = 0.0  # Phase 9 onboarding (test planning) during this plan run
     artifact_path: str | None = None
     handoff_path: str | None = None
 
@@ -423,3 +424,4 @@ class ExecutionHandoff(BaseModel):
     catalog_resolution: dict | None = None
     # Phase 8: literature reports (Research Artifacts) the plan was grounded on.
     literature_reports: list[str] = Field(default_factory=list)
+    external_implementations: list[dict] = Field(default_factory=list)  # Phase 9 registered entries (no grant implied)

@@ -172,6 +172,21 @@ catalog_scans = _record_table("catalog_scans", "scan_id",
                               sa.Column("repository_id", sa.String(120), index=True, nullable=False))
 catalog_generations = _record_table("catalog_generations", "generation_id",
                                     sa.Column("repository_id", sa.String(120), index=True, nullable=False))
+# Phase 9 external repositories: entries (one per repository commit), human execution grants and decisions,
+# and actual executions.  Records are JSON; indexed columns are the lookup boundary.
+external_entries = _record_table("external_entries", "entry_id",
+                                 sa.Column("name", sa.String(200), index=True, nullable=False),
+                                 sa.Column("state", sa.String(24), index=True, nullable=False))
+external_grants = _record_table("external_grants", "grant_id",
+                                sa.Column("entry_id", sa.String(200), index=True, nullable=False),
+                                sa.Column("name", sa.String(200), index=True, nullable=False),
+                                sa.Column("status", sa.String(24), index=True, nullable=False))
+external_decisions = _record_table("external_decisions", "request_id",
+                                   sa.Column("entry_id", sa.String(200), index=True, nullable=False))
+external_executions = _record_table("external_executions", "execution_id",
+                                    sa.Column("grant_id", sa.String(64), index=True, nullable=False),
+                                    sa.Column("entry_id", sa.String(200), index=True, nullable=False),
+                                    sa.Column("job_key", sa.String(200), index=True, nullable=False))
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

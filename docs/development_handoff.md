@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 8（Evidence-grounded Literature Research）を実装済み（ブランチ `phase8/literature-research`、main 未 merge・未 push）。Phase 7 は main に merge 済み（origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針。
+Phase 9（Trusted External Repository Onboarding）を実装済み（ブランチ `phase9/external-repositories`、main 未 merge・未 push）。Phase 8 は main に merge 済み（push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行は全 Phase 実装完了後の方針。
 
 ## Current Task
 
-研究タスクの文献調査（検索・原文取得・根拠抽出・Artifact 化）を Researcher Agent として自律実行し、Planner に検証可能な根拠を渡す（`docs/phase_specs/phase8.md`）。
+外部の参照実装を、識別・ライセンス確認・固定 commit での隔離取得・サンドボックス検証・Registry 自動登録まで自動化し、研究環境での初回実行は人間（Discord）が承認、承認範囲内で自動再利用する（`docs/phase_specs/phase9.md`）。
 
 ## Status
 
-Phase 8 の検索・取得（PoC 移植の Zotero Connector を含む）・本文抽出・主張抽出と引用照合・Catalog 連携・Notion Notes・Planner 連携・CLI を実装・検証済み。BOCS の E2E を Mac の実サービスで実施（詳細と未検証事項は `docs/operations/phase8_literature.md`）。購読論文は利用条件未確認のため未対応、Windows は未検証。
+Phase 9 を実装・検証済み。BOCS で E2E 工程 1〜10 を Mac の実サービス（GitHub・Docker・Discord・OpenAI）で実施（詳細と未検証事項は `docs/operations/phase9_external_repositories.md`）。Eagle（Linux）は未検証。
 
 ## Last Updated
 
@@ -40,6 +40,13 @@ Phase 8 の検索・取得（PoC 移植の Zotero Connector を含む）・本�
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 9 External Repository Onboarding（2026-10-11 / Claude Code）
+
+- `src/research_autopilot/external/`：識別（official / author / third_party / unknown と根拠・不確実性）、commit 固定の tar.gz 取得と Git blob 照合、決定論的ライセンス判定、静的依存調査、静的安全性スキャン、Docker サンドボックス（binary wheel のハッシュ固定・オフラインビルド・ネットワークなし検証）、LLM テスト計画（失敗を最大 3 試行まで差し戻し）、Registry（DB 正＋Catalog `ra-external`）、Discord 実行承認と実行時ゲート、研究パッチ（hash 単位承認・サンドボックス再検証）、実行記録。
+- 連携：Phase 2（参照実装の登録・Planner 文脈・handoff `external_implementations`・費用計上）、Phase 3（`external_code` 宣言の規則と検証）、Phase 4（承認済みコンテナでのみ実行、未承認は Blocked＋承認依頼、結果に provenance）、Phase 5（poller が判断を適用し run 再開、24h ごとの更新再検証）。
+- 検証：`uv run pytest` 489 passed（Phase 9 は 39 件）。BOCS の E2E 工程 1〜10 を実サービスで実施（docs 参照）。
+
 
 ### Phase 8 Literature Research（2026-10-11 / Claude Code）
 
@@ -87,6 +94,9 @@ Phase 8 の検索・取得（PoC 移植の Zotero Connector を含む）・本�
 - 後続修正：子タスクも explicit request に変更、Completed task rerun、Prefect flow URL の `Last Run` 投影、Blocked request のDB履歴とacknowledgement、古いrunによるRequested上書き抑止、cancel DB/Notion projectionを追加。`INU-279` の人間参加E2Eは Button → Requested → Awaiting Approval → Discord approve → Implementing → Experimenting → Completed / Linear Done / Notion Completed まで実サービスで確認済み。修正後の Last Run URL は次回実行で確認が必要。
 
 ### Exact Next Actions
+
+0. Phase 9 は `phase9/external-repositories` で実装済み。main への merge と push はユーザー指示待ち。
+0. Phase 9 未検証：Eagle（Linux）での Docker 隔離と wheel 取得、研究ジョブが外部コード保管場所を絶対パスで読む経路の技術的遮断（現状は Implementer 規則と Reviewer 依存）。
 
 0. Phase 8 は `phase8/literature-research` で実装済み。main への merge と origin への push はユーザー指示待ち（ユーザーは push 前に Phase 8 まで進める方針）。
 0. Phase 8 要件照合（2026-10-11）で補った漏れ：公式ドキュメント（HTML）の取得・解析、文献調査費用の Phase 5 予算への計上、Purpose を使った資料選定、検索候補の記録、Planner 依頼の seed 抽出。ブランチ `phase8/gap-fixes`。公式ドキュメントは pyscf.org で取得・本文抽出まで実サイト確認、LLM 抽出を含む E2E は未実施。

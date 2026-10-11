@@ -7,6 +7,7 @@ from research_autopilot.experiments.backends.local import LocalBackend
 from research_autopilot.experiments.backends.slurm import SlurmBackend, SlurmConfig
 from research_autopilot.experiments.config import load_phase4_settings
 from research_autopilot.experiments.orchestrator import ExpDeps
+from research_autopilot.external.service import optional_from_env
 from research_autopilot.implementation.factory import build_impl_deps
 from research_autopilot.storage.db import Store
 
@@ -32,4 +33,5 @@ def build_exp_deps() -> ExpDeps:
         analyst=OpenAIAnalyst(settings.analyst_model, phase2.model_pricing, remaining, phase2.agents_tracing),
         reviewer=OpenAIScientificReviewer(settings.reviewer_model, phase2.model_pricing, remaining, phase2.agents_tracing),
         impl_deps=impl,
+        external=optional_from_env(store),
     )

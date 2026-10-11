@@ -99,6 +99,26 @@ class NumericCheck(BaseModel):
     tolerance: float | None = None
 
 
+class ExternalCodeUse(BaseModel):
+    """Phase 9: run this experiment inside the approved container of a registered external implementation.
+
+    The repository is not copied into the research repository: it is mounted read-only at /ext/<mount_as>
+    (on PYTHONPATH) and the research checkout at /work.  Research modifications are patch files committed in
+    this repository and listed in ``patches``.  Execution needs a human-approved grant covering purpose,
+    network, file access and resources; Phase 4 checks it before every run.
+    """
+
+    name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", description="GitHub owner/name of the Registry entry")
+    commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{7,40}$",
+                               description="fixed commit; omit to use the Registry's current verified commit")
+    purpose: Literal["baseline_comparison", "reproduction", "component_reuse", "data_generation", "analysis"]
+    purpose_detail: str = Field(default="", max_length=500)
+    mount_as: str = Field(default="ext", pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    network: Literal["none", "unrestricted"] = "none"
+    job_checkout: Literal["rw", "ro"] = "rw"
+    patches: list[str] = Field(default_factory=list, description="repository-relative *.patch files applied to a copy")
+
+
 class ExperimentDefinition(BaseModel):
     """Written by the Implementer at ``.autopilot/experiment.json``."""
 
@@ -111,6 +131,7 @@ class ExperimentDefinition(BaseModel):
     metrics: list[Metric] = Field(default_factory=list)
     numeric_checks: list[NumericCheck] = Field(default_factory=list)
     reproduction: list[str] = Field(min_length=1)  # human-readable steps to reproduce
+    external_code: list[ExternalCodeUse] = Field(default_factory=list, max_length=1)
 
     @field_validator("outputs")
     @classmethod
@@ -158,6 +179,7 @@ class ExperimentSpec(BaseModel):
     definition_path: str = EXPERIMENT_DEFINITION_PATH
     supersedes_spec_id: str | None = None  # set when produced by a Phase 4 -> 3 repair
     sources: list[SourceRef]
+    external_code: list[ExternalCodeUse] = Field(default_factory=list)  # Phase 9
 
     def locked_scientific_inputs(self) -> list[str]:
         return [i.path for i in self.inputs if i.scientific]
@@ -256,6 +278,18 @@ def validate_definition(d: ExperimentDefinition, file_exists: FileExists, dir_ex
     for dep in d.resources.job_dependencies:
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", dep):
             errors.append(f"resources.job_dependencies: invalid id {dep!r}")
+    for use in d.external_code:
+        if d.execution.argv[0] not in ("python", "python3"):
+            errors.append("external_code: execution.argv must use the container's python launcher")
+        if d.execution.env_var_names:
+            errors.append("external_code: environment variables (credentials) are never passed to external code")
+        if d.execution.setup:
+            errors.append("external_code: setup steps are not supported inside the external-code container")
+        for p in use.patches:
+            if (e := _bad_path(p)) is not None:
+                errors.append(f"external_code.patches: {e}")
+            elif not p.endswith(".patch") or not file_exists(p):
+                errors.append(f"external_code.patches: {p!r} must be an existing *.patch file at the commit")
     if SECRET_PATTERNS.search(d.model_dump_json()):
         errors.append("definition contains what looks like a secret value")
     return errors

@@ -75,6 +75,7 @@ class ExpDeps:
     sleep: Callable[[float], None] = time.sleep
     prepare_env: bool = True  # False in unit tests with the FakeBackend
     extra: dict = field(default_factory=dict)
+    external: object | None = None  # Phase 9 external.service.ExternalDeps (None: external code cannot run)
 
 
 class _Block(Exception):
@@ -318,7 +319,7 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     repo = Path(_repo(deps, impl).path).expanduser()
     try:
         export_commit(repo, spec.identification.commit, checkout)  # immutable per-job checkout of the fixed commit
-        if deps.prepare_env:
+        if deps.prepare_env and not spec.external_code:
             prov = ensure_venv(repo, spec, checkout, deps.settings.env_cache_dir)
             argv = resolve_argv(argv, prov["python"])
             for step in spec.execution.setup:
@@ -342,6 +343,8 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
         env[INPUTS_ENV] = str(manifest_path)
     (jdir / "home").mkdir(parents=True, exist_ok=True)
     (jdir / "tmp").mkdir(parents=True, exist_ok=True)
+    if spec.external_code:  # Phase 9: only inside the approved container, after the grant check
+        argv = _external_argv(deps, m, spec, alloc, checkout, env, key)
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
                   commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,
                   env=env, secret_env_names=[n for n in spec.execution.env_var_names if n not in env],
@@ -361,6 +364,27 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     return rec
 
 
+def _external_argv(deps: ExpDeps, m: ExperimentManifest, spec: ExperimentSpec, alloc, checkout: Path,
+                   env: dict, key: str) -> list[str]:
+    from research_autopilot.external.integration import Denied, NeedsApproval, prepare_job
+    if deps.external is None:
+        raise _Block(f"{spec.experiment_id}: uses external code {spec.external_code[0].name} but Phase 9 is not "
+                     "configured; it is never run outside the approved container")
+    try:
+        argv, provenance = prepare_job(deps.external, spec, alloc, checkout=checkout, env=env, job_key=key,
+                                       experiment_run_id=m.experiment_run_id)
+    except NeedsApproval as exc:
+        m.external_approvals.append(exc.request.request_id)
+        raise _Block(f"{spec.experiment_id}: external code {spec.external_code[0].name} needs a human execution "
+                     f"approval ({exc.request.request_id[:8]}): {'; '.join(exc.reasons)[:300]}") from exc
+    except Denied as exc:
+        raise _Block(f"{spec.experiment_id}: {exc}") from exc
+    m.environment[spec.experiment_id] = provenance  # which external code version produced these results
+    m.event("external_code", f"{key}: {spec.external_code[0].name} under execution record "
+                             f"{provenance['external_execution_id']}")
+    return argv
+
+
 def _ledger_tag(deps: ExpDeps, key: str, exp_id: str) -> None:
     row = deps.store.ledger_get(key)
     if row is not None:
@@ -374,6 +398,9 @@ def _ledger_tag(deps: ExpDeps, key: str, exp_id: str) -> None:
 
 def _finish_job(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, j: JobRecord) -> str:
     spec = m.specs[j.experiment_id]
+    if spec.external_code and deps.external is not None:
+        from research_autopilot.external.integration import finish_job
+        finish_job(deps.external, j.job_key, j.status)
     workdir = Path(j.handle.run_dir) / "src" / spec.execution.working_directory
     if j.status.state is JobState.SUCCEEDED:
         j.collect = deps.backend.collect(j.handle, [o.path for o in spec.outputs])
