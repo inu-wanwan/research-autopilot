@@ -242,3 +242,136 @@ def test_inferred_edge_without_evidence_fails_closed():
     result = apply_dependency_proposal(dag, proposal)
     assert result.status is DAGStatus.BLOCKED
     assert any(p.code == "inferred_edge_without_evidence" for p in result.problems)
+
+
+def _seed_parent(tmp_path: Path, edges: dict[str, list[str]], repos: dict[str, str], slots: int = 1):
+    """Persist a running parent with a fixed DAG so scheduling can be driven step by step."""
+    from research_autopilot.autopilot.dag import ParentRun, dag_hash
+    from research_autopilot.autopilot.dag_runtime import _save_dag, _save_parent
+    from research_autopilot.autopilot.execution import ExecutionRun
+
+    deps, linear, notion, writer, _ = _parent_fixture(tmp_path, count=len(repos))
+    deps.settings.max_concurrent_tasks = slots
+    # Intake has already acknowledged the start request.
+    notion.pages[PAGE] = notion.pages[PAGE].model_copy(update={"run_requested": False, "execution_status": "Running"})
+    dag =discover_and_build(deps.plan.manager, deps.plan.manager.load("INU-900"), "")
+    for node in dag.nodes:
+        node.dependencies = list(edges.get(node.task_id, []))
+        node.repository = repos[node.task_id]
+    dag.status = DAGStatus.VALID
+    dag.dag_hash = dag_hash(dag)
+    execution = ExecutionRun(request_id="parent-request", task_id="INU-900", notion_task_id=PAGE,
+                             status=ExecutionStatus.RUNNING, prefect_flow_run_id="parent-flow")
+    deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"),
+                   request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
+    dag.parent_execution_run_id = execution.execution_run_id
+    _save_dag(deps, dag)
+    parent = ParentRun(parent_task_id="INU-900", parent_notion_page_id=PAGE,
+                       parent_execution_run_id=execution.execution_run_id, dag_id=dag.dag_id,
+                       dag_hash=dag.dag_hash, status=ExecutionStatus.RUNNING)
+    _save_parent(deps, parent)
+    return deps, linear, notion, parent
+
+
+def _parent(deps, parent_run_id):
+    from research_autopilot.autopilot.dag import ParentRun
+    return ParentRun.model_validate(deps.store.get(db.parent_runs, parent_run_id))
+
+
+def _set_child(deps, parent_run_id, task_id, status, error=None):
+    """Simulate a child's own Phase 2-5 workflow reaching a state."""
+    run_id = _parent(deps, parent_run_id).child_execution_run_ids[task_id]
+    raw = deps.store.get(db.execution_runs, run_id) | {"status": status.value, "error_summary": error}
+    deps.store.put(db.execution_runs, run_id, raw, request_id=raw["request_id"], task_id=task_id, status=status.value)
+
+
+def _child_runs(deps, task_id):
+    return deps.store.find(db.execution_runs, task_id=task_id)
+
+
+def test_independent_children_run_in_parallel_within_global_slots(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {}, repos, slots=2)
+    assert sorted(r.task_id for r in schedule_ready(deps, parent)) == ["INU-901", "INU-902"]
+    # Both slots are occupied: nothing more starts until one finishes.
+    assert schedule_ready(deps, _parent(deps, parent.parent_run_id)) == []
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.COMPLETED)
+    assert [r.task_id for r in schedule_ready(deps, _parent(deps, parent.parent_run_id))] == ["INU-903"]
+    assert all(len(_child_runs(deps, t)) == 1 for t in repos)
+
+
+def test_shared_repository_children_are_serialized_despite_spare_slots(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import schedule_ready
+    repos = {"INU-901": "h2-test", "INU-902": "h2-test", "INU-903": "other-repo"}
+    deps, _, _, parent = _seed_parent(tmp_path, {}, repos, slots=4)
+    # Same repository is never mutated concurrently; a different repository may run alongside.
+    assert sorted(r.task_id for r in schedule_ready(deps, parent)) == ["INU-901", "INU-903"]
+    assert _child_runs(deps, "INU-902") == []
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.AWAITING_APPROVAL)
+    assert schedule_ready(deps, _parent(deps, parent.parent_run_id)) == []
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.COMPLETED)
+    assert [r.task_id for r in schedule_ready(deps, _parent(deps, parent.parent_run_id))] == ["INU-902"]
+
+
+def test_child_awaiting_approval_does_not_stop_independent_siblings(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b"}
+    deps, _, notion, parent = _seed_parent(tmp_path, {}, repos, slots=2)
+    schedule_ready(deps, parent)
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.AWAITING_APPROVAL)
+    advance_parents(deps)
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.RUNNING
+    _set_child(deps, parent.parent_run_id, "INU-902", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
+    # Only once every other mandatory child is done does the parent itself wait on the human.
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.AWAITING_APPROVAL
+    assert notion.pages[PAGE].execution_status == "Awaiting Approval"
+
+
+def test_failed_child_is_isolated_and_never_releases_its_dependents(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-a", "INU-903": "repo-c"}
+    deps, linear, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    assert sorted(r.task_id for r in schedule_ready(deps, parent)) == ["INU-901", "INU-903"]
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.FAILED, "experiment crashed")
+    advance_parents(deps)
+    stored = _parent(deps, parent.parent_run_id)
+    assert stored.status is ExecutionStatus.FAILED and stored.finished_at is not None
+    assert _child_runs(deps, "INU-902") == []  # dependent is never started
+    # The independent sibling's own run is left untouched rather than canceled.
+    assert _child_runs(deps, "INU-903")[0]["status"] == ExecutionStatus.RUNNING.value
+    assert _child_runs(deps, "INU-901")[0]["error_summary"] == "experiment crashed"
+    assert linear.issues["INU-900"].state_name != "Done"
+
+
+def test_child_blocked_by_scientific_invariant_blocks_parent_and_dependents(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b"}
+    deps, linear, notion, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    schedule_ready(deps, parent)
+    reason = "scientific invariant violated: Output schema is fixed"
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, reason)
+    advance_parents(deps)
+    advance_parents(deps)  # a terminal parent is not revisited
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.BLOCKED
+    assert _child_runs(deps, "INU-902") == []
+    assert _child_runs(deps, "INU-901")[0]["error_summary"] == reason
+    assert notion.pages[PAGE].execution_status == "Blocked"
+    assert linear.issues["INU-900"].state_name != "Done"
+
+
+def test_partial_dag_recovery_resumes_without_rerunning_completed_children(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {}, repos, slots=1)
+    schedule_ready(deps, parent)
+    first = next(t for t in repos if _child_runs(deps, t))
+    _set_child(deps, parent.parent_run_id, first, ExecutionStatus.COMPLETED)
+    # Restart: nothing in memory survives; the poller rebuilds state from PostgreSQL only.
+    created = advance_parents(deps)
+    assert len(created) == 1 and created[0].task_id != first
+    advance_parents(deps)  # repeated recovery passes must not duplicate the in-flight child
+    assert len(_child_runs(deps, first)) == 1
+    assert sum(len(_child_runs(deps, t)) for t in repos) == 2
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.RUNNING
