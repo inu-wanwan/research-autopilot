@@ -39,7 +39,8 @@
 | サイクル 1（承認 v1、INU-293〜295） | INU-293 の計算は成功（4 点）したが Phase 4 validator がネスト結果を読めず不合格 → 上限 1/0/0 により停止 |
 | サイクル 2（承認 v3、INU-296〜298） | INU-296 が Phase 2 で差し戻し（子仕様に距離なし：仕組みの不具合） |
 | サイクル 3（INU-299〜300） | INU-299 の 5 点計算は成功（PySCF 2.14、ΔE(0.5 Å)=0.01216 Eh、provenance 保存）したが experiment.json の units / metric 宣言誤りで不合格 → Implementer 規則を追加。Resume 後の再評価で continue |
-| サイクル 4（INU-301 計算再実行 → INU-302 解析） | **実行中**（13:3x UTC 時点） |
+| サイクル 4（INU-301 計算再実行 → INU-302 解析） | INU-301 がレビューで停止（実装・検証契約がリポジトリに無い）→ 評価 continue |
+| サイクル 5（INU-303 実装・計算 → INU-304 解析） | INU-303 の Phase 3 は成功（`d10f919`）したが Phase 4 で `python_version: "3.12.x"` を uv が解決できず停止（`54a9112` で正規化）。同一サイクル内再試行（`4613757`）の 2 回目は Linear が In Progress のまま残り Phase 2 開始ゲートで即拒否（`542e590` で修正）、3 回目は Codex サブスク（〜02:37 JST）と Claude（〜00:10 JST）の利用上限で停止。2026-10-12 00:14 JST の Resume で 4 回目：Codex サブスク上限 → **API 課金 Codex（`codex_api`、gpt-5.6-sol）に fallback して実装・レビュー中**（00:21 JST 時点、attempt 1 は reviewer revise、attempt 2 実行中、Phase 3 費用 $0.79）。INU-304 は未実行 |
 | モデル比較（読み取り専用 A/B、各 2 回 $0.28） | 修正後は terra / sol とも合格・自律上限正常。sol は「おおむね5点」に対し 3 点（仕様からの逸脱）。モデル切替は不要と判断（ユーザーに報告済み） |
 
 未完了（INU-292 Acceptance）：検証済み結果での評価→追加サンプリング（Evaluate→Replan→Execute の観測）、Notes / Catalog 保存と Discord 完了通知、SSOT 整合性の最終確認。
@@ -74,7 +75,18 @@ done
 4. Blocked で止まったら：`research status` の最後のサイクルの decision / gate_problems、子タスクは `autopilot status` の blocked 理由と実験 manifest（`store.get_experiment(<id>)` の validation checks）を確認。仕組みの不具合なら修正・テスト・commit してからユーザーに Discord の Resume を依頼（ユーザー不在時のみ `research-agent research resume INU-292 --actor "codex (<理由>)"`）。
 5. 完了したら INU-292 Acceptance 1〜6 を確認し、この節の表を更新、`docs/development_handoff.md` を更新してユーザーに報告。main merge / push はユーザー指示待ち。
 
+### 2026-10-12 の仕組み修正（Claude Code）
+
+- `12807f6`：停止通知の dedupe キーが WorkflowRun 単位で、Resume 後の 2 回目以降の停止が通知されず Resume ボタンが届かなかった → 停止ごと（execution run 単位）に通知。Resume ボタン付きメッセージは **approvals チャンネル**へ。
+- `542e590`：同一サイクル再試行時、blocked 子の Linear started 状態を Todo に戻す。開始ゲートで作業前に拒否された再試行は `max_retries_per_task` に数えない（ユーザー決定、上限値は不変）。
+- `75daadc`：Phase 3 fallback を連鎖化（`RA_IMPL_FALLBACK_BACKEND`、既定 `claude,codex_api`、最大 2 回、使えない先はスキップ、reviewer も同順）。`codex_api` = `OPENAI_API_KEY` を `CODEX_API_KEY` として専用 `CODEX_HOME`（`~/.research-autopilot/codex-api-home`）で `codex exec` に渡す API 課金 Codex。費用は `RA_MODEL_PRICING` で毎回計上、料金未登録モデルは起動拒否。利用上限（quota / rate limit）で中断した再試行は回数に数えない（ユーザー決定）。実 API で最小呼び出しを確認（$0.024）。
+- `b69f8bd`：再試行時、利用上限・一時障害・プロセス障害・時間切れで止まった子は **同じ計画と worktree で Phase 3 を継続**、Phase 3 完了後に Phase 4 環境構築で失敗した子は **Phase 4 のみ再実行**。計画再利用前に Phase 3 承認ゲート（Notion 仕様が handoff から不変か等）を再確認し、不合格なら従来どおり再計画。費用・トークンは継続 run に引き継ぐ。
+- `.env`（Git 管理外）：`RA_IMPL_FALLBACK_BACKEND=codex_api`（ユーザー指示：手元開発用に Claude の枠を残すため、研究パイプラインでは Claude を使わない）。
+- 検証：`uv run pytest` 550 passed / 1 warning（既存 discord/audioop）。継続再開（b69f8bd）は fake backend の統合テストのみで、実データでは未検証。
+
 ### 既知の課題（未解決）
+
+- `codex_api` で実タスクを最後まで完了した例は未確認（実行中）。1 回の Codex 実行の途中では費用上限で止められない（呼び出し間で判定、1 実行は wall time 30 分で打ち切り）。エージェントが実行するコマンドに API キーが見えないことは Codex の既定ポリシー頼みで、実タスクでの確認はしていない。
 
 - 「おおむね5点」など曖昧な数量は機械検査していない（承認時に人が確認、修正依頼で直す）。
 - Codex の experiment.json 宣言と Phase 4 validator の取り決めは Implementer 規則で補強したが、実データでの再確認はサイクル 4 の結果待ち。

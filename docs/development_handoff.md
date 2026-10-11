@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-11 / Claude Code
+2026-10-12 00:3x JST / Claude Code
 
 ## Git Branch / Commit
 
@@ -101,6 +101,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ### Exact Next Actions
 
+0. **（2026-10-12 00:3x JST 時点）INU-292 サイクル 5 の再試行を実行中**：INU-303 の Phase 3 が API 課金 Codex（`codex_api`）で実装中。経緯と 2026-10-12 の修正（`12807f6` `542e590` `75daadc` `b69f8bd`）は `docs/operations/phase10_research_orchestration.md`「2026-10-12 の仕組み修正」。ポーリング loop（前セッションの scratchpad の `poll_loop.sh`、PID 18811）は 01:10 JST ごろ 4 時間上限で終了するため、終了を `ps -eo pid,etime,command | grep "autopilot poll"` で確認してから同文書の手順で 1 本だけ再起動する。Discord gateway は `uv run research-agent discord run`（PID 18313）が稼働中。
 0. Phase 10 E2E（INU-292）の続き：`docs/operations/phase10_research_orchestration.md`「引き継ぎ：E2E の続け方」に従い、ポーリングと Discord gateway が動いているか確認し、サイクル 4 以降を監視する。完了したら受け入れ条件（INU-292 の Acceptance 1〜6）を確認し、結果を同文書に記録してユーザーに報告。main merge / push はユーザー指示待ち。
 
 0. Phase 9 は `phase9/external-repositories` で実装済み。main への merge と push はユーザー指示待ち。
