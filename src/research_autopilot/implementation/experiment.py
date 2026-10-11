@@ -29,6 +29,10 @@ SECRET_PATTERNS = re.compile(r"(sk-[A-Za-z0-9_-]{20,}|ntn_[A-Za-z0-9]{20,}|lin_a
                              r"-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 DEPENDENCY_FILES = {"pyproject.toml", "requirements.txt", "uv.lock", "environment.yml", "environment.yaml",
                     "poetry.lock", "Pipfile", "Pipfile.lock", "setup.cfg", "setup.py"}
+PYTHON_SELECTOR = re.compile(
+    r"^(?P<prefix>==|>=)?(?:python)?(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+|x|\*))?$",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------- definition (authored in the repo)
@@ -63,6 +67,23 @@ class Environment(BaseModel):
     python_version: str = Field(min_length=1)
     dependency_files: list[str] = Field(min_length=1)
     install_argv: list[str] | None = None  # e.g. ["uv", "sync", "--frozen"]
+
+    @field_validator("python_version", mode="before")
+    @classmethod
+    def normalize_python_version(cls, value: object) -> str:
+        """Canonicalize common version notation to a uv interpreter selector."""
+        raw = str(value).strip()
+        match = PYTHON_SELECTOR.fullmatch(raw)
+        if match is None:
+            raise ValueError("must identify one Python minor/patch version (for example 3.12 or 3.12.4)")
+        prefix = match.group("prefix")
+        patch = match.group("patch")
+        if prefix == ">=" and patch is not None:
+            raise ValueError("a minimum Python version may not include a patch component")
+        if prefix == "==" and patch not in (None, "x", "*"):
+            raise ValueError("use a bare exact patch version such as 3.12.4")
+        base = f"{match.group('major')}.{match.group('minor')}"
+        return f"{base}.{patch}" if patch and patch not in ("x", "*") else base
 
 
 class InputFile(BaseModel):

@@ -3,7 +3,8 @@
 - checkout: ``git archive <commit>`` extracted into the job's own directory (no git link,
   never shared between jobs, never updated in place);
 - Python environment: a cached venv keyed by the dependency files *at the commit* and the
-  Python version; installed with uv and frozen (``uv pip freeze``) for provenance;
+  canonical Python interpreter selector; installed with uv and frozen (``uv pip freeze``)
+  for provenance;
 - argv: the spec's launcher (``python`` / ``uv run python``) is replaced by the venv interpreter;
   everything else is passed as-is (no shell).
 """

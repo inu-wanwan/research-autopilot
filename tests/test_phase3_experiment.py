@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from phase3_fakes import CONFIG, GOOD_CODE, GOOD_TEST, code_review, experiment_def, git, make_impl_deps
 from research_autopilot.implementation.experiment import (
+    Environment,
     ExperimentDefinition,
     ExperimentSpec,
     parse_definition,
@@ -135,6 +136,26 @@ def test_missing_dependency_and_input_files_detected():
                     inputs=[{"path": "configs/missing.json", "kind": "config", "scientific": True}])
     errors = _validate(d)
     assert any("requirements.txt" in e for e in errors) and any("configs/missing.json" in e for e in errors)
+
+
+@pytest.mark.parametrize("declared,selector", [
+    ("3.12", "3.12"),
+    ("3.12.4", "3.12.4"),
+    ("3.12.x", "3.12"),
+    ("3.12.*", "3.12"),
+    ("==3.12.*", "3.12"),
+    (">=3.12", "3.12"),
+    ("python3.12", "3.12"),
+])
+def test_python_version_is_normalized_to_uv_interpreter_selector(declared, selector):
+    environment = Environment(type="python", python_version=declared, dependency_files=["pyproject.toml"])
+    assert environment.python_version == selector
+
+
+@pytest.mark.parametrize("declared", ["3", "3.x", ">=3.12.1", ">=3.12,<3.14", "latest"])
+def test_ambiguous_python_interpreter_selector_is_rejected(declared):
+    with pytest.raises(ValidationError):
+        Environment(type="python", python_version=declared, dependency_files=["pyproject.toml"])
 
 
 def test_secret_values_rejected():
