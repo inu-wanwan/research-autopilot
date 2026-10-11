@@ -194,7 +194,8 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
         reasons += [f"dangerous change in {f.file}: {f.pattern}" for f in det.danger_findings if f.severity == "block"]
         return ReviewOutcome(verdict="blocked", reason="unapproved change: " + "; ".join(reasons), categories=cats,
                              deterministic=det, llm=None, reviewer=None, revision_requests=[])
-    if not det.changed_files:
+    if not det.changed_files and not getattr(task, "based_on", None):
+        # (a task built on a previous approved implementation may need no change: the review decides)
         return ReviewOutcome(verdict="revise", reason="implementer produced no changes", categories=["no_changes"],
                              deterministic=det, llm=None, reviewer=None,
                              revision_requests=["No files were changed. Implement the task within the allowed scope."])
