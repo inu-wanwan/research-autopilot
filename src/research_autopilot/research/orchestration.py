@@ -385,6 +385,7 @@ def results_for(deps, cycle: ResearchCycle) -> list[dict]:
                 out.append({**base, "ref": f"{task_id}:{eid}:{j.experiment_id}:{j.attempt}",
                             "validated": j.validation.status == "pass",
                             "data": {"metrics": j.validation.metrics, "outputs": files,
+                                     "validation_failure": (j.validation.failure_reason or "")[:600] or None,
                                      "environment": m.environment.get(j.experiment_id, {}),
                                      "commit": j.commit[:12],
                                      "analysis": (m.analysis.summary[:1500] if m.analysis else None)}})

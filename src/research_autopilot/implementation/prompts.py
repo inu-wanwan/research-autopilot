@@ -39,6 +39,10 @@ EXPERIMENT DEFINITION SCHEMA. It tells the experiment runner exactly how to run 
   dependency files that exist in the repository, required environment variable NAMES only (never values),
   expected outputs with format / units / how to validate them, evaluation metrics and numeric checks
   that encode the acceptance criteria.
+- outputs[].units maps REAL JSON field names of the output to units (a top-level key, a JSON pointer, or a field
+  name that occurs in every record of a list such as "delta_e_hartree"); never group names like "energies".
+  metrics[].json_pointer and numeric_checks[].json_pointer must point at numbers: use "/results/*/<field>" to
+  check every record of a list (each record must satisfy the check); a pointer to a list or object fails.
 - resources (cpu, memory_gb, gpu, walltime_minutes): give a value, "required" or "estimated", the rationale
   and a confidence level. Do not invent hard requirements; mark estimates as estimates.
 - Do not run the actual research calculation; only implement it and make it runnable.
