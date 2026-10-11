@@ -44,6 +44,7 @@ MAX_SOURCE_CHARS = 40_000
 MAX_RULES = 20
 MAX_CHECKS_PER_RULE = 60
 DISCOVERY_SECONDS = 300
+MAX_ARTIFACTS = 50_000  # an artifact is a reusable research unit, not every file of a cache
 
 
 # ---------------------------------------------------------------- detection
@@ -155,18 +156,20 @@ class OpenAIAdapterGenerator:
 
 
 def generator_payload(repository_id: str, survey: dict, focus: str | None, feedback: list[str],
-                      current: AdapterRecord | None) -> dict:
+                      current: AdapterRecord | None, previous: dict | None = None) -> dict:
     return {
         "PROMPT_VERSION": PROMPT_VERSION,
         "REPOSITORY_ID": repository_id,
         "FOCUS": focus,
         "SURVEY": survey,
         "DECLARATIVE_SCHEMA": declarative.DeclarativeDefinition.model_json_schema(),
+        "CHECK_VOCABULARY": declarative.CHECK_VOCABULARY,
         "NAMED_VALIDATORS": validators.names(),
         "PYTHON_CONTRACT": sandbox.describe_contract(),
         "CURRENT_ACTIVE_ADAPTER": (current.definition if current and current.kind is AdapterKind.DECLARATIVE
                                    else None),
         "PREVIOUS_ATTEMPT_PROBLEMS": feedback,
+        "PREVIOUS_ATTEMPT_PROPOSAL": previous,
     }
 
 
@@ -300,10 +303,17 @@ def autovalidate(ctx: CatalogContext, rec: AdapterRecord, repository_id: str, ro
     checks.append(_check("repository_unchanged", before == after, "" if before == after
                          else "repository content changed during validation"))
     checks.append(_check("time_budget", max(elapsed) <= DISCOVERY_SECONDS, f"{max(elapsed):.1f}s"))
+    checks.append(_check("artifact_granularity", len(groups) <= MAX_ARTIFACTS,
+                         f"{len(groups)} artifacts" + ("" if len(groups) <= MAX_ARTIFACTS else
+                                                       f" (> {MAX_ARTIFACTS}); group member files into research "
+                                                       "conditions (identity) instead of one artifact per file")))
     unique = len(set(ids)) == len(ids)
     checks.append(_check("unique_identities", unique, "" if unique else "two groups produced the same artifact"))
     statuses = [_status(g.checks)[0] for g in groups]
     verified = {i for i, st in zip(ids, statuses) if st is ValidationStatus.VERIFIED}
+    if rec.kind is AdapterKind.DECLARATIVE and (not groups or errors or not verified):
+        checks.append(_check("diagnostics", True, " | ".join(
+            declarative.diagnose(declarative.parse(rec.definition or {}), root))))
     checks.append(_check("verifies_some_artifacts", bool(verified),
                          f"{len(verified)}/{len(groups)} verified; " + _failure_summary(groups)))
     return AutoValidation(all(c.passed for c in checks), checks, verified, len(groups))
@@ -314,12 +324,18 @@ def _artifact_id(repository_id: str, g) -> str:
 
 
 def _failure_summary(groups) -> str:
+    """Failing mandatory checks with one concrete example each (what the generator needs to fix them)."""
     counts: dict[str, int] = {}
+    example: dict[str, str] = {}
     for g in groups:
         for c in g.checks:
             if c.mandatory and not c.passed:
                 counts[c.name] = counts.get(c.name, 0) + 1
-    return ", ".join(f"{k} failed on {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:8])
+                if c.name not in example:
+                    where = next(iter(g.members), "")
+                    example[c.name] = f"{c.detail[:200]} in {where.rsplit('/', 1)[-1]}" if c.detail else where
+    return "; ".join(f"{k} failed on {v} (e.g. {example[k]})"
+                     for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:8])
 
 
 def _previously_verified(ctx: CatalogContext, repository_id: str, adapter_ids: set[str]) -> set[str]:
@@ -366,12 +382,14 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
     run.survey_hash = stable_hash(survey)
     name = generated_name(repository_id)
     feedback: list[str] = []
+    previous: dict | None = None
     for attempt in range(1, max_attempts + 1):
         att = GenerationAttempt(attempt=attempt)
         run.attempts.append(att)
         try:
             out = generator.generate(generator_payload(repository_id, survey, focus, feedback,
-                                                       current_generated or (human_active[0] if human_active else None)))
+                                                       current_generated or (human_active[0] if human_active else None),
+                                                       previous))
         except Exception as exc:  # budget refusal, transport, invalid structured output
             att.problems = [f"generator failed: {type(exc).__name__}: {exc}"[:500]]
             run.outcome, run.note = "failed", att.problems[0]
@@ -379,6 +397,8 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
         att.cost_usd = out.cost_usd
         run.total_cost_usd += out.cost_usd or 0.0
         p = out.output
+        previous = {"kind": p.kind, "definition_json": p.definition_json[:MAX_DEFINITION_CHARS],
+                    "python_source": p.python_source[:MAX_SOURCE_CHARS]}
         att.kind, att.rationale = p.kind, p.rationale[:2000]
         att.assumptions, att.unresolved = p.assumptions[:20], p.unresolved[:20]
         meta = {"model": out.model, "prompt_version": PROMPT_VERSION, "survey_hash": run.survey_hash,
@@ -388,15 +408,16 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
             rec = _register(ctx, name, p, meta)
         except (adapters.AdapterError, ValueError) as exc:
             att.problems = [f"proposal rejected before validation: {exc}"[:800]]
-            feedback = att.problems
+            feedback = _accumulate(feedback, att.problems)
             continue
         att.adapter_id = rec.adapter_id
         result = autovalidate(ctx, rec, repository_id, root)
         _record_validation(ctx, rec, result, repository_id)
         att.passed = result.passed
-        att.problems = [f"{c.name}: {c.detail}" for c in result.checks if not c.passed]
+        att.problems = [f"{c.name}: {c.detail}" for c in result.checks
+                        if not c.passed or (c.name == "diagnostics" and not result.passed)]
         if not result.passed:
-            feedback = att.problems
+            feedback = _accumulate(feedback, att.problems)
             continue
         run.adapter_id = rec.adapter_id
         _decide_activation(ctx, run, rec, result, repository_id, human_active, current_generated)
@@ -405,6 +426,20 @@ def generate_adapter(ctx: CatalogContext, repository_id: str, generator: Adapter
         run.outcome = "rejected"
         run.note = f"no proposal passed validation in {max_attempts} attempt(s); active adapters unchanged"
     return _finish(ctx, run, notifier)
+
+
+def _accumulate(feedback: list[str], new: list[str]) -> list[str]:
+    """Latest problems first, earlier ones kept so a fixed mistake is not reintroduced."""
+    out = [f"(latest attempt) {p}" for p in new]
+    out += [p if p.startswith("(earlier") else f"(earlier attempt) {p.removeprefix('(latest attempt) ')}"
+            for p in feedback]
+    seen, dedup = set(), []
+    for p in out:
+        key = p.split(") ", 1)[-1]
+        if key not in seen:
+            seen.add(key)
+            dedup.append(p)
+    return dedup[:30]
 
 
 def _register(ctx: CatalogContext, name: str, p: AdapterProposal, meta: dict) -> AdapterRecord:

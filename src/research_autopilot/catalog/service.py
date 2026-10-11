@@ -199,6 +199,8 @@ def parse_requirements(text: str | None) -> list[ArtifactQuery]:
                 q["repository_id"] = value
             elif key == "expect":
                 q["expect_count"] = int(value)
+            elif key == "trust":
+                q["trust"] = value
             elif m := _RANGE.match(value):
                 lo, hi = int(m.group(1)), int(m.group(2))
                 q["filters"][key] = list(range(lo, hi + 1))
@@ -255,6 +257,7 @@ def query(store, q: ArtifactQuery) -> list[Artifact]:
 def resolve(ctx: CatalogContext, queries: list[ArtifactQuery], *, verify: bool = True) -> Resolution:
     """Map requirements to verified, unambiguous, readable artifacts on this environment (fail closed)."""
     res = Resolution(environment=ctx.environment, queries=queries)
+    trust_cache: dict[str, bool] = {}
     for q in queries:
         found = query(ctx.store, q)
         by_identity: dict[str, list[Artifact]] = {}
@@ -273,7 +276,7 @@ def resolve(ctx: CatalogContext, queries: list[ArtifactQuery], *, verify: bool =
                                     f"(provenance variants {prov}); pin a provenance field to choose")
                 continue
             art = group[0]
-            problem = _usable(ctx, art, verify)
+            problem = _untrusted(ctx, art, q, trust_cache) or _usable(ctx, art, verify)
             if problem:
                 res.problems.append(f"[{label}] {ident}: {problem}")
                 continue
@@ -304,6 +307,22 @@ def _missing_combinations(q: ArtifactQuery, found: list[Artifact], res: Resoluti
     for combo in itertools.product(*(q.filters[f] for f in fields)):
         if not any(all(_matches(p, [c]) for p, c in zip(row, combo)) for row in present):
             res.problems.append(f"[{label}] missing {dict(zip(fields, combo))}")
+
+
+def _untrusted(ctx: CatalogContext, art: Artifact, q: ArtifactQuery, cache: dict[str, bool]) -> str | None:
+    """Adapter activation is not scientific endorsement: unreviewed generated checks need an explicit opt-in."""
+    if q.trust == "any":
+        return None
+    aid = art.provenance.adapter_id
+    if aid not in cache:
+        try:
+            cache[aid] = adapters.human_reviewed(adapters.get(ctx.store, aid))
+        except adapters.AdapterError:
+            cache[aid] = False
+    if cache[aid]:
+        return None
+    return (f"verified only by generated adapter {aid}, which no human has reviewed; endorse it "
+            f"(research-agent catalog adapter endorse) or state trust=any in the requirement")
 
 
 def _usable(ctx: CatalogContext, art: Artifact, verify: bool) -> str | None:

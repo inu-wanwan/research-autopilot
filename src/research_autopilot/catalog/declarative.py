@@ -41,10 +41,10 @@ class _Strict(BaseModel):
 
 
 class FieldSpec(_Strict):
-    pointer: str  # RFC 6901 JSON pointer into the member document
+    pointer: str = Field(description='RFC 6901 JSON pointer into the member file, e.g. "/result/energy"; "" = whole doc')
     transform: Literal["none", "length", "sorted", "str", "int", "float"] = "none"
     prefix: int | None = None  # keep only the first N characters of a string (e.g. a short commit id)
-    item: str | None = None    # for a list value: take this JSON pointer from every element
+    item: str | None = Field(None, description='for a list value: take this pointer from every element ("" = element)')
     required: bool = True
 
 
@@ -84,7 +84,8 @@ class CheckSpec(_Strict):
                 "items_subset": ("field", "item", "other"), "items_min_equals": ("field", "item", "other"),
                 "cross_reference": ("field", "item", "item_value", "target_pattern", "target_key",
                                     "target_value")}[self.type]
-        missing = [n for n in need if getattr(self, n) in (None, "")]
+        pointers = {"item", "item_value", "target_key", "target_value"}  # "" is a valid pointer (whole element)
+        missing = [n for n in need if getattr(self, n) is None or (getattr(self, n) == "" and n not in pointers)]
         if missing:
             raise ValueError(f"check {self.type} requires {missing}")
         if self.type == "count" and (self.count is None) == (self.binomial is None):
@@ -108,13 +109,22 @@ class DeriveSpec(_Strict):
 class ArtifactRule(_Strict):
     rule: str
     kind: str
-    pattern: str  # repository-relative; "{name}" captures one segment, "*" / "*.ext" match one segment
+    pattern: str = Field(description='repository-relative path pattern; each "/"-separated segment is a literal, '
+                                     '"{name}" (captures the segment), "prefix{name}suffix", "*" or "*.ext"')
     format: Literal["json"] = "json"
-    captures: dict[str, str] = Field(default_factory=dict)  # capture -> full-match regex
+    captures: dict[str, str] = Field(default_factory=dict, description=(
+        "optional REGULAR EXPRESSIONS that a captured segment must fully match, keyed by capture name "
+        '(e.g. {"run": "[0-9a-f]{7}"}); files whose capture does not match are skipped. Not a rename map.'))
     fields: dict[str, FieldSpec] = Field(default_factory=dict)
-    identity: list[str]
-    provenance: list[str] = Field(default_factory=list)  # uniform per group -> Provenance.source
-    metadata: list[str] = Field(default_factory=list)    # uniform per group -> Artifact.metadata
+    identity: list[str] = Field(description=(
+        "capture/field names that define the research condition; files with equal identity (and provenance) form "
+        "ONE artifact (several member files when they share it)"))
+    provenance: list[str] = Field(default_factory=list, description=(
+        "names describing origin (run, commit, config hash); must be identical within an artifact; different "
+        "values make separate artifacts"))
+    metadata: list[str] = Field(default_factory=list, description=(
+        "names copied into artifact metadata; must be IDENTICAL across all member files of an artifact (otherwise "
+        "the artifact is inconsistent) - per-file values belong in derive or checks, not here"))
     derive: dict[str, DeriveSpec] = Field(default_factory=dict)
     checks: list[CheckSpec] = Field(default_factory=list)
 
@@ -147,6 +157,13 @@ class ArtifactRule(_Strict):
             raise ValueError("identity must name at least one field")
         if set(self.captures) - caps:
             raise ValueError("captures constrain names that are not in the pattern")
+        if clash := sorted(caps & set(self.fields)):
+            raise ValueError(f"field names shadow path captures {clash}; rename the fields (e.g. doc_{clash[0]})")
+        for name, rx in self.captures.items():
+            try:
+                re.compile(rx)
+            except re.error as exc:
+                raise ValueError(f"capture {name} is not a valid regular expression: {exc}") from exc
         return self
 
 
@@ -344,9 +361,12 @@ def _group(rule: ArtifactRule, key: tuple, items: list[tuple[str, str, dict[str,
     members = [v for _, _, v in items]
     identity = {n: members[0].get(n) for n in rule.identity}
     checks: list[CheckResult] = []
-    missing = sorted({f"{rel}:{n}" for rel, _, v in items for n in v["__missing__"]})
-    checks.append(CheckResult(name="required_fields", passed=not missing, detail=", ".join(missing[:5]),
-                              validator="engine@1"))
+    missing: dict[str, int] = {}
+    for _, _, v in items:
+        for n in v["__missing__"]:
+            missing[n] = missing.get(n, 0) + 1
+    checks.append(CheckResult(name="required_fields", passed=not missing, validator="engine@1",
+                              detail=", ".join(f"{n} missing in {c} member(s)" for n, c in sorted(missing.items()))))
     out: dict[str, dict[str, Any]] = {"provenance": {}, "metadata": {}}
     for section, names_ in (("provenance", rule.provenance), ("metadata", rule.metadata)):
         for n in names_:
@@ -364,6 +384,18 @@ def _group(rule: ArtifactRule, key: tuple, items: list[tuple[str, str, dict[str,
     return DiscoveredGroup(rule=rule.rule, kind=rule.kind, identity=identity, metadata=out["metadata"],
                            provenance=out["provenance"], relative_dir=common,
                            members={rel: digest for rel, digest, _ in items}, checks=checks)
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equality across JSON values and path captures: "000" (a captured segment) equals 0, "2" equals 2."""
+    if a == b or (isinstance(a, str) and isinstance(b, str) and a == b):
+        return True
+    if str(a) == str(b):
+        return True
+    try:
+        return not isinstance(a, bool) and not isinstance(b, bool) and float(a) == float(b)
+    except (TypeError, ValueError):
+        return False
 
 
 def _items(member: dict[str, Any], c: CheckSpec, pointer: str) -> list[Any] | None:
@@ -403,7 +435,7 @@ def _check(c: CheckSpec, members: list[dict[str, Any]], ctx: _Context) -> CheckR
         same, _ = _uniform(vals)
         return res(f"uniform:{c.field}", same)
     if c.type == "equals_field":
-        bad = sum(1 for m in members if m.get(c.field) != m.get(c.other) and str(m.get(c.field)) != str(m.get(c.other)))
+        bad = sum(1 for m in members if not _same(m.get(c.field), m.get(c.other)))
         return res(f"equals_field:{c.field}={c.other}", not bad, f"{bad} member(s) differ" if bad else "")
     if c.type == "finite":
         bad = sum(1 for v in vals if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v))
@@ -501,3 +533,120 @@ def _derive(d: DeriveSpec, members: list[dict[str, Any]]) -> Any:
 
 def parse(definition: dict[str, Any]) -> DeclarativeDefinition:
     return DeclarativeDefinition.model_validate(definition)
+
+
+CHECK_VOCABULARY: dict[str, dict[str, str]] = {
+    "equals": {"needs": "field, value", "means": "every member's field == value"},
+    "one_of": {"needs": "field, value (list)", "means": "every member's field is one of value"},
+    "uniform": {"needs": "field", "means": "field has the same value in all members of the artifact"},
+    "equals_field": {"needs": "field, other", "means": "field == other per member (other may be a path capture)"},
+    "finite": {"needs": "field", "means": "field is a finite number"},
+    "distinct": {"needs": "field", "means": "no two members share the value"},
+    "sorted_unique": {"needs": "field", "means": "field is a sorted list without repeats, distinct across members"},
+    "count": {"needs": "count OR binomial [n_field, k_field]", "means": "number of member files"},
+    "items_equal": {"needs": "field (a list), item (pointer in each element, \"\" = element), value",
+                    "means": "every element's item == value"},
+    "items_finite": {"needs": "field (a list), item", "means": "every element's item is a finite number"},
+    "items_subset": {"needs": "field (a list), item, other (a list field)", "means": "element values are in other"},
+    "items_min_equals": {"needs": "field (a list), item, other, tolerance",
+                         "means": "min over elements' item equals other within tolerance"},
+    "cross_reference": {"needs": "field (a list), item, item_value, target_pattern, target_key, target_value; "
+                                 "optional target_match {pointer: member_field}, target_equals {pointer: constant}, "
+                                 "tolerance",
+                        "means": "each element's item is found as target_key in files matched by target_pattern "
+                                 "({name} placeholders are member fields) and its item_value equals target_value"},
+    "validator": {"needs": "validator (a NAMED_VALIDATORS entry), params", "means": "named trusted check"},
+}
+
+
+def diagnose(definition: DeclarativeDefinition, root: Path) -> list[str]:
+    """Explain, per rule, where discovery loses files (for generator feedback and humans)."""
+    root = root.expanduser().resolve()
+    out = []
+    for rule in definition.artifacts:
+        regex = {k: re.compile(v) for k, v in rule.captures.items()}
+        matched = kept = 0
+        missing: dict[str, int] = {}
+        hints: dict[str, str] = {}
+        for path, caps in iter_matches(root, rule.pattern):
+            matched += 1
+            if any(not r.fullmatch(caps.get(k, "")) for k, r in regex.items()):
+                continue
+            kept += 1
+            if kept > 200:
+                continue
+            try:
+                doc = json.loads(path.read_bytes())
+            except (OSError, ValueError):
+                missing["<unreadable json>"] = missing.get("<unreadable json>", 0) + 1
+                continue
+            for name, spec in rule.fields.items():
+                try:
+                    _pointer(doc, spec.pointer)
+                except (KeyError, TypeError):
+                    if spec.required:
+                        missing[name] = missing.get(name, 0) + 1
+                        hints.setdefault(name, _pointer_hint(doc, spec.pointer))
+        line = f"rule {rule.rule}: pattern matched {matched} file(s); {kept} kept after captures regexes"
+        if matched == 0:
+            line += f"; {_deepest_miss(root, rule.pattern)}"
+        if missing:
+            line += f"; required fields missing (in first 200): {missing}; pointer hints: {hints}"
+        out.append(line)
+    return out
+
+
+def _pointer_hint(doc: Any, pointer: str) -> str:
+    """Where a JSON pointer stops resolving, and which keys exist there."""
+    cur, walked = doc, ""
+    for raw in pointer.lstrip("/").split("/"):
+        tok = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict) and tok in cur:
+            cur, walked = cur[tok], f"{walked}/{raw}"
+        elif isinstance(cur, list) and tok.isdigit() and int(tok) < len(cur):
+            cur, walked = cur[int(tok)], f"{walked}/{raw}"
+        else:
+            keys = sorted(cur)[:30] if isinstance(cur, dict) else f"<{type(cur).__name__}>"
+            return f"{pointer!r} stops at {walked or '/'!r}, which has {keys}"
+    return f"{pointer!r} resolves"
+
+
+def _deepest_miss(root: Path, pattern: str) -> str:
+    segs = pattern.split("/")
+    for depth in range(len(segs), 0, -1):
+        prefix = "/".join(segs[:depth])
+        if next(iter_matches(root, prefix), None) is not None or any(
+                True for _ in _dirs(root, segs[:depth])):
+            nxt = segs[depth] if depth < len(segs) else ""
+            return f"nothing matches segment {nxt!r} after {prefix!r}"
+    return f"nothing matches the first segment {segs[0]!r}"
+
+
+def _dirs(root: Path, segs: list[str]):
+    """Directories matching a pattern prefix (iter_matches only yields files at the last segment)."""
+    frontier = [root]
+    for seg in segs:
+        m = _SEGMENT.match(seg)
+        nxt = []
+        for base in frontier:
+            if m and m.group("lit") is not None:
+                cand = base / seg
+                if cand.is_dir() and not cand.is_symlink():
+                    nxt.append(cand)
+                continue
+            try:
+                entries = list(os.scandir(base))
+            except OSError:
+                continue
+            for e in entries:
+                if not e.is_dir(follow_symlinks=False) or e.name.startswith("."):
+                    continue
+                if m and m.group("name"):
+                    pre, post = m.group("pre") or "", m.group("post") or ""
+                    if not (e.name.startswith(pre) and e.name.endswith(post)):
+                        continue
+                nxt.append(Path(e.path))
+        frontier = nxt[:500]
+        if not frontier:
+            return
+    yield from frontier

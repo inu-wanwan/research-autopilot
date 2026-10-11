@@ -149,6 +149,26 @@ def activate(store, adapter_id: str, *, actor: str) -> AdapterRecord:
     return rec
 
 
+def human_reviewed(rec: AdapterRecord) -> bool:
+    """Whether a human has stood behind this adapter's checks (manual, human-activated or endorsed)."""
+    if rec.origin is not AdapterOrigin.GENERATED:
+        return True
+    return bool(rec.endorsed_by) or (rec.activated_by not in (None, AUTOPILOT_ACTOR))
+
+
+def endorse(store, adapter_id: str, *, actor: str) -> AdapterRecord:
+    """A human reviewed a generated adapter's checks; its verified artifacts become reusable by default."""
+    rec = get(store, adapter_id)
+    if not actor or actor == AUTOPILOT_ACTOR:
+        raise AdapterError("endorsement must be made by a human")
+    if rec.state is not AdapterState.ACTIVE:
+        raise AdapterError(f"{adapter_id} is {rec.state.value}; only an active adapter can be endorsed")
+    rec.endorsed_by = actor
+    rec.event("endorsed", actor, "human reviewed the generated checks")
+    _save(store, rec)
+    return rec
+
+
 def retire(store, adapter_id: str, *, actor: str, reason: str) -> AdapterRecord:
     rec = get(store, adapter_id)
     rec.state = AdapterState.RETIRED

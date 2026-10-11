@@ -111,7 +111,10 @@ def test_invalid_proposals_get_feedback_and_never_activate(tmp_path):
     assert run.outcome == "activated" and len(run.attempts) == 3
     assert "pattern" in run.attempts[0].problems[0]
     assert any("declares no mandatory check" in p for p in run.attempts[1].problems)
-    assert gen.payloads[1]["PREVIOUS_ATTEMPT_PROBLEMS"] == run.attempts[0].problems
+    assert gen.payloads[1]["PREVIOUS_ATTEMPT_PROBLEMS"] == [f"(latest attempt) {p}" for p in run.attempts[0].problems]
+    assert gen.payloads[1]["PREVIOUS_ATTEMPT_PROPOSAL"]["kind"] == "declarative"
+    # Earlier lessons are kept for the third attempt.
+    assert any(p.startswith("(earlier attempt)") and "pattern" in p for p in gen.payloads[2]["PREVIOUS_ATTEMPT_PROBLEMS"])
     states = {r["adapter_id"]: r["state"] for r in ctx.store.find(db.catalog_adapters)}
     assert states == {"repo.generated@0.1.0": "rejected", "repo.generated@0.2.0": "rejected",
                       "repo.generated@0.3.0": "active"}
@@ -122,7 +125,9 @@ def test_proposal_whose_checks_reject_the_real_data_is_rejected(tmp_path):
     wrong = copy.deepcopy(CASCI_ADAPTER)
     wrong["artifacts"][0]["checks"].append({"type": "equals", "field": "molecule", "value": "CO2"})
     run = generation.generate_adapter(ctx, "repo", FakeGenerator(decl(wrong)), max_attempts=1)
-    assert run.outcome == "rejected" and "verifies_some_artifacts" in run.attempts[0].problems[0]
+    assert run.outcome == "rejected"
+    assert any("verifies_some_artifacts" in p and "equals:molecule" in p for p in run.attempts[0].problems)
+    assert any(p.startswith("diagnostics:") for p in run.attempts[0].problems)
     assert adapters.active_for(ctx.store, "repo") == []
     assert ctx.store.get(db.catalog_bindings, "repo") is None
 
@@ -279,3 +284,42 @@ def test_untrusted_python_output_is_checked_and_rehashed(tmp_path):
     groups, errors = sandbox.to_groups(raw, repo)
     assert len(groups) == 1 and "not a regular file inside the repository" in errors[0]
     assert len(groups[0].members["experiments/baseline/seed_0/metrics.json"]) == 64
+
+
+def test_empty_pointer_addresses_the_whole_list_element_and_field_capture_clash_is_explained(tmp_path):
+    from pydantic import ValidationError
+
+    from research_autopilot.catalog import declarative
+    repo = shard_repo(tmp_path / "repo")
+    d = copy.deepcopy(SHARD_ADAPTER)
+    d["artifacts"][0]["checks"].append({"type": "items_finite", "field": "ids", "item": ""})
+    groups, _ = declarative.discover(declarative.parse(d), repo)
+    assert all(c.passed for g in groups for c in g.checks)
+    d["artifacts"][0]["fields"]["split"] = "/split"
+    with pytest.raises(ValidationError, match="shadow path captures"):
+        declarative.parse(d)
+
+
+def test_auto_activated_generated_checks_are_not_scientific_endorsement(tmp_path):
+    ctx = context(tmp_path, {"repo": casci_repo(tmp_path / "repo")})
+    run = generation.generate_adapter(ctx, "repo", FakeGenerator(decl(CASCI_ADAPTER)))
+    service.scan(ctx, "repo")
+    q = "catalog: kind=toy-condition k=2..3 expect=2"
+    res = service.resolve(ctx, service.parse_requirements(q))
+    assert not res.artifacts and all("no human has reviewed" in p for p in res.problems if "expected" not in p)
+    assert service.resolve(ctx, service.parse_requirements(q + " trust=any")).ok  # explicit, human-written opt-in
+    with pytest.raises(adapters.AdapterError, match="human"):
+        adapters.endorse(ctx.store, run.adapter_id, actor=adapters.AUTOPILOT_ACTOR)
+    adapters.endorse(ctx.store, run.adapter_id, actor=HUMAN)
+    assert service.resolve(ctx, service.parse_requirements(q)).ok
+
+
+def test_too_fine_artifact_granularity_is_rejected_with_guidance(tmp_path, monkeypatch):
+    monkeypatch.setattr(generation, "MAX_ARTIFACTS", 3)
+    ctx = context(tmp_path, {"repo": shard_repo(tmp_path / "repo")})
+    per_file = copy.deepcopy(SHARD_ADAPTER)
+    per_file["artifacts"][0]["identity"] = ["version", "split", "index"]
+    per_file["artifacts"][0]["checks"] = [{"type": "equals", "field": "schema", "value": "tabular-v2"}]
+    run = generation.generate_adapter(ctx, "repo", FakeGenerator(decl(per_file)), max_attempts=1)
+    assert run.outcome == "rejected"
+    assert any("artifact_granularity" in p and "group member files" in p for p in run.attempts[0].problems)

@@ -106,13 +106,15 @@ def survey(root: Path, focus: str | None = None) -> dict[str, Any]:
     # Rank: focus matches first, then larger families; keep small families too (results are often few files).
     ranked = sorted(shapes.items(), key=lambda kv: (-_score(kv[0], terms), -kv[1]["count"], kv[0]))
     top = ranked[:MAX_SHAPES]
+    # Sample JSON structure for the best-ranked families AND the largest ones (e.g. caches a result refers to).
+    json_keys = [k for k, _ in top if k.endswith(".json")]
+    by_size = sorted(json_keys, key=lambda k: -shapes[k]["count"])
+    to_sample = set(json_keys[:MAX_SAMPLED // 2 + 1]) | set(by_size[:MAX_SAMPLED // 2])
     out_shapes = []
-    sampled = 0
     for key, sh in top:
         entry = {"shape": key, "count": sh["count"], "total_bytes": sh["bytes"], "examples": sh["examples"]}
-        if key.endswith(".json") and sampled < MAX_SAMPLED:
+        if key in to_sample:
             entry["json_structure"] = _json_sample(root / sh["examples"][0])
-            sampled += 1
         out_shapes.append(entry)
     chosen = sorted(configs, key=lambda r: (-_score(r, terms), r.count("/"), r))[:6]
     configs = {r: _read_text(configs[r], 2500) for r in chosen}

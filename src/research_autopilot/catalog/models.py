@@ -71,6 +71,7 @@ class AdapterRecord(BaseModel):
     generator: dict[str, Any] = Field(default_factory=dict)  # 7B: model / prompt hash / source scan
     validation: AdapterValidation | None = None
     activated_by: str | None = None
+    endorsed_by: str | None = None  # human who reviewed a generated adapter's checks (scientific trust)
     history: list[AdapterEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -203,6 +204,9 @@ class ArtifactQuery(BaseModel):
     repository_id: str | None = None
     filters: dict[str, list[Any]] = Field(default_factory=dict)  # identity field -> accepted values
     expect_count: int | None = None  # every combination must resolve to exactly this many artifacts
+    # "human": only artifacts verified by human-made / human-reviewed adapters may be reused (default).
+    # "any": the requirement explicitly accepts checks written by an unreviewed generated adapter.
+    trust: Literal["human", "any"] = "human"
     raw: str = ""
 
 

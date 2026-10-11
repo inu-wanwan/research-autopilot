@@ -216,3 +216,13 @@ def generations(repository: str) -> None:
     """Generation history (attempts, validation problems, outcome, cost) for a repository."""
     from research_autopilot.catalog import generation
     _out([g.model_dump(mode="json") for g in generation.history(_ctx().store, repository)])
+
+
+@adapter_app.command("endorse")
+def adapter_endorse(adapter_id: str, actor: str = typer.Option(..., "--actor", help="Human reviewer name")) -> None:
+    """Record that a human reviewed a generated adapter's checks (its artifacts become reusable by default)."""
+    try:
+        rec = adapters.endorse(_ctx().store, adapter_id, actor=actor)
+    except adapters.AdapterError as exc:
+        _fail(exc)
+    _out({"adapter_id": rec.adapter_id, "endorsed_by": rec.endorsed_by})
