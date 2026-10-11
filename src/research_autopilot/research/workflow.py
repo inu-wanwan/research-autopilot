@@ -9,6 +9,7 @@ execution.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ from research_autopilot.models import utcnow
 from research_autopilot.research import evidence as evidence_mod
 from research_autopilot.research import planner as planner_mod
 from research_autopilot.research import scope as scope_mod
-from research_autopilot.research.models import PlanStatus, ResearchPlan
+from research_autopilot.research.models import Autonomy, PlanStatus, ResearchPlan
 from research_autopilot.storage import db
 from research_autopilot.tasks.notion_writer import bullet, heading, paragraph, table, toggle
 
@@ -224,14 +225,22 @@ def apply_decision(deps, req: ApprovalRequest, approval, issue, run: WorkflowRun
             run.stage, run.waiting_for, run.resume_stage = WorkflowStage.RESEARCHING, None, None
             run.event("rejected", f"scope change v{plan.version} rejected by {approval.actor}: the approved scope stays")
     elif approval.decision == "reject":
+        # Reject stops; only an explicit Cancel ends the research (docs/phase_specs/ux_policy.md, user decision)
         plan.status = PlanStatus.REJECTED
         save_plan(deps.store, plan)
         project(deps, plan, "Rejected")
-        if approval.channel == "discord":
-            deps.ops.reflect_verified_decision(issue, "Canceled", f"verified Discord reject ({req.request_id[:8]}) by {approval.actor}")
         if run is not None:
-            run.stage, run.waiting_for = WorkflowStage.CANCELLED, None
-            run.event("rejected", f"research scope v{plan.version} rejected by {approval.actor}")
+            run.stage, run.waiting_for = WorkflowStage.BLOCKED, None
+            run.blocked_reason = f"research plan v{plan.version} rejected by {approval.actor}"
+            run.event("rejected", f"research scope v{plan.version} rejected by {approval.actor}: stopped (Resume / Cancel)")
+        _notify(deps, run, "research-rejected", plan,
+                [f"研究計画 v{plan.version} が却下されたため、研究を停止しました（打ち切りではありません）。",
+                 *([f"コメント：{approval.comment[:300]}"] if approval.comment else []),
+                 f"Notion: {plan.plan_page_url or ''}"],
+                controls=True, steps=[
+                    "仕様（Notion のタスクページ）を直して保存すると、数分以内に新しい版の計画が届きます。",
+                    "仕様は変えずに計画だけ作り直す場合は Resume を押します。",
+                    "研究をやめる場合は Cancel を押します（確認のあと打ち切り、Linear も Canceled になります）。"])
     else:
         plan.status = PlanStatus.REVISION_REQUESTED
         plan.revision_comment = approval.comment
@@ -283,59 +292,133 @@ def _record_page(deps, plan: ResearchPlan) -> None:
     title = f"RA Research Plan v{plan.version} ({plan.content_hash[:12]})"
     try:
         existing = deps.notion_writer.find_subpage(plan.notion_page_id, f"RA Research Plan v{plan.version} ")
-        page_id = existing or deps.notion_writer.create_subpage(plan.notion_page_id, title, plan_blocks(plan))[0]
+        try:
+            spec = scope_mod.spec_text(deps.plan.manager.load(plan.task_id).spec)
+        except Exception:  # the summary only loses the spec-vs-plan quantity check
+            spec = ""
+        page_id = existing or deps.notion_writer.create_subpage(plan.notion_page_id, title, plan_blocks(plan, spec))[0]
         plan.plan_page_id = page_id
         plan.plan_page_url = deps.notion_writer.page_url(page_id)
     except Exception as exc:  # the backend record is authoritative; the Notion copy is retried on the next version
         plan.validation_problems.append(f"Notion plan page could not be written: {type(exc).__name__}")
 
 
-def plan_blocks(plan: ResearchPlan) -> list[dict]:
+_STATUS_JA = {"stated": "仕様に記載", "inferred": "推定", "ra_default": "RA 既定値", "missing": "仕様に記載なし",
+              "ambiguous": "曖昧（要確認）"}
+_KIND_JA = {"implementation": "実装", "experiment": "計算", "analysis": "解析"}
+_APPROX = re.compile(r"(おおむね|約|およそ|approximately|about|roughly|~)\s*(\d+)\s*(点|個|geometr\w*|points?)", re.I)
+
+
+def _num_key(v: str):
+    try:
+        return (0, float(v))
+    except ValueError:
+        return (1, v)
+
+
+def review_points(plan: ResearchPlan, spec_text: str = "") -> list[str]:
+    """What the approver should actually check (docs/phase_specs/ux_policy.md): the values the first cycle will
+    use, gaps between approximate quantities in the specification and the plan, and what is not in the
+    specification (RA defaults / missing), budget against the estimate, and open questions."""
+    s, out = plan.scope, []
+    counts: dict[str, int] = {}
+    for c in s.conditions:
+        if c.kind not in ("range", "values"):
+            continue
+        used = sorted({v for t in plan.tasks for v in t.parameters.get(c.name, [])}, key=_num_key)
+        if used:
+            counts[c.name] = len(used)
+            out.append(f"最初のサイクルで使う {c.name}: {', '.join(used)} {c.unit or ''}（{len(used)} 点）。"
+                       f"承認範囲は {_cond(c)}。")
+    for m in _APPROX.finditer(spec_text or ""):
+        n = int(m.group(2))
+        if counts and all(k != n for k in counts.values()):
+            out.append(f"仕様は「{m.group(0)}」ですが、計画は {', '.join(f'{k} 点' for k in counts.values())} です。"
+                       "意図どおりか確認してください（違う場合は Request revision のコメントで点数を指定）。")
+    defaults = Autonomy()
+    a = s.autonomy
+    nums = (a.max_cycles, a.max_new_tasks_per_cycle, a.max_retries_per_task, a.no_progress_cycles)
+    if nums == (defaults.max_cycles, defaults.max_new_tasks_per_cycle, defaults.max_retries_per_task,
+                defaults.no_progress_cycles):
+        out.append(f"自律上限は仕様に数値がないため RA 既定値です：最大 {a.max_cycles} サイクル、1 サイクルあたり新規タスク "
+                   f"{a.max_new_tasks_per_cycle} 件、再試行 {a.max_retries_per_task} 回、進展なし "
+                   f"{a.no_progress_cycles} サイクルで停止。")
+    b = s.budget
+    est = sum(t.estimate_cpu_hours for t in plan.tasks)
+    out.append(f"予算：CPU {b.cpu_hours:g} 時間 / API ${b.api_usd:g}（{_STATUS_JA.get(b.status, b.status)}"
+               f"{'、' + b.note if b.note else ''}）。最初のサイクルの見積もり CPU {est:.2f} 時間。")
+    gaps = [(name, item) for name, item in (("比較の基準・公平性（baseline）", s.baseline), ("目的", s.objective),
+                                            ("主指標", s.primary_metric), ("対象", s.targets))
+            if item.status in ("missing", "ra_default", "inferred", "ambiguous")]
+    for name, item in gaps:
+        out.append(f"{name}：{_STATUS_JA.get(item.status, item.status)}"
+                   + (f"（{item.value[:120]}）" if item.value else "") + "。")
+    seen, questions = {"autonomy"} if "自律上限" in " ".join(out) else set(), []
+    seen |= {"baseline"} if any(name.startswith("比較の基準") for name, _ in gaps) else set()
+    for q in s.open_questions:
+        if q.field not in seen:
+            seen.add(q.field)
+            questions.append(f"{'【要回答】' if q.blocking else ''}{q.question[:200]}")
+    if questions:
+        out.append("未解決の質問（承認は止めません）：" + " / ".join(questions[:4]))
+    return out
+
+
+def plan_blocks(plan: ResearchPlan, spec_text: str = "") -> list[dict]:
     s = plan.scope
-    rows = [["objective", s.objective.value, s.objective.status, s.objective.quote],
-            ["primary metric", s.primary_metric.value, s.primary_metric.status, s.primary_metric.quote],
-            ["targets", s.targets.value, s.targets.status, s.targets.quote],
-            ["baseline / fairness", s.baseline.value, s.baseline.status, s.baseline.quote],
-            *[["hypothesis", h.value, h.status, h.quote] for h in s.hypotheses],
-            *[["invariant", i.value, i.status, i.quote] for i in s.invariants],
-            *[["success criterion", c.value, c.status, c.quote] for c in s.success_criteria],
-            *[["stop condition", c.value, c.status, c.quote] for c in s.stop_conditions],
-            ["budget", f"{s.budget.cpu_hours} CPU-h / ${s.budget.api_usd}", s.budget.status, s.budget.quote]]
-    rows = [[a, (b or "-")[:300], c, (d or "-")[:300]] for a, b, c, d in rows]
-    blocks = [paragraph(f"Version v{plan.version} ({plan.kind}) / content hash {plan.content_hash} / spec hash "
-                        f"{plan.spec_hash[:12]} / status {plan.status.value} / created {plan.created_at:%Y-%m-%d %H:%M} UTC"),
-              paragraph("承認は Discord のボタンでのみ成立します（このページや Approval Status の編集は承認になりません）。"
-                        "仕様ページを編集するとこの版への承認は無効になります。"),
-              heading("Research scope"), table(["field", "value", "status", "source quote"], rows),
-              heading("Approved conditions"),
-              *([bullet(f"{c.name}: {_cond(c)} — “{c.quote[:200]}”") for c in s.conditions] or [paragraph("(none)")]),
-              heading("Autonomy (approved with this scope)"),
-              bullet(f"max cycles {s.autonomy.max_cycles}; max new tasks per cycle {s.autonomy.max_new_tasks_per_cycle}; "
-                     f"max retries per task {s.autonomy.max_retries_per_task}; stop after {s.autonomy.no_progress_cycles} "
-                     f"cycles without progress ({s.autonomy.status})"),
-              *[bullet(a) for a in s.autonomy.allowed_actions]]
+    def src(item) -> str:
+        return f"{_STATUS_JA.get(item.status, item.status)}" + (f"：「{item.quote[:160]}」" if item.quote else "")
+    rows = [["目的", s.objective.value, src(s.objective)], ["主指標", s.primary_metric.value, src(s.primary_metric)],
+            ["対象", s.targets.value, src(s.targets)], ["比較の基準・公平性", s.baseline.value, src(s.baseline)],
+            *[["仮説", h.value, src(h)] for h in s.hypotheses],
+            *[["不変条件", i.value, src(i)] for i in s.invariants],
+            *[["成功条件", c.value, src(c)] for c in s.success_criteria],
+            *[["停止条件", c.value, src(c)] for c in s.stop_conditions]]
+    rows = [[a, (b or "-")[:300], c[:300]] for a, b, c in rows]
+    a = s.autonomy
+    blocks = [heading("確認してほしい点"), *[bullet(x) for x in review_points(plan, spec_text)],
+              heading("最初のサイクルで実行すること"),
+              *([bullet(f"{t.key}（{_KIND_JA.get(t.kind, t.kind)}）{t.title[:120]}"
+                        + (f" — {'; '.join(f'{k} = {', '.join(v)}' for k, v in t.parameters.items())}" if t.parameters else "")
+                        + f"、見積もり CPU {t.estimate_cpu_hours:g} 時間"
+                        + ("、ここで次の計画を判断" if t.decision_point else "")
+                        + (f"（{', '.join(t.depends_on)} の後）" if t.depends_on else "")) for t in plan.tasks]
+                or [paragraph("（なし）")]),
+              heading("承認の仕方"),
+              bullet("Discord の approvals チャンネルで押します（このページや Approval Status を編集しても承認にはなりません）。"),
+              bullet("Approve：この版の範囲で自律実行を始めます。"),
+              bullet("Request revision：コメントに直してほしい点（例：「初期計算は 5 点」）を書くと、作り直した版が届きます。"),
+              bullet("Reject：研究を停止します（打ち切りではありません。仕様を直すと作り直され、Resume でも再開できます）。"),
+              bullet("仕様ページを編集すると、この版への承認は無効になり、新しい版が自動で届きます。")]
     if s.open_questions:
-        blocks += [heading("Open questions"), *[bullet(f"{'[blocking] ' if q.blocking else ''}{q.field}: {q.question}")
-                                                for q in s.open_questions]]
+        blocks += [heading("未解決の質問"), *[bullet(f"{'【要回答】' if q.blocking else ''}{q.field}: {q.question}")
+                                              for q in s.open_questions]]
     if plan.validation_problems:
-        blocks += [heading("Validation problems"), *[bullet(x) for x in plan.validation_problems[:20]]]
+        blocks += [heading("検証で見つかった問題"), *[bullet(x) for x in plan.validation_problems[:20]]]
     if plan.change_summary:
-        blocks += [heading("Changes from the approved scope"), *[bullet(x) for x in plan.change_summary]]
-    blocks += [heading("Rationale"), paragraph(plan.rationale[:1900] or "-"),
-               heading("Task DAG draft"),
-               table(["key", "kind", "title", "depends on", "parameters", "est. CPU-h", "decision"],
-                     [[t.key, t.kind, t.title[:120], ", ".join(t.depends_on) or "-",
-                       "; ".join(f"{k}={','.join(v)}" for k, v in t.parameters.items())[:200] or "-",
-                       f"{t.estimate_cpu_hours:g}", "yes" if t.decision_point else ""] for t in plan.tasks] or [["-"] * 7]),
+        blocks += [heading("承認済みスコープからの変更"), *[bullet(x) for x in plan.change_summary]]
+    blocks += [heading("研究スコープ（詳細）"), table(["項目", "内容", "根拠"], rows),
+               heading("承認される条件範囲"),
+               *([bullet(f"{_cond(c)}（{_STATUS_JA.get(c.status, c.status)}：「{c.quote[:160]}」）") for c in s.conditions]
+                 or [paragraph("（なし）")]),
+               heading("自律実行の上限"),
+               bullet(f"最大 {a.max_cycles} サイクル / 1 サイクルあたり新規タスク {a.max_new_tasks_per_cycle} 件 / 再試行 "
+                      f"{a.max_retries_per_task} 回 / 進展なし {a.no_progress_cycles} サイクルで停止"),
+               *[bullet(f"許可する行動：{x}") for x in a.allowed_actions],
+               heading("計画の理由"), paragraph(plan.rationale[:1900] or "-"),
+               heading("タスクの詳細"),
                *[toggle(f"{t.key}: {t.title[:150]}", [paragraph(t.objective[:1900]), paragraph(t.specification[:1900]),
-                                                      *[bullet(a) for a in t.acceptance_criteria[:10]],
+                                                      *[bullet(x) for x in t.acceptance_criteria[:10]],
                                                       paragraph(f"repository {t.repository}; files {t.file_scope}; "
                                                                 f"evidence {t.evidence_ids}")]) for t in plan.tasks],
-               heading("Replanning rules"), *([bullet(r) for r in plan.replanning_rules] or [paragraph("-")]),
-               heading("Assumptions"), *([bullet(a) for a in plan.assumptions] or [paragraph("-")]),
-               heading("Evidence"),
-               table(["id", "kind", "status", "reference", "statement"],
-                     [[e.evidence_id, e.kind, e.status, e.ref[:80], e.statement[:250]] for e in plan.evidence] or [["-"] * 5])]
+               toggle("再計画のルール / 前提 / 根拠", [
+                   *([bullet(r) for r in plan.replanning_rules] or [paragraph("再計画のルール：-")]),
+                   *[bullet(f"前提：{x}") for x in plan.assumptions],
+                   table(["id", "種類", "状態", "参照", "内容"],
+                         [[e.evidence_id, e.kind, e.status, e.ref[:80], e.statement[:250]] for e in plan.evidence]
+                         or [["-"] * 5])]),
+               paragraph(f"版 v{plan.version}（{plan.kind}）/ content hash {plan.content_hash} / spec hash "
+                         f"{plan.spec_hash[:12]} / {plan.status.value} / 作成 {plan.created_at:%Y-%m-%d %H:%M} UTC")]
     return blocks
 
 

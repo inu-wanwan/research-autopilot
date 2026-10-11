@@ -82,7 +82,7 @@ def test_research_objective_gets_a_grounded_plan_and_scope_approval_request_with
     assert any(e.kind == "spec" for e in plan.evidence)  # registered repository context
     # Notion: immutable versioned plan page + Approval Status projection; Discord request carries URL + version/hash
     sub = writer.subpages[plan.plan_page_id]
-    assert sub["title"].startswith("RA Research Plan v1 (") and "Task DAG draft" in str(sub["blocks"])
+    assert sub["title"].startswith("RA Research Plan v1 (") and "確認してほしい点" in str(sub["blocks"]) and "最初のサイクルで実行すること" in str(sub["blocks"])
     assert notion.pages[plan.notion_page_id].approval_status == "Pending"
     (req,) = _pending(deps)
     assert req.spec_hash == plan.content_hash and any(plan.content_hash[:12] in x for x in req.what_changes)
@@ -155,7 +155,7 @@ def test_stale_discord_approval_after_a_spec_edit_or_a_newer_version_is_rejected
     assert notion.pages[plans[1].notion_page_id].approval_status == "Approved"
 
 
-def test_revision_request_redrafts_with_the_comment_and_rejection_cancels(tmp_path):
+def test_revision_request_redrafts_with_the_comment_and_rejection_stops(tmp_path):
     deps, linear, notion, writer, llm = _build(tmp_path)
     poll(deps)
     (v1,) = _pending(deps)
@@ -168,8 +168,16 @@ def test_revision_request_redrafts_with_the_comment_and_rejection_cancels(tmp_pa
     (v2,) = _pending(deps)
     _discord(deps, v2, "reject")
     poll(deps)
-    assert _run(deps).stage is WorkflowStage.CANCELLED and workflow.research_authorization(deps.store, "INU-900") is None
+    run = _run(deps)  # a reject stops (Resume / Cancel); only an explicit Cancel ends the research
+    assert run.stage is WorkflowStage.BLOCKED and workflow.research_authorization(deps.store, "INU-900") is None
+    assert linear.issues["INU-900"].state_name != "Canceled"
     assert notion.pages[plans[0].notion_page_id].approval_status == "Rejected"
+    stop = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r
+            and r["event"].get("dedupe_key", "").startswith("research-rejected")]
+    assert stop and stop[0]["needs_human"] and stop[0]["control_actions"] == ["resume", "cancel"] and stop[0]["steps"]
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    assert [p.version for p in workflow.plans(deps.store, "INU-900")][-1] == 3  # Resume drafts a new version
 
 
 def test_approval_status_projection_failure_is_retried_and_never_gates(tmp_path):

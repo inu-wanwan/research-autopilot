@@ -412,7 +412,7 @@ def _auto_replan(deps, run: WorkflowRun) -> bool:
     plan = rw.latest_plan(deps.store, run.task_id)
     if plan is None:
         return False
-    if plan.status not in (PlanStatus.NEEDS_INPUT, PlanStatus.INVALID) \
+    if plan.status not in (PlanStatus.NEEDS_INPUT, PlanStatus.INVALID, PlanStatus.REJECTED) \
             and not (run.blocked_reason or "").startswith("research stopped"):
         return False
     from research_autopilot.research import scope as scope_mod
