@@ -14,11 +14,13 @@ Prefect UI of the configured PREFECT_API_URL). ``--local`` skips Prefect.
 
 import asyncio
 import json
+import os
 import sys
 
 import typer
 
 from research_autopilot.config import load_dotenv, load_settings
+from research_autopilot.models import utcnow
 from research_autopilot.storage.db import Store
 
 load_dotenv()  # secrets stay in the process environment; nothing is printed
@@ -316,6 +318,30 @@ def _set_run_stage(task: str, stage: str, message: str) -> None:
     run.blocked_reason = None
     run.event("operator", message)
     store.put(dbm.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage=run.stage.value)
+    if run.execution_run_id:
+        from research_autopilot.autopilot.execution import ExecutionRun, ExecutionStatus, transition
+        from research_autopilot.autopilot.factory import build_autopilot_deps
+        rec = store.get(dbm.execution_runs, run.execution_run_id)
+        if rec:
+            execution = ExecutionRun.model_validate(rec)
+            # A canceled execution is immutable history. ``resume`` changes the
+            # legacy WorkflowRun only; a fresh Notion request creates a new run.
+            if run.stage is not WorkflowStage.CANCELLED:
+                typer.echo(f"{task}: {run.stage.value}")
+                return
+            target = ExecutionStatus.CANCELED
+            execution.status = transition(execution.status, target)
+            execution.error_summary = message if target is ExecutionStatus.CANCELED else None
+            execution.finished_at = utcnow() if target is ExecutionStatus.CANCELED else None
+            store.put(dbm.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"),
+                      request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
+            # Offline CLI use still records the authoritative DB transition;
+            # projection is retried by a write-enabled poller.
+            if os.getenv("RA_AUTOPILOT_WRITE", "").lower() in {"1", "true", "yes", "on"}:
+                deps = build_autopilot_deps(dry_run=False)
+                deps.notion_writer.project_execution(execution.notion_task_id, status=execution.status.value,
+                    error=execution.error_summary, run_url=(f"{deps.settings.prefect_ui_url.rstrip('/')}/runs/flow-run/{execution.prefect_flow_run_id}"
+                    if execution.prefect_flow_run_id and deps.settings.prefect_ui_url else None))
     typer.echo(f"{task}: {run.stage.value}")
 
 

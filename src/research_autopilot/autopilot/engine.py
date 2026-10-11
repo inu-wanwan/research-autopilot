@@ -30,7 +30,7 @@ from research_autopilot.autopilot.models import (
 )
 from research_autopilot.autopilot.notes import notes_blocks, proposal_blocks
 from research_autopilot.autopilot.outbox import Outbox
-from research_autopilot.autopilot.execution import ExecutionStatus, ExecutionRun, accept
+from research_autopilot.autopilot.execution import ExecutionStatus, ExecutionRun, accept, record_blocked, transition
 from research_autopilot.experiments.models import ExperimentState, ReviewedExperimentProposal
 from research_autopilot.experiments.orchestrator import ExpDeps, run_experiment
 from research_autopilot.experiments.scope import dedupe_key
@@ -110,7 +110,9 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 rerun = bundle.issue.state_type == "completed" and all(r.message.startswith("task is ") for r in bundle.reasons)
                 if bundle.spec is None or (bundle.reasons and not rerun):
                     if not deps.settings.dry_run:
-                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error="; ".join(r.message for r in bundle.reasons) or "missing scientific specification")
+                        reason = "; ".join(r.message for r in bundle.reasons) or "missing scientific specification"
+                        record_blocked(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec) if bundle.spec else "unavailable", reason=reason)
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason)
                     continue
                 try:
                     # Refuse before durable acceptance when the configured write
@@ -118,6 +120,7 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                     deps.ops._guard(bundle.issue)
                 except WriteRefused as exc:
                     if not deps.settings.dry_run:
+                        record_blocked(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec), reason=str(exc))
                         deps.notion_writer.project_execution(page.page_id, status="Blocked", error=str(exc))
                     continue
                 if rerun and not deps.settings.dry_run:
@@ -156,11 +159,15 @@ def _save(deps: AutopilotDeps, run: WorkflowRun) -> None:
         if rec:
             er = ExecutionRun.model_validate(rec)
             states = {WorkflowStage.AWAITING_AUTHORIZATION: "Awaiting Approval", WorkflowStage.AWAITING_APPROVAL: "Awaiting Approval", WorkflowStage.DONE: "Completed", WorkflowStage.BLOCKED: "Blocked", WorkflowStage.CANCELLED: "Canceled", WorkflowStage.DEAD_LETTER: "Failed"}
-            er.status = ExecutionStatus(states.get(run.stage, "Running")); er.error_summary = run.blocked_reason; er.updated_at = utcnow()
+            er.status = transition(er.status, ExecutionStatus(states.get(run.stage, "Running"))); er.error_summary = run.blocked_reason; er.updated_at = utcnow()
             if er.status in {ExecutionStatus.COMPLETED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED, ExecutionStatus.FAILED}: er.finished_at = utcnow()
             deps.store.put(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=er.request_id, task_id=er.task_id, status=er.status.value)
-            deps.notion_writer.project_execution(er.notion_task_id, status=er.status.value, error=er.error_summary,
-                run_url=_prefect_url(deps, er.prefect_flow_run_id))
+            # A newly clicked Button is authoritative UI intent until ingested;
+            # never let a delayed old-run projection erase Requested.
+            page = deps.plan.manager.notion.get_task(er.notion_task_id)
+            if not page.run_requested:
+                deps.notion_writer.project_execution(er.notion_task_id, status=er.status.value, error=er.error_summary,
+                    run_url=_prefect_url(deps, er.prefect_flow_run_id))
 
 
 def _prefect_url(deps: AutopilotDeps, flow_run_id: str | None) -> str | None:
@@ -178,7 +185,7 @@ def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None =
     run.event("discovered", f"{task_id} (root {run.root_task_id}, depth {run.chain_depth})")
     _save(deps, run)
     if execution:
-        execution.status, execution.started_at, execution.updated_at = ExecutionStatus.RUNNING, utcnow(), utcnow()
+        execution.status, execution.started_at, execution.updated_at = transition(execution.status, ExecutionStatus.RUNNING), utcnow(), utcnow()
         execution.prefect_flow_run_id = prefect_flow_run_id
         deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"), request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
         deps.notion_writer.project_execution(execution.notion_task_id, status="Running",

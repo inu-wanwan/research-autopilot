@@ -6,11 +6,10 @@ is the SSOT for execution request/run state; Notion is an idempotent projection.
 
 ## One-time Notion setup
 
-The verified data source has `Run Requested` (checkbox), `Execution Status`
-(status), `Last Run` (URL), and `Execution Error` (text).  It did **not** expose
-`Run Autopilot` as a Button property to the connected integration on 2026-10-11.
-The API documents Button as read-only (`button: {}`): it cannot create/configure
-or press a Button.  A workspace owner must configure it in the Notion UI:
+The verified data source has `Run Autopilot` (button), `Run Requested`
+(checkbox), `Execution Status` (status), `Last Run` (URL), and `Execution Error`
+(text). The API documents Button as read-only (`button: {}`): it cannot
+configure or press a Button. A workspace owner configures it in the Notion UI:
 
 1. In Research Tasks, add a **Button** property named `Run Autopilot`.
 2. Configure its action to edit the current page: set `Run Requested` to checked
@@ -21,15 +20,15 @@ or press a Button.  A workspace owner must configure it in the Notion UI:
 4. Grant the Research Autopilot integration **Update content** capability for this
    data source; read-only capability cannot acknowledge requests or project state.
 
-Until step 1 is visible to the integration, users may set the checkbox and status
-manually for a test task.  This is not a production-run authorization.
+The button was verified against the test H2 task on 2026-10-11.
 
 ## Consistency contract
 
-`Run Requested=true` represents at most one unaccepted request.  The poller stores
-the request/run before clearing it.  A failed Notion acknowledgement is safe: the
-request's unique `page_id:last_edited_time` key prevents a second run, and the next
-poll reconciles the projection.  Notion exposes `last_edited_time`, but no
+`Run Requested=true` represents at most one unaccepted request. The poller stores
+the request/run before clearing it. A failed acknowledgement is safe: the request's
+unique `page_id:last_edited_time` key makes the next poll reuse the accepted run
+and retry the acknowledgement. A pending new request suppresses delayed projection
+from an older run. Notion exposes `last_edited_time`, but no
 compare-and-swap precondition for `PATCH /pages`; therefore ambiguous races are
 blocked/reviewed rather than inferred.  Delayed projections are derived from the
 latest PostgreSQL execution run and never use Notion's editable status as authority.
