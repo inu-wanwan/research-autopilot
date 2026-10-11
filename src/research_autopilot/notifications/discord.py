@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 
 from research_autopilot.autopilot.models import ApprovalRequest, ApprovalStatus, DiscordSubmission
 from research_autopilot.models import utcnow
-from research_autopilot.notifications.events import EventKind, NotificationEvent
+from research_autopilot.notifications.events import EventKind, NotificationEvent, numbered
 from research_autopilot.storage import db
 from research_autopilot.storage.db import Store
 
@@ -111,9 +111,11 @@ _LOG_KINDS = {
 
 
 def route_event(event: NotificationEvent) -> DiscordRoute:
-    if event.kind is EventKind.APPROVAL_REQUIRED:
+    """UX policy (docs/phase_specs/ux_policy.md section 2): everything a human must act on goes to approvals;
+    results may carry only Stop; errors and logs never carry buttons (``DiscordNotifier.send`` strips them)."""
+    if event.kind is EventKind.APPROVAL_REQUIRED or event.needs_human:
         return DiscordRoute.APPROVALS
-    if "resume" in event.control_actions:  # a stopped research waits for a human Resume decision
+    if set(event.control_actions) - {"stop"}:  # Resume / Cancel wait for a human decision
         return DiscordRoute.APPROVALS
     if event.kind in _RESULT_KINDS:
         return DiscordRoute.RESULTS
@@ -135,11 +137,23 @@ _COLOURS = {
 }
 
 
+_LINK_PREFIXES = ("Notion:", "Notion plan:", "Notion Notes:", "Notes:", "Linear:", "Prefect:", "Approval form:")
+
+
 def embed_payload(event: NotificationEvent) -> dict:
-    """Library-independent embed representation, kept small enough for Discord."""
+    """Library-independent embed representation, kept small enough for Discord.
+
+    ``steps`` become a numbered "次にやること" field; Notion / Linear / Notes links in ``details`` get their own
+    field so the place to act is visible at a glance."""
     route = route_event(event)
-    description = "\n".join(event.details)[:4000] or "詳細はリンク先を確認してください。"
+    links = [d for d in event.details if d.startswith(_LINK_PREFIXES) and "http" in d]
+    body = [d for d in event.details if d not in links]
+    description = "\n".join(body)[:4000] or "詳細はリンク先を確認してください。"
     fields = []
+    if event.steps:
+        fields.append({"name": "次にやること", "value": "\n".join(numbered(event.steps))[:1024], "inline": False})
+    if links:
+        fields.append({"name": "リンク", "value": "\n".join(links)[:1024], "inline": False})
     if event.flow_run_name:
         fields.append({"name": "Task / Run", "value": event.flow_run_name[:1024], "inline": True})
     if event.state_name:
@@ -186,6 +200,20 @@ class DiscordDelivery(BaseModel):
     message_id: str | None = None
     last_error: str | None = None
     controls_closed: bool = False
+    delivered_at: datetime | None = None
+    has_view: bool | None = None  # buttons attached on delivery (None: rows written before this was tracked)
+    superseded_linked: bool = False  # the closed approval message already points to its replacement
+
+
+def _channel_controls(event: NotificationEvent, route: DiscordRoute) -> NotificationEvent:
+    """Errors / logs never carry buttons; results carry at most Stop."""
+    if route in (DiscordRoute.ERRORS, DiscordRoute.LOGS) and (event.control_actions or event.control_task_id):
+        return event.model_copy(update={"control_actions": [], "control_task_id": None})
+    if route is DiscordRoute.RESULTS and set(event.control_actions) - {"stop"}:
+        actions = [a for a in event.control_actions if a == "stop"]
+        return event.model_copy(update={"control_actions": actions,
+                                        "control_task_id": event.control_task_id if actions else None})
+    return event
 
 
 class DiscordNotifier:
@@ -200,7 +228,8 @@ class DiscordNotifier:
 
     def send(self, event: NotificationEvent) -> None:
         key = event.stable_dedupe_key()
-        delivery = DiscordDelivery(dedupe_key=key, event=event, route=route_event(event))
+        route = route_event(event)
+        delivery = DiscordDelivery(dedupe_key=key, event=_channel_controls(event, route), route=route)
         self.store.insert_new(db.notifications_sent, key, delivery.model_dump(mode="json"))
 
     def pending(self, now: datetime | None = None) -> list[DiscordDelivery]:
@@ -330,21 +359,39 @@ class ApprovalView(discord.ui.View):
             self.add_item(ApprovalButton(service, request_id, action, disabled=disabled))
 
 
+ControlAction = Literal["stop", "resume", "cancel"]
+
+
 class DiscordControlInput:
-    """Phase 10 Stop / Resume of a research run: authorized user in the configured guild, any RA channel."""
+    """Phase 10 Stop / Resume / Cancel of a research run: authorized user in the configured guild; controls are
+    accepted in the approvals channel only (Stop also in results, where running research offers it)."""
 
     def __init__(self, store: Store, settings: DiscordSettings) -> None:
         self.store = store
         self.settings = settings
 
-    def submit(self, *, interaction_id: str, task_id: str, action: Literal["stop", "resume"], user_id: int,
-               guild_id: int | None, channel_id: int, user_is_bot: bool = False) -> InteractionResult:
+    def allowed(self, *, action: str, user_id: int, guild_id: int | None, channel_id: int,
+                user_is_bot: bool = False) -> InteractionResult | None:
+        """The authorization / channel check alone (also run before the Cancel confirmation is shown)."""
         if user_is_bot or user_id not in self.settings.authorized_user_ids:
             return InteractionResult.UNAUTHORIZED
         if guild_id != self.settings.guild_id:
             return InteractionResult.WRONG_GUILD
-        if channel_id not in {self.settings.channel_id(r) for r in DiscordRoute}:
+        channels = {self.settings.approval_channel_id}
+        if action == "stop":
+            channels.add(self.settings.results_channel_id)
+        if channel_id not in channels:
             return InteractionResult.WRONG_CHANNEL
+        return None
+
+    def submit(self, *, interaction_id: str, task_id: str, action: ControlAction, user_id: int,
+               guild_id: int | None, channel_id: int, user_is_bot: bool = False) -> InteractionResult:
+        if action not in ("stop", "resume", "cancel"):
+            return InteractionResult.UNKNOWN_REQUEST
+        refused = self.allowed(action=action, user_id=user_id, guild_id=guild_id, channel_id=channel_id,
+                               user_is_bot=user_is_bot)
+        if refused is not None:
+            return refused
         if self.store.get(db.research_controls, interaction_id):
             return InteractionResult.DUPLICATE
         from research_autopilot.research.models import ResearchControl
@@ -364,25 +411,141 @@ _CONTROL_TEXT = {
 }
 
 
+_CONTROL_ORDER = ("resume", "stop", "cancel")  # Resume left, Stop, Cancel right
+_CONTROL_LABELS = {"stop": "Stop", "resume": "Resume", "cancel": "Cancel"}
+_CONTROL_STYLES = {"stop": discord.ButtonStyle.danger, "resume": discord.ButtonStyle.primary,
+                   "cancel": discord.ButtonStyle.secondary}
+CANCEL_CONFIRM_TEXT = ("この研究タスクと未完了の子タスクの実行を打ち切り、Linear をまとめて Canceled にします。"
+                       "取り消せません。打ち切る場合は「打ち切りを確定」を押してください。")
+
+
 class ControlButton(discord.ui.Button):
-    def __init__(self, service: DiscordControlInput, task_id: str, action: Literal["stop", "resume"]) -> None:
-        super().__init__(label={"stop": "Stop", "resume": "Resume"}[action],
-                         style=discord.ButtonStyle.danger if action == "stop" else discord.ButtonStyle.primary,
-                         custom_id=f"ra:{action}:{task_id}")
+    def __init__(self, service: DiscordControlInput, task_id: str, action: ControlAction, *,
+                 disabled: bool = False) -> None:
+        super().__init__(label=_CONTROL_LABELS[action], style=_CONTROL_STYLES[action],
+                         custom_id=f"ra:{action}:{task_id}", disabled=disabled)
         self.service, self.task_id, self.action = service, task_id, action
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if self.action == "cancel":
+            # Cancel is irreversible: an ephemeral confirmation first; authorization is checked again on confirm.
+            refused = self.service.allowed(action="cancel", user_id=interaction.user.id,
+                                           guild_id=interaction.guild_id, channel_id=interaction.channel_id,
+                                           user_is_bot=interaction.user.bot)
+            if refused is not None:
+                await interaction.response.send_message(_CONTROL_TEXT.get(refused, "受け付けられませんでした。"),
+                                                        ephemeral=True)
+                return
+            await interaction.response.send_message(CANCEL_CONFIRM_TEXT, ephemeral=True,
+                                                    view=CancelConfirmView(self.service, self.task_id))
+            return
         result = self.service.submit(interaction_id=str(interaction.id), task_id=self.task_id, action=self.action,
                                      user_id=interaction.user.id, guild_id=interaction.guild_id,
                                      channel_id=interaction.channel_id, user_is_bot=interaction.user.bot)
         await interaction.response.send_message(_CONTROL_TEXT.get(result, "受け付けられませんでした。"), ephemeral=True)
 
 
+class CancelConfirmButton(discord.ui.Button):
+    def __init__(self, service: DiscordControlInput, task_id: str) -> None:
+        super().__init__(label="打ち切りを確定", style=discord.ButtonStyle.danger)
+        self.service, self.task_id = service, task_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        result = self.service.submit(interaction_id=str(interaction.id), task_id=self.task_id, action="cancel",
+                                     user_id=interaction.user.id, guild_id=interaction.guild_id,
+                                     channel_id=interaction.channel_id, user_is_bot=interaction.user.bot)
+        await interaction.response.send_message(_CONTROL_TEXT.get(result, "受け付けられませんでした。"), ephemeral=True)
+
+
+class CancelConfirmView(discord.ui.View):
+    """Ephemeral second step of Cancel (not persistent: an unanswered confirmation simply lapses)."""
+
+    def __init__(self, service: DiscordControlInput, task_id: str) -> None:
+        super().__init__(timeout=300)
+        self.add_item(CancelConfirmButton(service, task_id))
+
+
 class ControlView(discord.ui.View):
-    def __init__(self, service: DiscordControlInput, task_id: str, actions: list[str] | None = None) -> None:
+    def __init__(self, service: DiscordControlInput, task_id: str, actions: list[str] | None = None, *,
+                 disabled: bool = False) -> None:
         super().__init__(timeout=None)
-        for action in sorted(actions or ("resume", "stop"), key=("resume", "stop").index):  # Resume left, Stop right
-            self.add_item(ControlButton(service, task_id, action))
+        for action in sorted([a for a in (actions or ("resume", "stop")) if a in _CONTROL_ORDER],
+                             key=_CONTROL_ORDER.index):
+            self.add_item(ControlButton(service, task_id, action, disabled=disabled))
+
+
+def jump_url(settings: DiscordSettings, route: DiscordRoute, message_id: str) -> str:
+    return f"https://discord.com/channels/{settings.guild_id}/{settings.channel_id(route)}/{message_id}"
+
+
+def _sent_deliveries(store: Store) -> list[DiscordDelivery]:
+    out = []
+    for record in store.find(db.notifications_sent):
+        if "event" not in record:
+            continue
+        delivery = DiscordDelivery.model_validate(record)
+        if delivery.state is DeliveryState.SENT and delivery.message_id:
+            out.append(delivery)
+    return out
+
+
+_CLOSED_LABEL = {ApprovalStatus.STALE.value: "置き換え", ApprovalStatus.EXPIRED.value: "失効"}
+_CLOSED_REASON = {ApprovalStatus.STALE.value: "依頼の後に仕様（または対象）が変わりました",
+                  ApprovalStatus.EXPIRED.value: "承認の期限が切れました"}
+
+
+def approval_closure(store: Store, settings: DiscordSettings, raw: dict) -> tuple[str, bool] | None:
+    """Line appended to a replaced / expired approval message, and whether it already links the replacement.
+
+    The approval controller records which request replaced it (``_superseded_by``) in the request payload."""
+    status = raw.get("status")
+    if status not in _CLOSED_LABEL:
+        return None
+    payload = raw.get("payload") or {}
+    reason = _CLOSED_REASON[status] + (f"（{payload['withdrawn']}）" if payload.get("withdrawn") else "")
+    new_id = payload.get("_superseded_by")
+    if not new_id:
+        return f"{_CLOSED_LABEL[status]}: {reason}。新しい依頼が届きます（このメッセージのボタンは無効です）。", False
+    target = next((d for d in _sent_deliveries(store) if d.event.approval_request_id == new_id), None)
+    ref = jump_url(settings, target.route, target.message_id) if target else f"依頼 {new_id[:8]}"
+    return f"{_CLOSED_LABEL[status]}: {reason}。新しい依頼へ: {ref}", target is not None
+
+
+_TERMINAL_STAGES = {"done", "cancelled", "dead_letter"}
+_HALTED_STAGES = {"paused", "blocked", "awaiting_authorization", "awaiting_approval"}
+
+
+def _latest_stage(store: Store, task_id: str) -> str | None:
+    runs = store.find(db.workflow_runs, task_id=task_id)
+    if not runs:
+        return None
+    return max(runs, key=lambda r: str(r.get("created_at", ""))).get("stage")
+
+
+def control_deliveries_to_close(store: Store) -> list[tuple[DiscordDelivery, str]]:
+    """Stop / Resume / Cancel messages whose buttons no longer apply: a newer control message for the same task
+    was delivered, the run finished, or the run moved on (resumed after a Resume offer, halted after a Stop offer)."""
+    by_task: dict[str, list[DiscordDelivery]] = {}
+    for d in _sent_deliveries(store):
+        if (d.event.control_task_id and d.event.control_actions and not d.controls_closed
+                and not d.event.approval_request_id and d.has_view is not False
+                and d.route in (DiscordRoute.APPROVALS, DiscordRoute.RESULTS)):
+            by_task.setdefault(d.event.control_task_id, []).append(d)
+    out = []
+    for task_id, items in by_task.items():
+        items.sort(key=lambda d: d.delivered_at or d.next_attempt_at)
+        stage = _latest_stage(store, task_id)
+        for i, d in enumerate(items):
+            offers_wait = bool(set(d.event.control_actions) & {"resume", "cancel"})
+            if i < len(items) - 1:
+                out.append((d, "a newer control message was delivered"))
+            elif stage in _TERMINAL_STAGES:
+                out.append((d, f"run finished ({stage})"))
+            elif stage and offers_wait and stage not in _HALTED_STAGES:
+                out.append((d, f"run resumed ({stage})"))
+            elif stage and not offers_wait and stage in _HALTED_STAGES:
+                out.append((d, f"run halted ({stage})"))
+    return out
 
 
 class DiscordGatewayClient(discord.Client):
@@ -417,7 +580,8 @@ class DiscordGatewayClient(discord.Client):
                 req_id = delivery.event.approval_request_id
                 if delivery.state is DeliveryState.SENT and delivery.message_id and req_id:
                     self.add_view(ApprovalView(self.approvals, req_id), message_id=int(delivery.message_id))
-                elif delivery.state is DeliveryState.SENT and delivery.message_id and delivery.event.control_task_id:
+                elif (delivery.state is DeliveryState.SENT and delivery.message_id and delivery.event.control_task_id
+                      and not delivery.controls_closed):
                     self.add_view(ControlView(self.controls, delivery.event.control_task_id,
                                               delivery.event.control_actions), message_id=int(delivery.message_id))
             self._views_restored = True
@@ -470,6 +634,7 @@ class DiscordGatewayClient(discord.Client):
                 elif delivery.event.control_task_id and delivery.route is not DiscordRoute.LOGS:
                     view = ControlView(self.controls, delivery.event.control_task_id, delivery.event.control_actions)
                 message = await channel.send(embed=_embed(delivery.event, marker), view=view)
+                delivery = delivery.model_copy(update={"has_view": view is not None, "delivered_at": utcnow()})
             except Exception as exc:  # discord.py handles 429; keep other failures retryable
                 attempts = delivery.attempts + 1
                 delivery = delivery.model_copy(update={
@@ -492,24 +657,51 @@ class DiscordGatewayClient(discord.Client):
 
     @tasks.loop(seconds=15)
     async def reconcile_approvals(self) -> None:
+        """Close buttons that no longer apply (UX policy 1.4): decided / stale / expired approval requests (a
+        replaced or expired request is edited to point to its replacement) and Stop / Resume / Cancel views whose
+        run has moved on (newer control message for the task, resumed, finished)."""
         if not self.is_ready():
             return
-        for record in self.notifier.store.find(db.notifications_sent):
-            if "event" not in record:
-                continue
-            delivery = DiscordDelivery.model_validate(record)
+        store = self.notifier.store
+        for delivery in _sent_deliveries(store):
             req_id = delivery.event.approval_request_id
-            if not req_id or not delivery.message_id or delivery.controls_closed:
+            if not req_id or (delivery.controls_closed and delivery.superseded_linked):
                 continue
-            raw = self.notifier.store.get(db.approval_requests, req_id)
+            raw = store.get(db.approval_requests, req_id)
             if not raw or raw.get("status") == ApprovalStatus.PENDING.value:
                 continue
-            channel = self.get_channel(self.settings.approval_channel_id)
+            closure = approval_closure(store, self.settings, raw)
+            if delivery.controls_closed and closure is None:
+                continue
+            if delivery.controls_closed and not closure[1]:
+                continue  # already says "a new request follows"; edit again once the replacement is delivered
+            channel = self.get_channel(self.settings.channel_id(delivery.route))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            edit: dict = {}
+            if closure is not None:
+                event = delivery.event.model_copy(update={"details": [*delivery.event.details, closure[0]],
+                                                          "steps": []})
+                edit["embed"] = _embed(event, _delivery_marker(delivery.dedupe_key))
+            if delivery.has_view is not False:  # never add (disabled) buttons to a message that had none
+                edit["view"] = ApprovalView(self.approvals, req_id, disabled=True)
+            try:
+                if edit:
+                    message = await channel.fetch_message(int(delivery.message_id))
+                    await message.edit(**edit)
+            except (discord.NotFound, discord.Forbidden):
+                pass
+            else:
+                self.notifier.save(delivery.model_copy(update={
+                    "controls_closed": True, "superseded_linked": closure is None or closure[1]}))
+        for delivery, _why in control_deliveries_to_close(store):
+            channel = self.get_channel(self.settings.channel_id(delivery.route))
             if not isinstance(channel, discord.TextChannel):
                 continue
             try:
                 message = await channel.fetch_message(int(delivery.message_id))
-                await message.edit(view=ApprovalView(self.approvals, req_id, disabled=True))
+                await message.edit(view=ControlView(self.controls, delivery.event.control_task_id,
+                                                    delivery.event.control_actions, disabled=True))
             except (discord.NotFound, discord.Forbidden):
                 pass
             else:

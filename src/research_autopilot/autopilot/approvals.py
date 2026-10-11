@@ -66,11 +66,19 @@ class ApprovalController:
     def request(self, *, kind: ApprovalKind, issue, root_task_id: str, spec_hash: str, title: str,
                 what_changes: list[str], diff: list[str], budget_summary: str, payload: dict | None = None,
                 dedupe: str | None = None) -> ApprovalRequest:
-        """Idempotent per (kind, task, spec hash, dedupe): a repeated call returns the existing request."""
-        key = f"{kind.value}:{issue.identifier}:{spec_hash}:{dedupe or ''}"
-        for r in self.store.find(db.approval_requests, task_id=issue.identifier):
-            if r.get("payload", {}).get("_dedupe") == key and r["status"] == ApprovalStatus.PENDING.value:
+        """Idempotent per (kind, task, spec hash, dedupe) while the request is pending: a repeated call returns it.
+
+        Once that request was decided or closed (budget hit again at the same stage, onboarding re-run after a
+        rejection or expiry), a new version with a sequence-suffixed key is created -- returning the decided
+        request would leave the caller waiting forever.  Older stale / expired requests of the same task and
+        kind record the new request as their replacement (``_superseded_by``) so their messages can point to it."""
+        base = f"{kind.value}:{issue.identifier}:{spec_hash}:{dedupe or ''}"
+        same = [r for r in self.store.find(db.approval_requests, task_id=issue.identifier)
+                if r.get("payload", {}).get("_dedupe_base", r.get("payload", {}).get("_dedupe")) == base]
+        for r in same:
+            if r["status"] == ApprovalStatus.PENDING.value:
                 return ApprovalRequest.model_validate(r)
+        key = base if not same else f"{base}#{len(same) + 1}"
         missing = self.ops.missing_states(issue.team_id)
         if self.mode == "discord":
             missing = [state for state in missing if state != "Approved"]
@@ -79,12 +87,14 @@ class ApprovalController:
         req = ApprovalRequest(kind=kind, task_id=issue.identifier, root_task_id=root_task_id, spec_hash=spec_hash,
                               title=title, what_changes=what_changes, diff_from_original=diff,
                               budget_summary=budget_summary, linear_state_before=issue.state_name,
-                              payload={**(payload or {}), "_dedupe": key})
+                              payload={**(payload or {}), "_dedupe": key, "_dedupe_base": base,
+                                       "_version": len(same) + 1})
         if not self.store.insert_new(db.approval_requests, req.request_id, req.model_dump(mode="json"),
                                      task_id=req.task_id, status=req.status.value, dedupe_key=key):
             existing = [r for r in self.store.find(db.approval_requests, task_id=issue.identifier)
                         if r["payload"].get("_dedupe") == key]
             return ApprovalRequest.model_validate(existing[0])
+        self._link_superseded(req)
         self.ops.set_state(issue, AWAITING, f"approval request {req.request_id} ({kind.value})")
         req.autopilot_set_awaiting_at = utcnow()
         if self.mode == "linear+form" and self.channel is not None:
@@ -177,8 +187,21 @@ class ApprovalController:
     def pending(self) -> list[ApprovalRequest]:
         return [ApprovalRequest.model_validate(r) for r in self.store.find(db.approval_requests, status="pending")]
 
+    def _link_superseded(self, new: ApprovalRequest) -> None:
+        for r in self.store.find(db.approval_requests, task_id=new.task_id):
+            if (r["request_id"] != new.request_id and r.get("kind") == new.kind.value
+                    and r["status"] in (ApprovalStatus.STALE.value, ApprovalStatus.EXPIRED.value)
+                    and not r.get("payload", {}).get("_superseded_by")):
+                old = ApprovalRequest.model_validate(r)
+                old.payload["_superseded_by"] = new.request_id
+                self._save(old)
+                new.payload.setdefault("_supersedes", old.request_id)
+        if "_supersedes" in new.payload:
+            self._save(new)
+
     def _close(self, req: ApprovalRequest, status: ApprovalStatus, note: str) -> CheckResult:
         req.status = status
+        req.payload["_closed_note"] = note[:300]
         self._save(req)
         self.notify(req, note)
         return CheckResult(status, None, note)

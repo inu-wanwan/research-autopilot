@@ -30,6 +30,11 @@ class EventKind(StrEnum):
     PROPOSAL_GENERATED = "proposal_generated"
 
 
+def numbered(steps: list[str]) -> list[str]:
+    """``1. ...`` lines; callers write the steps without numbers."""
+    return [f"{i}. {s}" for i, s in enumerate(steps, start=1)]
+
+
 class NotificationEvent(BaseModel):
     kind: EventKind
     flow_name: str
@@ -62,6 +67,9 @@ class NotificationEvent(BaseModel):
         if self.ui_url:
             lines.append(self.ui_url)
         lines += self.details
+        if self.steps:
+            lines.append("次にやること:")
+            lines += numbered(self.steps)
         return "\n".join(lines)
 
     def stable_dedupe_key(self) -> str:
