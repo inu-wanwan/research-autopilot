@@ -25,6 +25,15 @@ def codes(m):
     return [b.code for b in m.block_reasons]
 
 
+def test_phase3_prompts_keep_implementation_and_experiment_roles_separate():
+    from research_autopilot.implementation.prompts import IMPLEMENTER_RULES, REVIEWER_RULES
+
+    assert "Real research outputs are" in IMPLEMENTER_RULES and "validated by Phase 4" in IMPLEMENTER_RULES
+    assert "implementation review before Phase 4" in REVIEWER_RULES
+    assert "Do not require real result JSON/CSV" in REVIEWER_RULES
+    assert "bounded technical implementation work" in REVIEWER_RULES
+
+
 # ---------------------------------------------------------------- classification / routing
 
 

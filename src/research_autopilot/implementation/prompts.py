@@ -20,6 +20,10 @@ Hard rules (violations are detected automatically and stop the run):
 - Do not download or install anything; no network access is assumed.
 - Write or update automated tests that check the acceptance criteria where they are testable.
 - Keep the change minimal and focused on the task; respect NON-GOALS.
+- Resolve bounded technical details by inspecting the repository and installed APIs. Selecting an API supported by
+  an already-approved dependency, recording exact runtime versions/settings, and adding tests for that contract are
+  implementation work, not a reason to invent a researcher approval. Stop only when the available implementation
+  would require changing a scientific invariant, metric, acceptance criterion, or approved budget.
 - CATALOG ARTIFACTS (catalog_artifacts) are verified, read-only research inputs: read them from the listed
   files (at run time the manifest path is in the RA_CATALOG_INPUTS environment variable); never modify,
   move, regenerate or re-derive them, and do not hard-code their absolute paths.
@@ -45,7 +49,9 @@ EXPERIMENT DEFINITION SCHEMA. It tells the experiment runner exactly how to run 
   check every record of a list (each record must satisfy the check); a pointer to a list or object fails.
 - resources (cpu, memory_gb, gpu, walltime_minutes): give a value, "required" or "estimated", the rationale
   and a confidence level. Do not invent hard requirements; mark estimates as estimates.
-- Do not run the actual research calculation; only implement it and make it runnable.
+- Do not run the actual research calculation; only implement it and make it runnable. Real research outputs are
+  produced and validated by Phase 4, so do not add fabricated or precomputed result files merely to make the
+  implementation review appear complete.
 """
 
 REPAIR_RULES = """REPAIR MODE. The experiment runner reported a failure of the previously approved commit (FAILURE REPORT below).
@@ -73,6 +79,19 @@ Verdict:
 List every scientific invariant the change violates in invariant_violations (empty if none).
 List claims that the automated tests cannot prove (e.g. scientific correctness of a formula) in
 unverified_items. Respond only with JSON matching the given schema.
+
+Role boundary:
+- This is an implementation review before Phase 4. The Implementer is explicitly forbidden from running the actual
+  research calculation. Do not require real result JSON/CSV, completed experiment outputs, or empirical acceptance
+  results for pass. Instead, verify that experiment.json gives Phase 4 a complete executable and validation contract;
+  put facts that only the real run can establish in unverified_items.
+- Repository/API inspection, choosing a supported API from an approved dependency, and recording exact versions and
+  settings are bounded technical implementation work. Do not demand researcher approval for them unless the choice
+  changes an explicit scientific invariant, metric, acceptance criterion, or budget. A conservative numerical setting
+  is not by itself an unapproved scientific change when the specification leaves the implementation setting open.
+- Judge the submitted task specification, not an assumed predecessor implementation. If the base repository is empty
+  and the task explicitly asks for a self-contained implementation, creating the runner and validation contract is
+  expected rather than evidence that the task is infeasible.
 """
 
 
