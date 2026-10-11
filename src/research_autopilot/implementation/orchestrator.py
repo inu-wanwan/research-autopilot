@@ -49,6 +49,7 @@ from research_autopilot.implementation.prompts import implementer_prompt
 from research_autopilot.implementation.reviewer import ReviewerRunner, review
 from research_autopilot.implementation.worktree import GitError, LockHeld, WorktreeManager, parse_scope
 from research_autopilot.models import ExecutionHandoff, TaskSpec, new_id
+from research_autopilot.notifications import EventKind, NotificationEvent, notify_once
 from research_autopilot.storage.artifacts import write_json
 from research_autopilot.storage.db import Store
 from research_autopilot.tasks.errors import ConnectorError, TransientConnectorError
@@ -71,6 +72,7 @@ class ImplDeps:
     backends: dict[str, CodingBackend]
     reviewers: dict[str, ReviewerRunner]
     rules: Rules = field(default_factory=Rules)
+    notifier: object | None = None
 
 
 @dataclass
@@ -428,6 +430,8 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
         if escalation_reason:
             m.event("escalation", escalation_reason)
         _save(deps, m, run_dir)
+        _progress(deps, m, run_dir,
+                  f"implementer attempt {number} started ({choice.backend}/{choice.model})")
 
         attempt.result = _run_with_fallback(deps, m, task, wt, attempt, requests, run_dir, started, rctx)
         choice = attempt.choice  # may have switched backend
@@ -461,6 +465,9 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
             max_budget_usd=min(s.claude_max_budget_usd_per_call,
                                max(s.max_cost_usd_per_run - m.cost_usd_known - m.inherited_cost_usd, 0.01))
             if choice.backend == "claude" else None,
+            on_progress=lambda message: _progress(
+                deps, m, run_dir, f"implementer attempt {attempt.number}: {message}"
+            ),
         )
 
         def on_start(pid: int) -> None:
@@ -474,6 +481,8 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
         m.event("backend", f"attempt {attempt.number} {choice.backend}/{choice.model}: {result.status}"
                 + (f" ({result.error})" if result.error else ""))
         _save(deps, m, run_dir)
+        _progress(deps, m, run_dir,
+                  f"implementer attempt {attempt.number} finished with {result.status}")
 
         if result.status in ("completed", "failed"):
             return result  # "failed" = agent ran but reported an error; the review decides
@@ -522,11 +531,12 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     s = deps.settings
     m.state = RunState.REVIEWING
     _save(deps, m, run_dir)
+    _progress(deps, m, run_dir, f"review for attempt {attempt.number} started")
     choice = routing.reviewer_choice(s, m.assessment)
     other = s.fallback_backend if s.fallback_backend and s.fallback_backend != choice.backend else None
     fallback = (routing.choose(s, other, choice.tier), deps.reviewers[other]) if other and other in deps.reviewers else None
     outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallback,
-                     on_event=lambda msg: m.event("review", msg),
+                     on_event=lambda msg: _progress(deps, m, run_dir, msg),
                      extra_checks=lambda: [_experiment_check(task, wt)],
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,
                      extra_instructions=_repair_review_note(rctx) if rctx else "")
@@ -535,6 +545,8 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     m.changed_files = outcome.deterministic.changed_files
     m.event("review", f"attempt {attempt.number}: {outcome.verdict} ({outcome.reason[:200]})")
     _save(deps, m, run_dir)
+    _progress(deps, m, run_dir,
+              f"review for attempt {attempt.number} finished with {outcome.verdict}")
     return outcome
 
 
@@ -640,6 +652,31 @@ def _save(deps: ImplDeps, m: ImplementationManifest, run_dir: Path) -> None:
     m.artifact_paths["manifest"] = str(path)
     write_json(path, m)
     deps.store.save_implementation(m)
+
+
+def _progress(deps: ImplDeps, m: ImplementationManifest, run_dir: Path, message: str) -> None:
+    """Persist operational progress and mirror its safe summary to Discord logs."""
+    m.event("progress", message[:500])
+    _save(deps, m, run_dir)
+    if deps.notifier is None:
+        return
+    sequence = len(m.events)
+    try:
+        notify_once(
+            deps.store,
+            NotificationEvent(
+                kind=EventKind.PHASE_TRANSITION,
+                flow_name="implement-task",
+                flow_run_name=m.task_id,
+                flow_run_id=m.flow_run_id or m.phase3_run_id,
+                state_name=m.state.value,
+                details=[message[:500]],
+                dedupe_key=f"implementation-progress:{m.phase3_run_id}:{sequence}",
+            ),
+            deps.notifier,
+        )
+    except Exception:  # noqa: BLE001 - observability must not change workflow outcome
+        pass
 
 
 # ---------------------------------------------------------------- experiment spec

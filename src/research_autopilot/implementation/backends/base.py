@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -47,6 +48,9 @@ class BackendRequest:
     timeout_seconds: int
     log_path: Path
     max_budget_usd: float | None = None
+    # Safe, already-redacted progress summaries for operational logs. Raw CLI
+    # output remains in log_path and must never be forwarded by this callback.
+    on_progress: Callable[[str], None] | None = None
 
 
 class CodingBackend(Protocol):
@@ -85,23 +89,62 @@ def sanitized_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def run_process(cmd: list[str], cwd: Path, stdin_text: str, timeout: int, log_path: Path,
-                on_start: Callable[[int], None], env: dict[str, str] | None = None) -> ProcessOutcome:
+                on_start: Callable[[int], None], env: dict[str, str] | None = None,
+                on_stdout: Callable[[str], None] | None = None) -> ProcessOutcome:
     """Run a CLI in its own process group; on timeout the whole group is killed
-    and reaped before returning, so no orphan keeps editing the worktree."""
+    and reaped before returning, so no orphan keeps editing the worktree.
+
+    Stdout is persisted line-by-line while the process runs. ``on_stdout`` may
+    inspect each line, but callback failures are isolated from the coding job.
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
-    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True, env=env if env is not None else sanitized_env())
-    on_start(proc.pid)
-    timed_out = False
-    try:
-        out, err = proc.communicate(stdin_text, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        terminate_group(proc.pid)
-        out, err = proc.communicate()
-    with log_path.open("w", encoding="utf-8") as f:
-        f.write(f"$ {' '.join(cmd[:1])} ... (cwd={cwd})\n--- stdout ---\n{out}\n--- stderr ---\n{err}\n")
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    with log_path.open("w", encoding="utf-8", buffering=1) as log:
+        log.write(f"$ {' '.join(cmd[:1])} ... (cwd={cwd})\n--- stdout ---\n")
+        proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, bufsize=1, start_new_session=True,
+                                env=env if env is not None else sanitized_env())
+        on_start(proc.pid)
+
+        def drain_stdout() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                stdout_parts.append(line)
+                log.write(line)
+                if on_stdout is not None:
+                    try:
+                        on_stdout(line)
+                    except Exception:  # noqa: BLE001 - progress must not fail the coding job
+                        pass
+
+        def drain_stderr() -> None:
+            assert proc.stderr is not None
+            stderr_parts.extend(proc.stderr)
+
+        stdout_thread = threading.Thread(target=drain_stdout, name=f"backend-stdout-{proc.pid}", daemon=True)
+        stderr_thread = threading.Thread(target=drain_stderr, name=f"backend-stderr-{proc.pid}", daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(stdin_text)
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            terminate_group(proc.pid)
+            proc.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+        err = "".join(stderr_parts)
+        log.write(f"\n--- stderr ---\n{err}\n")
+    out = "".join(stdout_parts)
     return ProcessOutcome(pid=proc.pid, exit_code=proc.returncode, stdout=out or "", stderr=err or "",
                           timed_out=timed_out, duration=time.monotonic() - t0)
 

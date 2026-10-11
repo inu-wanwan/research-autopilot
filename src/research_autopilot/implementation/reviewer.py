@@ -159,6 +159,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
     candidates = [(choice, runner)] + ([fallback] if fallback else [])
     for i, (ch, run) in enumerate(candidates):
         for attempt in range(2):  # one retry for invalid JSON
+            on_event(f"reviewer {ch.backend}/{ch.model} started (try {attempt + 1})")
             result, parsed = run(task, ch, prompt, review_schema(), log_dir / f"review-{ch.backend}-{i}-{attempt}.log")
             usage = usage.add(result.usage)
             if result.cost_usd is None:
@@ -170,6 +171,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
                 break
             if parsed is not None:
                 used = ch
+                on_event(f"reviewer {ch.backend}/{ch.model} completed")
                 break
             on_event(f"reviewer {ch.backend}/{ch.model} returned invalid review JSON (attempt {attempt + 1})")
         if parsed is not None:

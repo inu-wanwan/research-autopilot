@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -8,7 +9,8 @@ import pytest
 from phase2_fakes import make_page
 from phase3_fakes import BAD_TEST, CONFIG, GOOD_CODE, GOOD_TEST, SECTIONS, code_review, experiment_def, git, make_impl_deps
 from research_autopilot.implementation import routing
-from research_autopilot.implementation.backends.base import classify_error_text, pid_alive
+from research_autopilot.implementation.backends.base import classify_error_text, pid_alive, run_process
+from research_autopilot.implementation.backends.codex import progress_summary
 from research_autopilot.implementation.classify import classify
 from research_autopilot.implementation.config import Phase3Settings
 from research_autopilot.implementation.models import Phase4Handoff, RunState
@@ -32,6 +34,51 @@ def test_phase3_prompts_keep_implementation_and_experiment_roles_separate():
     assert "implementation review before Phase 4" in REVIEWER_RULES
     assert "Do not require real result JSON/CSV" in REVIEWER_RULES
     assert "bounded technical implementation work" in REVIEWER_RULES
+
+
+def test_process_output_is_persisted_incrementally_and_reported(tmp_path):
+    progress = []
+    log = tmp_path / "backend.log"
+    outcome = run_process(
+        [sys.executable, "-c", "print('first', flush=True); print('second', flush=True)"],
+        tmp_path, "", 30, log, lambda pid: None, on_stdout=progress.append,
+    )
+    assert outcome.exit_code == 0
+    assert progress == ["first\n", "second\n"]
+    assert "--- stdout ---\nfirst\nsecond\n" in log.read_text()
+
+
+def test_codex_progress_summary_never_forwards_raw_commands_or_agent_text():
+    raw = json.dumps({"type": "item.started", "item": {"type": "command_execution",
+                     "command": "find /Users/alice -name '*SECRET*' -print"}})
+    summary = progress_summary(raw)
+    assert summary == "repository inspection started"
+    assert "alice" not in summary and "SECRET" not in summary
+    assert progress_summary(json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "private chain of thought"}})) is None
+
+
+def test_implementation_progress_is_sent_to_logs_notifier(tmp_path):
+    class Recorder:
+        persistent = True
+
+        def __init__(self):
+            self.events = []
+
+        def send(self, event):
+            self.events.append(event)
+
+    deps, _, rec, _, _ = make_impl_deps(
+        tmp_path, [{**GOOD, "progress": ["repository inspection started", "tests completed, exit 0"]}]
+    )
+    recorder = Recorder()
+    deps.notifier = recorder
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    details = [event.details[0] for event in recorder.events]
+    assert m.state is RunState.COMPLETED
+    assert any("repository inspection started" in detail for detail in details)
+    assert any("review for attempt 1 finished with pass" in detail for detail in details)
+    assert all(event.kind.value == "phase_transition" for event in recorder.events)
 
 
 # ---------------------------------------------------------------- classification / routing

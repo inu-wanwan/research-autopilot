@@ -36,6 +36,7 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     ops = LinearOps(linear, plan.store, test_only=s5.test_only, write_enabled=s5.write_enabled and not dry_run)
     channel = PrefectConfirmationChannel(s5.confirm_deployment, s5.prefect_ui_url)
     notifier = get_notifier(store=plan.store)
+    impl.notifier = notifier
     approvals = ApprovalController(plan.store, ops, channel if s5.approval_mode == "linear+form" else None,
                                    notify=lambda req, msg: notify_approval(plan.store, notifier, req, msg, "https://linear.app",
                                                                           channel.url(req.confirmation_ref)),

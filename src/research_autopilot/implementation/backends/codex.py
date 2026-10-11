@@ -46,7 +46,8 @@ class CodexBackend:
         if extra_args:
             cmd = cmd[:-1] + extra_args + ["-"]
         out = run_process(cmd, Path(request.task.worktree_path), request.prompt, request.timeout_seconds,
-                          request.log_path, on_start)
+                          request.log_path, on_start,
+                          on_stdout=(lambda line: _forward_progress(line, request.on_progress)))
         usage, message, errors = parse_events(out.stdout)
         res = dict(backend="codex", model=request.choice.model, exit_code=out.exit_code, summary=message[:4000],
                    usage=usage, cost_usd=None, pid=out.pid, started_at=started, finished_at=utcnow(),
@@ -79,6 +80,49 @@ def parse_events(stdout: str) -> tuple[Usage, str, list[str]]:
             err = e.get("error") or {}
             errors.append(str(err.get("message") if isinstance(err, dict) else err or e.get("message", ""))[:500])
     return usage, message, errors
+
+
+def progress_summary(line: str) -> str | None:
+    """Return a secret-safe operational summary for one Codex JSONL event.
+
+    Raw commands, command output and agent messages are deliberately omitted.
+    """
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    event_type = event.get("type")
+    item = event.get("item") or {}
+    item_type = item.get("type")
+    if item_type == "command_execution" and event_type in {"item.started", "item.completed"}:
+        command = str(item.get("command", "")).lower()
+        if "pytest" in command or "unittest" in command:
+            activity = "tests"
+        elif any(token in command for token in ("git status", "git diff", "git log", "git show")):
+            activity = "Git inspection"
+        elif any(token in command for token in ("rg ", "find ", "sed ", "awk ", "jq ")):
+            activity = "repository inspection"
+        elif any(token in command for token in ("uv sync", "uv add", "pip install")):
+            activity = "dependency setup"
+        else:
+            activity = "workspace command"
+        if event_type == "item.started":
+            return f"{activity} started"
+        status = str(item.get("status") or "completed")
+        exit_code = item.get("exit_code")
+        suffix = f", exit {exit_code}" if exit_code is not None else ""
+        return f"{activity} {status}{suffix}"
+    if item_type == "file_change" and event_type == "item.completed":
+        changes = item.get("changes") or []
+        names = [Path(str(change.get("path", ""))).name for change in changes[:5] if change.get("path")]
+        files = f": {', '.join(names)}" if names else ""
+        return f"file changes completed ({len(changes)} files){files}"
+    return None
+
+
+def _forward_progress(line: str, callback: Callable[[str], None] | None) -> None:
+    if callback is not None and (summary := progress_summary(line)) is not None:
+        callback(summary)
 
 
 def _out(cmd: list[str]) -> str:

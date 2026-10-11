@@ -100,6 +100,9 @@ class FakeBackend:
         self.calls.append(request)
         item = self.script.pop(0)
         on_start(item.get("pid", 999999))
+        for message in item.get("progress", []):
+            if request.on_progress is not None:
+                request.on_progress(message)
         wt = Path(request.task.worktree_path)
         for rel, content in item.get("files", {}).items():
             (wt / rel).parent.mkdir(parents=True, exist_ok=True)
