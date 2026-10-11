@@ -192,6 +192,10 @@ def discover_and_build(manager, parent_bundle, parent_execution_run_id: str, *,
         if not spec.acceptance_criteria:
             problems.append(DAGProblem(code="missing_acceptance_criteria", task_id=bundle.issue.identifier,
                                        message="canonical Acceptance Criteria section is required"))
+        if not spec.file_scope or not spec.file_scope.strip():
+            # Phase 3 refuses to implement without it; fail before any paid planning call.
+            problems.append(DAGProblem(code="missing_allowed_files", task_id=bundle.issue.identifier,
+                                       message="canonical Allowed files section is required"))
         if not spec.repository:
             near = [h for h in (spec.other_sections or {}) if "repositor" in h.lower()]
             hint = (f"; found non-canonical heading(s) {near}, add a 'Repository' heading with the registry key"

@@ -435,3 +435,14 @@ def test_non_canonical_repository_heading_is_named_in_the_block_reason(tmp_path)
     dag = discover_and_build(deps.plan.manager, bundle, "")
     problem = next(p for p in dag.problems if p.code == "invalid_repository_mapping")
     assert "Repository / execution environment" in problem.message
+
+
+def test_missing_allowed_files_is_blocked_before_paid_planning(tmp_path):
+    deps, _, notion, _, child_pages = _parent_fixture(tmp_path, count=1)
+    page = notion.pages[child_pages[0]]
+    notion.pages[page.page_id] = page.model_copy(
+        update={"sections": {k: v for k, v in page.sections.items() if k != "file_scope"}})
+    dag = discover_and_build(deps.plan.manager, deps.plan.manager.load("INU-900"), "")
+    assert any(p.code == "missing_allowed_files" and p.task_id == "INU-901" for p in dag.problems)
+    poll(deps)
+    assert deps.store.find(db.execution_runs, task_id="INU-901") == []
