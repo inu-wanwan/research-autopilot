@@ -128,6 +128,45 @@ class PlannedTask(BaseModel):
     file_scope: list[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------- LLM-facing (strict JSON schema: no free dicts)
+
+
+class TaskParameter(BaseModel):
+    name: str = Field(description="condition name from SCOPE.conditions")
+    values: list[str]
+
+
+class PlannedTaskOut(BaseModel):
+    key: str
+    title: str
+    kind: Literal["implementation", "experiment", "analysis"]
+    objective: str
+    specification: str
+    acceptance_criteria: list[str]
+    depends_on: list[str]
+    parameters: list[TaskParameter]
+    produces: list[str]
+    consumes: list[str]
+    estimate_cpu_hours: float
+    estimate_api_usd: float
+    decision_point: bool
+    evidence_ids: list[str]
+    repository: str | None
+    file_scope: list[str]
+
+    def to_task(self) -> PlannedTask:
+        data = self.model_dump(exclude={"parameters"})
+        params: dict[str, list[str]] = {}
+        for p in self.parameters:
+            params.setdefault(p.name, []).extend(p.values)
+        return PlannedTask(**data, parameters=params)
+
+    @classmethod
+    def of(cls, t: PlannedTask) -> "PlannedTaskOut":
+        return cls(**t.model_dump(exclude={"parameters"}),
+                   parameters=[TaskParameter(name=k, values=v) for k, v in t.parameters.items()])
+
+
 class PlanStatus(StrEnum):
     DRAFT = "draft"
     NEEDS_INPUT = "needs_input"       # blocking scientific questions; no approval can be requested
@@ -199,6 +238,35 @@ class EvaluationDecision(BaseModel):
     proposed_budget: BudgetItem | None = None                                # scope_change: new budget limits
     conclusion: str = ""                                                     # complete / stop: what the results show
     gate_problems: list[str] = Field(default_factory=list)     # deterministic scope / budget gate findings
+
+
+class CriterionAssessment(BaseModel):
+    criterion: str
+    status: Literal["met", "not_met", "insufficient", "not_assessable"]
+    evidence: list[str]
+
+
+class EvaluationOut(BaseModel):
+    """What the Evaluator LLM returns (strict schema); converted to ``EvaluationDecision``."""
+
+    action: Literal["continue", "complete", "stop", "scope_change"]
+    rationale: str
+    evidence: list[str]
+    criteria: list[CriterionAssessment]
+    new_tasks: list[PlannedTaskOut]
+    scope_change: list[str]
+    progress: bool
+    limitations: list[str]
+    proposed_conditions: list[ConditionBound]
+    proposed_budget: BudgetItem | None
+    conclusion: str
+
+    def to_decision(self) -> "EvaluationDecision":
+        return EvaluationDecision(**self.model_dump(exclude={"criteria", "new_tasks", "proposed_conditions",
+                                                             "proposed_budget"}),
+                                  criteria=[c.model_dump() for c in self.criteria],
+                                  new_tasks=[t.to_task() for t in self.new_tasks],
+                                  proposed_conditions=self.proposed_conditions, proposed_budget=self.proposed_budget)
 
 
 class ResearchCycle(BaseModel):

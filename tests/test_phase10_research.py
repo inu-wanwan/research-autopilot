@@ -212,8 +212,8 @@ def test_multiple_cycles_inside_the_approved_scope_then_completion(tmp_path):
 
 
 def test_dependent_tasks_get_linear_blocked_by_edges(tmp_path):
-    from research_fakes import ScriptedResearchLlm, planner
-    plan = planner.PlanDraft(rationale="r", tasks=[task("T1"), task("T2", ("1.5",), deps=("T1",), kind="analysis")],
+    from research_fakes import ScriptedResearchLlm, draft
+    plan = draft(rationale="r", tasks=[task("T1"), task("T2", ("1.5",), deps=("T1",), kind="analysis")],
                              replanning_rules=["r"])
     deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(plans=[plan],
                                                                                               decisions=[complete]))
@@ -346,3 +346,63 @@ def test_authorization_versions_supersede_each_other(tmp_path):
     poll(deps)
     auths = [ResearchAuthorization.model_validate(r) for r in deps.store.find(db.authorizations, root_task_id="INU-900")]
     assert [a.kind for a in auths] == ["research_scope"] and auths[0].scope["primary_metric"]["value"]
+
+
+def test_planner_questions_never_block_only_missing_required_conditions_do(tmp_path):
+    from research_autopilot.research.models import OpenQuestion
+    noisy = scope(open_questions=[OpenQuestion(field="research_authorization", blocking=True,
+                                               question="the scope must be formally approved"),
+                                  OpenQuestion(field="initial_sample_points", blocking=True,
+                                               question="initial points are left to RA")])
+    deps, linear, notion, writer, llm = _build(tmp_path, llm=ScriptedResearchLlm(scope_answer=noisy))
+    poll(deps)
+    [plan] = workflow.plans(deps.store, "INU-900")
+    assert plan.status is PlanStatus.PENDING_APPROVAL and plan.scope.blocking() == []
+    assert {q.field for q in plan.scope.open_questions} >= {"research_authorization", "initial_sample_points"}
+
+
+def test_resume_on_a_blocked_research_run_restarts_planning(tmp_path):
+    sections = {k: v for k, v in RESEARCH_SECTIONS.items() if k != "budget"}
+    deps, linear, notion, writer, llm = _build(tmp_path, sections=sections)
+    poll(deps)
+    assert _run(deps).stage is WorkflowStage.BLOCKED
+    sent = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r and r["event"]["flow_name"] == "research"]
+    assert sent and all(e.get("control_task_id") is None for e in sent)  # no Stop / Resume on a needs-input notice
+    _edit_spec(notion, budget=RESEARCH_SECTIONS["budget"])
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    run = _run(deps)
+    assert run.stage is WorkflowStage.AWAITING_AUTHORIZATION and [p.version for p in workflow.plans(deps.store, "INU-900")] == [1, 2]
+    assert all(c.applied for c in orchestration.controls(deps.store, "INU-900"))
+
+
+def test_every_llm_output_type_is_valid_for_the_strict_json_schema():
+    from agents import AgentOutputSchema
+
+    from research_autopilot.research.models import EvaluationOut, ResearchScope
+    from research_autopilot.research.planner import PlanDraft
+    for t in (ResearchScope, PlanDraft, EvaluationOut):
+        AgentOutputSchema(t, strict_json_schema=True)
+
+
+def test_range_bounds_are_read_from_the_quote_and_unbounded_ranges_block():
+    from phase2_fakes import make_issue, make_page
+
+    from research_autopilot.models import TaskSpec
+    spec = TaskSpec.from_sources(make_issue(), make_page(sections=dict(RESEARCH_SECTIONS)))
+    loose = scope(conditions=[ConditionBound(name="bond_length_r", kind="range",
+                                             quote="bond length R between 0.5 and 3.0 Angstrom")])
+    c = scope_mod.verify(loose, spec).conditions[0]
+    assert (c.minimum, c.maximum) == (0.5, 3.0)
+    none = scope(conditions=[ConditionBound(name="bond_length_r", kind="range", quote="Target: H2 with basis STO-3G")])
+    assert any(q.field == "conditions.bond_length_r" for q in scope_mod.verify(none, spec).blocking())
+
+
+def test_unstated_api_budget_becomes_an_explicit_default_in_the_approval(tmp_path):
+    cpu_only = scope(budget=BudgetItem(cpu_hours=1, quote="Compute budget: 1 CPU-hour in total", status="stated"))
+    deps, *_ = _build(tmp_path, llm=ScriptedResearchLlm(scope_answer=cpu_only))
+    poll(deps)
+    [plan] = workflow.plans(deps.store, "INU-900")
+    assert plan.scope.budget.api_usd == deps.settings.default_budget.api_usd and "RA default" in plan.scope.budget.note
+    (req,) = _pending(deps)
+    assert "RA default" in req.budget_summary

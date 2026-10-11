@@ -1,8 +1,8 @@
 """Phase 10 fixtures: a research-objective page and a scripted Research Planner / Evaluator LLM."""
 
 from research_autopilot.research import evaluator, planner
-from research_autopilot.research.models import (Autonomy, BudgetItem, ConditionBound, EvaluationDecision, PlannedTask,
-                                                ResearchScope, ScopeItem)
+from research_autopilot.research.models import (Autonomy, BudgetItem, ConditionBound, EvaluationDecision, EvaluationOut,
+                                                PlannedTask, PlannedTaskOut, ResearchScope, ScopeItem)
 
 OBJ = ("- Question: how does dE(R)=E_RHF(R)-E_FCI(R) change with the bond length R?\n"
        "- Target: H2 with basis STO-3G, bond length R between 0.5 and 3.0 Angstrom.\n"
@@ -37,6 +37,12 @@ def scope(**kw) -> ResearchScope:
     return s.model_copy(update=kw)
 
 
+def draft(**kw):
+    """PlanDraft with internal PlannedTask objects converted to the strict LLM-facing form."""
+    kw["tasks"] = [PlannedTaskOut.of(t) if isinstance(t, PlannedTask) else t for t in kw.get("tasks", [])]
+    return planner.PlanDraft(**kw)
+
+
 def task(key="T1", values=("0.5", "1.0", "2.0"), deps=(), kind="experiment", title=None) -> PlannedTask:
     return PlannedTask(key=key, title=title or f"RHF/FCI at R={','.join(values)}", kind=kind,
                        objective="Compute E_RHF and E_FCI", specification="Run h2_energy.py for the listed R values",
@@ -52,7 +58,7 @@ class ScriptedResearchLlm:
 
     def __init__(self, scope_answer=None, plans=None, decisions=None, cost=0.05):
         self.scope_answer = scope_answer or scope()
-        self.plans = list(plans or [planner.PlanDraft(rationale="Start with three geometries [E1]",
+        self.plans = list(plans or [draft(rationale="Start with three geometries [E1]",
                                                       rationale_evidence=[], tasks=[task()],
                                                       replanning_rules=["add points where dE changes fastest"])])
         self.decisions = list(decisions or [])
@@ -64,8 +70,10 @@ class ScriptedResearchLlm:
         if out_type is ResearchScope:
             return self.scope_answer
         if out_type is planner.PlanDraft:
-            return self.plans.pop(0) if len(self.plans) > 1 else self.plans[0]
-        if out_type is EvaluationDecision:
+            d = self.plans.pop(0) if len(self.plans) > 1 else self.plans[0]
+            return d.model_copy(update={"tasks": [PlannedTaskOut.of(t) if isinstance(t, PlannedTask) else t
+                                                  for t in d.tasks]})
+        if out_type is EvaluationOut:
             d = self.decisions.pop(0) if self.decisions else EvaluationDecision(action="stop", rationale="no script")
             if callable(d):
                 d = d(payload)

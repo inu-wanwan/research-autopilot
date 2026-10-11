@@ -11,8 +11,8 @@ import re
 from pydantic import BaseModel, Field
 
 from research_autopilot.research import scope as scope_mod
-from research_autopilot.research.models import (EvidenceItem, OpenQuestion, PlannedTask, PlanStatus, ResearchPlan,
-                                                ResearchScope)
+from research_autopilot.research.models import (EvidenceItem, OpenQuestion, PlannedTask, PlannedTaskOut, PlanStatus,
+                                                ResearchPlan, ResearchScope)
 
 MAX_INITIAL_TASKS = 8
 KEY = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
@@ -21,7 +21,7 @@ KEY = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 class PlanDraft(BaseModel):
     rationale: str = Field(description="why this plan answers the objective; cite evidence ids like [E3]")
     rationale_evidence: list[str] = Field(default_factory=list)
-    tasks: list[PlannedTask]
+    tasks: list[PlannedTaskOut]
     replanning_rules: list[str] = Field(description="how results will decide the next cycle (e.g. adaptive sampling rule)")
     assumptions: list[str] = Field(default_factory=list)
     open_questions: list[OpenQuestion] = Field(default_factory=list)
@@ -34,10 +34,13 @@ given research repository. Rules:
 - Stay strictly inside SCOPE: never change the objective, primary metric, targets, invariants or baseline; put every
   varied quantity in `parameters` using the condition names of SCOPE.conditions with explicit values inside the
   approved ranges; respect max_count limits over the whole research (later cycles need room).
-- The initial cycle should be the smallest informative step; mark tasks whose results drive the next decision with
-  decision_point=true and state replanning_rules (how results choose the next experiments, when to stop).
-- Every implementation / experiment task needs a registered repository (REPOSITORIES) and a minimal file_scope
-  (glob patterns); estimate CPU hours and API cost honestly within BUDGET; produces/consumes name artifacts.
+- The plan is the FIRST cycle only: the smallest informative step with concrete parameter values. Tasks whose
+  parameters depend on results (adaptive sampling, final aggregation after later cycles) must NOT be in the plan:
+  describe them in replanning_rules; the Research Evaluator creates them in later cycles. Mark tasks whose results
+  drive the next decision with decision_point=true.
+- Every task (implementation, experiment and analysis alike) runs through the implementer and the experiment runner
+  in a registered repository (REPOSITORIES) with a minimal file_scope (glob patterns); estimate CPU hours and API
+  cost honestly within BUDGET; produces/consumes name artifacts.
 - Cite EVIDENCE ids in rationale and evidence_ids; mark assumptions explicitly; add open_questions instead of
   deciding scientific matters the scope leaves open.
 At most {MAX_INITIAL_TASKS} tasks. {scope_mod.UNTRUSTED}
@@ -83,7 +86,7 @@ def check_tasks(tasks: list[PlannedTask], scope: ResearchScope, *, registry: dic
         for d in t.depends_on:
             if d not in known:
                 p.append(f"{t.key}: depends on unknown task {d}")
-        if t.kind in ("implementation", "experiment"):
+        if True:  # every task is implemented / run in a registered research repository
             if not t.repository or t.repository not in registry:
                 p.append(f"{t.key}: repository {t.repository!r} is not a registered research repository")
             if not t.file_scope:
@@ -150,11 +153,22 @@ def _cyclic(tasks: list[PlannedTask]) -> bool:
 
 def build_plan(llm, spec, *, task_id: str, notion_page_id: str | None, evidence: list[EvidenceItem], registry: dict,
                version: int, previous: ResearchPlan | None = None, revision_comment: str = "",
-               max_attempts: int = 2) -> ResearchPlan:
+               max_attempts: int = 2, default_budget=None) -> ResearchPlan:
     """Scope extraction + verification, then a plan draft revised once on deterministic problems."""
     spent0 = getattr(llm, "spent", 0.0)
     raw = scope_mod.extract_scope(llm, spec)
     scope = scope_mod.verify(raw, spec)
+    if default_budget is not None and scope.budget.status == "stated":
+        # A limit the spec leaves open is filled with the RA default and shown as such in the approval request.
+        notes = []
+        if scope.budget.api_usd is None:
+            scope.budget.api_usd = float(default_budget.api_usd)
+            notes.append(f"API limit not stated: RA default ${default_budget.api_usd:g} (approved with the scope)")
+        if scope.budget.cpu_hours is None:
+            scope.budget.cpu_hours = float(default_budget.compute_cpu_hours)
+            notes.append(f"CPU limit not stated: RA default {default_budget.compute_cpu_hours:g} CPU-h")
+        if notes:
+            scope.budget.note = "; ".join([scope.budget.note, *notes]).strip("; ")
     plan = ResearchPlan(task_id=task_id, notion_page_id=notion_page_id, version=version,
                         spec_hash=scope_mod.spec_hash(spec), scope=scope, evidence=evidence,
                         previous_plan_id=previous.plan_id if previous else None, revision_comment=revision_comment,
@@ -168,12 +182,14 @@ def build_plan(llm, spec, *, task_id: str, notion_page_id: str | None, evidence:
     feedback: list[str] = []
     for _ in range(max_attempts):
         d = draft_plan(llm, scope, evidence, repos, feedback, revision_comment)
-        problems = check_tasks(d.tasks, scope, registry=registry, evidence_ids={e.evidence_id for e in evidence})
+        tasks = [t.to_task() for t in d.tasks]
+        problems = check_tasks(tasks, scope, registry=registry, evidence_ids={e.evidence_id for e in evidence})
         problems += [f"rationale cites unknown evidence {e}" for e in d.rationale_evidence
                      if e not in {x.evidence_id for x in evidence}]
-        plan.rationale, plan.rationale_evidence, plan.tasks = d.rationale, d.rationale_evidence, d.tasks
+        plan.rationale, plan.rationale_evidence, plan.tasks = d.rationale, d.rationale_evidence, tasks
         plan.replanning_rules, plan.assumptions = d.replanning_rules, d.assumptions
-        plan.scope.open_questions += [q for q in d.open_questions if q not in plan.scope.open_questions]
+        plan.scope.open_questions += [q.model_copy(update={"blocking": False}) for q in d.open_questions
+                                      if q not in plan.scope.open_questions]
         if not problems:
             break
         feedback = problems

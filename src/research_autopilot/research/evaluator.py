@@ -7,7 +7,8 @@ needs become a scope-change proposal that a human must approve.
 from __future__ import annotations
 
 from research_autopilot.research import planner as planner_mod
-from research_autopilot.research.models import EvaluationDecision, ResearchCycle, ResearchPlan, ResearchScope
+from research_autopilot.research.models import (EvaluationDecision, EvaluationOut, ResearchCycle, ResearchPlan,
+                                                ResearchScope)
 
 EVAL_INSTRUCTIONS = """\
 You are the Research Evaluator / Replanner of Research Autopilot. Using only RESULTS (validated outputs of the
@@ -38,7 +39,8 @@ def evaluate(llm, *, scope: ResearchScope, plan: ResearchPlan, cycles: list[Rese
                "RESULTS": results, "LIMITS": limits, "REPOSITORIES": repositories}
     if feedback:
         payload["GATE_PROBLEMS_OF_PREVIOUS_DECISION"] = feedback
-    return llm("ResearchEvaluator", EVAL_INSTRUCTIONS, payload, EvaluationDecision)
+    out = llm("ResearchEvaluator", EVAL_INSTRUCTIONS, payload, EvaluationOut)
+    return out.to_decision() if isinstance(out, EvaluationOut) else out
 
 
 def gate(decision: EvaluationDecision, *, scope: ResearchScope, cycles: list[ResearchCycle], results: list[dict],

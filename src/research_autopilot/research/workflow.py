@@ -94,7 +94,7 @@ def plan_research(deps, run: WorkflowRun, bundle, *, revision_comment: str = "")
     ev = evidence_mod.collect(spec_text=text, store=store, catalog=getattr(deps.plan, "catalog", None),
                               literature_reports=evidence_mod.literature_reports(run.task_id, text),
                               external_entries=ext_entries, registry=deps.impl.registry)
-    plan = planner_mod.build_plan(llm, spec, task_id=run.task_id,
+    plan = planner_mod.build_plan(llm, spec, task_id=run.task_id, default_budget=deps.settings.default_budget,
                                   notion_page_id=bundle.page.page_id if bundle.page else None, evidence=ev,
                                   registry=deps.impl.registry, version=(prev.version + 1) if prev else 1,
                                   previous=prev, revision_comment=revision_comment)
@@ -115,7 +115,7 @@ def plan_research(deps, run: WorkflowRun, bundle, *, revision_comment: str = "")
         _notify(deps, run, "research-needs-input", plan,
                 [f"Plan v{plan.version} cannot be approved yet ({plan.status.value})", *why[:6],
                  f"Notion: {plan.plan_page_url or ''}",
-                 "Edit the Notion specification, then press Run Autopilot again."])
+                 "Edit the Notion specification, then press Run Autopilot again."], controls=False)
         return plan
     req = request_approval(deps, bundle, plan)
     plan.status, plan.approval_request_id = PlanStatus.PENDING_APPROVAL, req.request_id
@@ -141,7 +141,8 @@ def request_approval(deps, bundle, plan: ResearchPlan) -> ApprovalRequest:
              f"{s.autonomy.max_retries_per_task} retries, stop after {s.autonomy.no_progress_cycles} cycles without progress"]
     open_q = [f"open question: {q.field}: {q.question}" for q in s.open_questions][:5]
     budget = (f"approved budget: {s.budget.cpu_hours if s.budget.cpu_hours is not None else '-'} CPU-h, "
-              f"${s.budget.api_usd if s.budget.api_usd is not None else '-'} API; plan estimate "
+              f"${s.budget.api_usd if s.budget.api_usd is not None else '-'} API"
+              + (f" ({s.budget.note})" if s.budget.note else "") + f"; plan estimate "
               f"{plan.estimate_cpu_hours:g} CPU-h, ${plan.estimate_api_usd:.2f}")
     return deps.approvals.request(
         kind=ApprovalKind.RESEARCH_SCOPE, issue=bundle.issue, root_task_id=plan.task_id, spec_hash=plan.content_hash,
@@ -325,7 +326,8 @@ def plan_blocks(plan: ResearchPlan) -> list[dict]:
 # ---------------------------------------------------------------- notifications (approvals / milestones / anomalies)
 
 
-def _notify(deps, run: WorkflowRun | None, key: str, plan: ResearchPlan, details: list[str], *, milestone: bool = False) -> None:
+def _notify(deps, run: WorkflowRun | None, key: str, plan: ResearchPlan, details: list[str], *, milestone: bool = False,
+            controls: bool = True) -> None:
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
     kind = EventKind.PHASE_TRANSITION if milestone else EventKind.UNRECOVERABLE_ERROR
@@ -333,7 +335,7 @@ def _notify(deps, run: WorkflowRun | None, key: str, plan: ResearchPlan, details
         notify_once(deps.store, NotificationEvent(kind=kind, flow_name="research", flow_run_name=plan.task_id,
                                                   state_name=plan.status.value, details=details[:12],
                                                   dedupe_key=f"{key}:{plan.plan_id}",
-                                                  control_task_id=plan.task_id), deps.notifier)
+                                                  control_task_id=plan.task_id if controls else None), deps.notifier)
     except Exception:
         pass
 

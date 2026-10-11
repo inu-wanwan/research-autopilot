@@ -48,6 +48,30 @@ def paused(store, task_id: str) -> bool:
     return bool(cs) and cs[-1].action == "stop"
 
 
+def _mark_applied(store, c: ResearchControl, note: str) -> None:
+    c.applied = True
+    store.put(db.research_controls, c.control_id, {**c.model_dump(mode="json"), "note": note[:300]}, task_id=c.task_id)
+
+
+def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
+    """Resume of a blocked research run = a new explicit start (the blocked execution record stays terminal)."""
+    page = deps.plan.manager.load(run.task_id).page
+    key = f"resume:{control.control_id}"
+    req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id, source="research_resume",
+                           specification_hash="resume", status=ExecutionStatus.ACCEPTED, request_key=key)
+    if not deps.store.insert_new(db.execution_requests, req.request_id, req.model_dump(mode="json"),
+                                 notion_task_id=page.page_id, linear_issue_id=run.task_id, status=req.status.value,
+                                 dedupe_key=key):
+        return
+    er = ExecutionRun(request_id=req.request_id, task_id=run.task_id, notion_task_id=page.page_id,
+                      retry_metadata={"resumed_by": control.actor, "previous_execution_run_id": run.execution_run_id})
+    deps.store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=req.request_id,
+                          task_id=run.task_id, status=er.status.value)
+    run.execution_run_id, run.execution_request_id = er.execution_run_id, req.request_id
+    run.stage, run.blocked_reason, run.waiting_for = WorkflowStage.DISCOVERED, None, None
+    run.event("resumed", f"blocked research restarted by {control.actor}: authorization and plan are re-checked")
+
+
 def request_control(store, task_id: str, action: str, actor: str, channel: str) -> ResearchControl:
     c = ResearchControl(task_id=task_id, action=action, actor=actor, channel=channel)
     store.put(db.research_controls, c.control_id, c.model_dump(mode="json"), task_id=task_id)
@@ -66,6 +90,14 @@ def tick(deps) -> dict:
     for run in runs:
         if run.parent_task_id or run.chain_depth:
             continue
+        pending = [c for c in controls(deps.store, run.task_id) if not c.applied]
+        if pending and pending[-1].action == "resume" and run.stage is WorkflowStage.BLOCKED and run.task_id \
+                and (rw.latest_plan(deps.store, run.task_id) is not None):
+            _restart_blocked(deps, run, pending[-1])
+            _save(deps, run)
+            out["controls"].append(f"{run.task_id}: blocked research restarted")
+        for c in pending:
+            _mark_applied(deps.store, c, f"seen at stage {run.stage.value}")
         stop = paused(deps.store, run.task_id)
         if stop and run.stage is WorkflowStage.RESEARCHING:
             run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
