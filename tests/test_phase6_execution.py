@@ -31,3 +31,10 @@ def test_duplicate_checkbox_request_does_not_create_second_run(tmp_path):
     page_id = next(iter(notion.pages)); notion.pages[page_id] = notion.pages[page_id].model_copy(update={"run_requested": True})
     poll(deps)
     assert len(deps.store.find(db.execution_runs, task_id="INU-900")) == 1
+
+def test_completed_task_can_be_explicitly_rerun(tmp_path):
+    deps, linear, notion, *_ = build(tmp_path)
+    linear.human_move("INU-900", "Done")
+    request(deps, notion)
+    poll(deps)
+    assert linear.issues["INU-900"].state_name == "Awaiting Approval"

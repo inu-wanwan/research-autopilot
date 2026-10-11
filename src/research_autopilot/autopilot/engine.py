@@ -104,7 +104,11 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
                 if not page.run_requested or not page.linear_issue_id or (only_task and page.linear_issue_id != only_task):
                     continue
                 bundle = deps.plan.manager.load(page.linear_issue_id)
-                if bundle.spec is None or bundle.reasons:
+                # A new explicit request may rerun a completed task.  Its Linear
+                # lifecycle is reset to the verified Todo state before workflow
+                # start; other invalid/blocked states remain fail-closed.
+                rerun = bundle.issue.state_type == "completed" and all(r.message.startswith("task is ") for r in bundle.reasons)
+                if bundle.spec is None or (bundle.reasons and not rerun):
                     if not deps.settings.dry_run:
                         deps.notion_writer.project_execution(page.page_id, status="Blocked", error="; ".join(r.message for r in bundle.reasons) or "missing scientific specification")
                     continue
@@ -116,6 +120,8 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
                     if not deps.settings.dry_run:
                         deps.notion_writer.project_execution(page.page_id, status="Blocked", error=str(exc))
                     continue
+                if rerun and not deps.settings.dry_run:
+                    deps.ops.set_state(bundle.issue, "Todo", "explicit rerun requested")
                 execution, reason = accept(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec))
                 if execution is None:
                     if reason != "request already accepted or requires reconciliation" and not deps.settings.dry_run:
