@@ -81,7 +81,7 @@ class AutopilotDeps:
 # ---------------------------------------------------------------- scheduler
 
 
-def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
+def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_id: str | None = None) -> dict:
     store = deps.store
     store.init_schema()
     if not store.acquire_lease(POLL_LEASE, "poller", 3 * 3600):
@@ -132,7 +132,7 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
                     continue
                 # Durable acceptance precedes checkbox acknowledgement.
                 deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
-                active.append(_new_run(deps, bundle.issue.identifier, execution))
+                active.append(_new_run(deps, bundle.issue.identifier, execution, prefect_flow_run_id))
                 break
         for run in active[: deps.settings.max_concurrent_tasks]:
             if deps.settings.dry_run:
@@ -159,10 +159,16 @@ def _save(deps: AutopilotDeps, run: WorkflowRun) -> None:
             er.status = ExecutionStatus(states.get(run.stage, "Running")); er.error_summary = run.blocked_reason; er.updated_at = utcnow()
             if er.status in {ExecutionStatus.COMPLETED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED, ExecutionStatus.FAILED}: er.finished_at = utcnow()
             deps.store.put(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=er.request_id, task_id=er.task_id, status=er.status.value)
-            deps.notion_writer.project_execution(er.notion_task_id, status=er.status.value, error=er.error_summary)
+            deps.notion_writer.project_execution(er.notion_task_id, status=er.status.value, error=er.error_summary,
+                run_url=_prefect_url(deps, er.prefect_flow_run_id))
 
 
-def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None = None) -> WorkflowRun:
+def _prefect_url(deps: AutopilotDeps, flow_run_id: str | None) -> str | None:
+    return f"{deps.settings.prefect_ui_url.rstrip('/')}/runs/flow-run/{flow_run_id}" if flow_run_id and deps.settings.prefect_ui_url else None
+
+
+def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None = None,
+             prefect_flow_run_id: str | None = None) -> WorkflowRun:
     origin = _proposal_origin(deps, task_id)
     run = WorkflowRun(task_id=task_id, root_task_id=origin["root_task_id"] if origin else task_id,
                       execution_request_id=execution.request_id if execution else None, execution_run_id=execution.execution_run_id if execution else None,
@@ -173,8 +179,10 @@ def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None =
     _save(deps, run)
     if execution:
         execution.status, execution.started_at, execution.updated_at = ExecutionStatus.RUNNING, utcnow(), utcnow()
+        execution.prefect_flow_run_id = prefect_flow_run_id
         deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"), request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
-        deps.notion_writer.project_execution(execution.notion_task_id, status="Running")
+        deps.notion_writer.project_execution(execution.notion_task_id, status="Running",
+            run_url=_prefect_url(deps, prefect_flow_run_id))
     _notify(deps, run, EventKind.TASK_STARTED, f"started:{run.run_id}",
             [f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
     return run

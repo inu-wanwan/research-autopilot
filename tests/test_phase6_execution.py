@@ -38,3 +38,12 @@ def test_completed_task_can_be_explicitly_rerun(tmp_path):
     request(deps, notion)
     poll(deps)
     assert linear.issues["INU-900"].state_name == "Awaiting Approval"
+
+def test_prefect_run_url_is_persisted_and_projected(tmp_path):
+    deps, _, notion, *_ = build(tmp_path)
+    deps.settings.prefect_ui_url = "http://prefect"
+    page_id = request(deps, notion)
+    poll(deps, prefect_flow_run_id="flow-123")
+    run = ExecutionRun.model_validate(deps.store.find(db.execution_runs, task_id="INU-900")[0])
+    assert run.prefect_flow_run_id == "flow-123"
+    assert notion.pages[page_id].last_run_url == "http://prefect/runs/flow-run/flow-123"

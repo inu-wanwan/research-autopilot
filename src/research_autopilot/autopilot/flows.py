@@ -9,6 +9,7 @@
 from typing import Literal
 
 from prefect import flow, get_run_logger
+from prefect.runtime import flow_run
 from prefect.artifacts import create_markdown_artifact
 from prefect.flow_runs import suspend_flow_run
 from prefect.input import RunInput
@@ -48,7 +49,7 @@ def autopilot_poll_flow(task_id: str | None = None, dry_run: bool = False) -> di
     from research_autopilot.autopilot.factory import build_autopilot_deps
 
     deps = build_autopilot_deps(dry_run=dry_run)
-    summary = poll(deps, only_task=task_id)
+    summary = poll(deps, only_task=task_id, prefect_flow_run_id=str(flow_run.id))
     report = status_report(deps)
     lines = ["# Autopilot status", *[f"- `{r['task']}` **{r['stage']}** {r['blocked'] or ''} {r['waiting_for'] or ''}"
                                      for r in report["runs"]],
