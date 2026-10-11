@@ -363,7 +363,7 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     env = {**res.thread_env(alloc), "HOME": str(jdir / "home"), "TMPDIR": str(jdir / "tmp"),
            "PYTHONHASHSEED": "0", "RA_EXPERIMENT_RUN_ID": m.experiment_run_id, "RA_TASK_ID": m.task_id}
     if (manifest_path := _catalog_inputs(deps, m, impl, jdir, spec.experiment_id)) is not None:
-        env[INPUTS_ENV] = str(manifest_path)
+        env[INPUTS_ENV] = str(Path(manifest_path).resolve())  # the job runs in its checkout: never a relative path
     (jdir / "home").mkdir(parents=True, exist_ok=True)
     (jdir / "tmp").mkdir(parents=True, exist_ok=True)
     if spec.external_code:  # Phase 9: only inside the approved container, after the grant check

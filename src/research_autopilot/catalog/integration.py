@@ -168,7 +168,7 @@ def upstream_artifacts(store, task_id: str) -> list[dict]:
         if not path.is_file() or sha256_file(path) != row["content_hash"]:
             continue
         out.append({"artifact_id": f"{producer}:{name}", "kind": "upstream", "identity": {"producer_task_id": producer,
-                    "name": name}, "content_hash": row["content_hash"], "files": [str(path)],
+                    "name": name}, "content_hash": row["content_hash"], "files": [str(path.resolve())],
                     "metadata": row.get("scientific_metadata") or {},
                     "provenance": {"git_commit": row.get("git_commit"), "handoff_id": row.get("handoff_id")}})
     return out

@@ -469,3 +469,4 @@ def test_a_consumer_gets_the_validated_outputs_of_its_producer_in_phase3_and_pha
     manifest = _json.loads(Path(next(v for k, v in exp.artifact_paths.items() if k.startswith("catalog_inputs:")))
                            .read_text())
     assert {a["artifact_id"] for a in manifest["artifacts"]} >= {f"INU-901:{p}" for p in outputs}  # RA_CATALOG_INPUTS
+    assert all(Path(f).is_absolute() for a in manifest["artifacts"] for f in a["files"])  # jobs run in their checkout
