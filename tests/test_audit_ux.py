@@ -440,6 +440,22 @@ def test_parent_failure_and_invalid_dag_send_steps(tmp_path):
     assert any("experiment crashed" in d for d in human[0].details)
 
 
+def test_child_stop_is_announced_while_siblings_still_run(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    from research_autopilot.autopilot.execution import ExecutionStatus
+    from test_phase6b_dag import _seed_parent, _set_child
+    deps, _, _, parent = _seed_parent(tmp_path, {}, {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}, slots=3)
+    rec = RecordingNotifier()
+    deps.notifier = rec
+    schedule_ready(deps, parent)
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, "spec gap")
+    advance_parents(deps)
+    advance_parents(deps)  # once per child run
+    human = [e for e in rec.events if e.needs_human]
+    assert len(human) == 1 and "INU-901" in human[0].steps[0] and "Run Autopilot" in human[0].steps[-1]
+    assert route_event(human[0]) is DiscordRoute.APPROVALS
+
+
 def test_approval_event_marks_replacement_version():
     req = ApprovalRequest(kind="research_scope", task_id="INU-1", root_task_id="INU-1", spec_hash="a", title="v2",
                           what_changes=[], diff_from_original=[], budget_summary="-",

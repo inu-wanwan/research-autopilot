@@ -126,6 +126,9 @@ def advance_parents(deps) -> list[WorkflowRun]:
         if derived is ExecutionStatus.COMPLETED:
             _complete_parent(deps, parent, dag)
             continue
+        if not parent.research_cycle_id and (any(s in _ACTIVE for s in statuses.values())
+                                             or ready_nodes(dag, statuses)):
+            _early_child_stop_notice(deps, parent, statuses)
         if derived in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}:
             # Failure isolation: independent siblings keep running (and ready
             # independent nodes still start); the parent is finalized only once
@@ -339,6 +342,21 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
                 deps.store.insert_new(db.artifact_handoffs, handoff.handoff_id, handoff.model_dump(mode="json"),
                                       parent_run_id=parent.parent_run_id, producer_task_id=producer,
                                       consumer_task_id=consumer, dedupe_key=handoff.dedupe_key)
+
+
+def _early_child_stop_notice(deps, parent: ParentRun, statuses: dict[str, ExecutionStatus]) -> None:
+    """A child stopped while siblings still run: tell the human now (UX policy: no silent wait), once per child run."""
+    for task_id, status in sorted(statuses.items()):
+        if status not in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}:
+            continue
+        execution_run_id = parent.child_execution_run_ids.get(task_id, "")
+        rec = deps.store.get(db.execution_runs, execution_run_id) or {}
+        reason = rec.get("error_summary") or "no cause recorded"
+        _human(deps, parent.parent_task_id, f"parent-child-stopped:{execution_run_id}", status,
+               f"子タスク {task_id} が止まりました（ほかの子タスクは実行を続けています）", f"{task_id}: {reason}",
+               [f"{task_id} の理由を確認し、Notion の仕様（または環境）を直す（今直しておいてよい）",
+                "ほかの子タスクが終わると親タスクが止まり、approvals に通知が届く",
+                "親タスクで Run Autopilot を押す（完了した子タスクの成果物は再利用される）"])
 
 
 def _child_failure_reasons(deps, parent: ParentRun, statuses: dict[str, ExecutionStatus]) -> list[str]:
