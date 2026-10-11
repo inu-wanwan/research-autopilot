@@ -54,6 +54,8 @@ class BudgetItem(BaseModel):
     cpu_hours: float | None = None
     api_usd: float | None = None
     quote: str = ""
+    cpu_hours_quote: str = ""  # verbatim excerpt stating cpu_hours (falls back to quote)
+    api_usd_quote: str = ""    # verbatim excerpt stating api_usd (falls back to quote)
     status: ItemStatus = "missing"
     note: str = ""
 
