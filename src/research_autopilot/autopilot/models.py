@@ -84,6 +84,8 @@ class ApprovalKind(StrEnum):
     PLAN = "plan"  # plan needs a new scientific decision
     COMPLETION_REVIEW = "completion_review"  # cannot decide Done automatically
     DAG = "dag"  # inferred parent/child dependencies; execution requires a human-approved fixed hash
+    EXTERNAL_CODE = "external_code"  # Phase 9: first execution grant (or scope change) for external code
+    EXTERNAL_LICENSE = "external_license"  # Phase 9: unclear / conflicting license terms need a human
 
 
 class ApprovalStatus(StrEnum):

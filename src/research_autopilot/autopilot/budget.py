@@ -25,7 +25,7 @@ def chain_usage(store: Store, runs: list[dict]) -> Usage:
             if rec and rec.cost:
                 if rec.cost.estimated_cost_usd is None and rec.llm_calls:
                     u.unknown_api_cost_calls += len(rec.llm_calls)
-                    u.api_usd += rec.literature_cost_usd  # Phase 8 research cost is known even then
+                    u.api_usd += rec.literature_cost_usd + rec.external_cost_usd  # Phase 8/9 costs are known even then
                 else:
                     u.api_usd += rec.cost.estimated_cost_usd or 0.0
         for rid in run.get("phase3_run_ids", []):

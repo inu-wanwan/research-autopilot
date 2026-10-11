@@ -39,7 +39,17 @@ def build_deps(settings: Settings, on_retry=None) -> Deps:
         settings=settings,
         catalog=(catalog := context_from_env(store)),
         literature=_literature(settings, catalog),
+        external=_external(store, catalog),
     )
+
+
+def _external(store, catalog):
+    """Phase 9 onboarding of reference implementations (Registry only; execution needs a human grant)."""
+    from research_autopilot.external.service import optional_from_env
+    try:
+        return optional_from_env(store, catalog)
+    except Exception:  # e.g. Docker missing: planning continues without onboarding
+        return None
 
 
 def _literature(settings: Settings, catalog):

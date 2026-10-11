@@ -346,6 +346,7 @@ class ExperimentManifest(BaseModel):
     llm_usage: list[LlmUsage] = Field(default_factory=list)
     events: list[ManifestEvent] = Field(default_factory=list)
     artifact_paths: dict[str, str] = Field(default_factory=dict)
+    external_approvals: list[str] = Field(default_factory=list)  # Phase 9 approval requests this run waits for
 
     def event(self, kind: str, message: str) -> None:
         self.events.append(ManifestEvent(kind=kind, message=message))

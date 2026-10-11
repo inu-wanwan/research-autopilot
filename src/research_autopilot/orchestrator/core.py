@@ -56,6 +56,7 @@ class Deps:
     settings: Settings
     catalog: Any = None  # catalog.service.CatalogContext (Phase 7A); None -> catalog requirements block
     literature: Any = None  # Phase 8: (question, task_id, seeds) -> LiteratureReport; None disables research
+    external: Any = None  # Phase 9: external.service.ExternalDeps; None disables onboarding of implementations
 
 
 def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
@@ -129,12 +130,14 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
         if spec.literature:  # Phase 8: the task asks for literature research before planning
             reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
+        spec, external = _with_external(deps, record, bundle.spec, spec, reports)  # Phase 9 (Registry only)
         outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         requests = (outcome.plan.plan.literature_requests if outcome.status is DecisionStatus.READY and outcome.plan
                     else [])
         if requests and deps.literature is not None:  # the Planner asked for evidence: research, re-plan once
             reports += _research(deps, record, [(q, False) for q in requests[:2]], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
+            spec, external = _with_external(deps, record, bundle.spec, spec, reports)
             outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         if outcome.status is not DecisionStatus.READY:
             return _decision(record, outcome.status, outcome.reasons, _loop_rationale(outcome), bundle, approval, outcome)
@@ -182,6 +185,7 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                 non_goals=bundle.spec.non_goals, input_artifacts=bundle.spec.input_artifacts,
                 catalog_resolution=resolution.model_dump(mode="json") if resolution is not None else None,
                 literature_reports=[r.report_id for r in reports],
+                external_implementations=external,
             )))
         return decision
     finally:
@@ -212,12 +216,47 @@ def _research(deps: Deps, record: PlanRunRecord, questions: list[tuple[str, bool
     return out
 
 
+def _with_external(deps: Deps, record: PlanRunRecord, original, current, reports: list) -> tuple:
+    """Onboard reference implementations (Phase 8 reports, GitHub repositories named in the spec) into the Registry
+    and show their status to the Planner.  Execution is never granted here."""
+    if deps.external is None:
+        return current, []
+    import re as _re
+
+    from research_autopilot.external import integration as ext
+    from research_autopilot.external import registry as ext_registry
+    from research_autopilot.external import service as ext_service
+    spent = getattr(deps.external.llm, "spent", 0.0)
+    entries = []
+    try:
+        entries = ext.onboard_from_reports(deps.external, reports)
+        text = " ".join(x or "" for x in (original.specification, original.input_artifacts, original.literature))
+        named = {m.removesuffix(".git") for m in _re.findall(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)}
+        for name in sorted(named - {e.name for e in entries}):
+            try:
+                entries.append(ext_service.onboard(deps.external, name))
+            except Exception as exc:
+                record.events.append(RunEvent(kind="external", message=f"{name}: onboarding failed: {type(exc).__name__}"))
+    except Exception as exc:  # never blocks planning
+        record.events.append(RunEvent(kind="external", message=f"onboarding failed: {type(exc).__name__}: {exc}"[:300]))
+    record.external_cost_usd = round(record.external_cost_usd + getattr(deps.external.llm, "spent", 0.0) - spent, 6)
+    for e in entries:
+        record.events.append(RunEvent(kind="external", message=f"{e.name}@{e.commit[:12]}: {e.state.value}"))
+    if not entries:
+        return current, []
+    base = (current.input_artifacts or "").split("\n\nEXTERNAL IMPLEMENTATIONS")[0]
+    ctx = ext.planner_context(deps.store, entries)
+    registered = [ext.describe(deps.store, e) for e in entries
+                  if e.state in (ext_registry.EntryState.REGISTERED, ext_registry.EntryState.SUPERSEDED)]
+    return current.model_copy(update={"input_artifacts": "\n\n".join(x for x in (base, ctx) if x)}), registered
+
+
 def _with_evidence(original, current, reports: list):
     """Literature evidence is appended to the planner's view only; the stored specification never changes."""
     if not reports:
         return current
     from research_autopilot.literature.integration import planner_context
-    base = (current.input_artifacts or "").split("\n\nLITERATURE EVIDENCE")[0]  # replace, never stack
+    base = (current.input_artifacts or "").split("\n\nLITERATURE EVIDENCE")[0].split("\n\nEXTERNAL IMPLEMENTATIONS")[0]
     return current.model_copy(update={"input_artifacts": "\n\n".join(x for x in (base, planner_context(reports)) if x)})
 
 
@@ -318,8 +357,9 @@ def _finish(deps: Deps, record: PlanRunRecord) -> None:
     record.cost = CostSummary(
         input_tokens=sum(c.input_tokens for c in calls),
         output_tokens=sum(c.output_tokens for c in calls),
-        # Phase 8 literature cost belongs to the plan run so the Phase 5 chain budget counts it.
-        estimated_cost_usd=round((sum(x for x in costs if x is not None) if complete else 0.0) + record.literature_cost_usd, 6)
+        # Phase 8/9 research and onboarding costs belong to the plan run so the Phase 5 chain budget counts them.
+        estimated_cost_usd=round((sum(x for x in costs if x is not None) if complete else 0.0)
+                                 + record.literature_cost_usd + record.external_cost_usd, 6)
         if complete or not calls else None,
         cost_complete=complete,
     )

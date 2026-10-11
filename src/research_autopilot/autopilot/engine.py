@@ -14,7 +14,7 @@ from research_autopilot.autopilot import policy
 from research_autopilot.autopilot.approvals import ApprovalController
 from research_autopilot.autopilot.budget import chain_usage
 from research_autopilot.autopilot.completion import assess, review_payload
-from research_autopilot.autopilot.linear_ops import LinearOps, WriteRefused
+from research_autopilot.autopilot.linear_ops import AWAITING, LinearOps, WriteRefused
 from research_autopilot.autopilot.models import (
     ApprovalKind,
     ApprovalDecision,
@@ -74,6 +74,7 @@ class AutopilotDeps:
     completion_reviewer: object | None
     notifier: object | None = None  # Notifier; None -> notifications module default
     dependency_inferer: object | None = None
+    external: object | None = None  # Phase 9 external.service.ExternalDeps
 
     @property
     def store(self):
@@ -93,7 +94,11 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
         for item in deps.outbox.pending():
             if not deps.settings.dry_run:
                 summary["outbox"].append((item.key, deps.outbox.process(item).state.value))
+        if deps.external is not None and not deps.settings.dry_run:
+            summary["external"] = _external_tick(deps)
         for req in deps.approvals.pending():
+            if req.kind in (ApprovalKind.EXTERNAL_CODE, ApprovalKind.EXTERNAL_LICENSE):
+                continue  # Phase 9 requests are decided by external.grants (not tied to a Linear state)
             summary["approvals"].append(_check_approval(deps, req))
         # Recovery-first: persisted parents may have newly-ready children even
         # when no fresh Notion checkbox is present after a process restart.
@@ -416,6 +421,14 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
         if sp.identification.commit not in run.commits:
             run.commits.append(sp.identification.commit)
             run.phase3_run_ids.append(sp.identification.phase3_run_id)
+    if m.state is ExperimentState.BLOCKED and m.external_approvals:
+        raw = deps.store.get(db.approval_requests, m.external_approvals[-1])
+        req = ApprovalRequest.model_validate(raw)
+        issue = deps.linear.get_issue(run.task_id)
+        deps.ops.set_state(issue, AWAITING, f"external code approval {req.request_id[:8]}")
+        _wait(deps, run, req, WorkflowStage.AWAITING_APPROVAL, WorkflowStage.EXPERIMENTING)
+        run.event("external_code", m.block_reason or "")
+        return
     if m.state is ExperimentState.COMPLETED:
         run.stage = WorkflowStage.PROPOSING
         run.event("experimented", f"experiment {m.experiment_run_id[:8]} validated; {len(m.reviewed_proposals)} proposal(s)")
@@ -648,6 +661,38 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: Approva
 
 
 # ---------------------------------------------------------------- notifications
+
+
+def _external_tick(deps: AutopilotDeps) -> dict:
+    """Phase 9: apply verified decisions on external code, resume runs that waited, re-verify updated repos."""
+    from research_autopilot.external.integration import process_approvals, refresh
+    out = {"decisions": [], "updates": []}
+    try:
+        out["decisions"] = process_approvals(deps.external)
+    except Exception as exc:  # never break the poll loop
+        out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    for item in out["decisions"]:
+        run = next((r for r in _runs(deps) if r.waiting_for == item["request_id"]), None)
+        if run is None or item["status"] == "pending":
+            continue
+        issue = deps.linear.get_issue(run.task_id)
+        run.waiting_for = None
+        if item["status"] == "approved":
+            deps.ops.set_state(issue, "In Progress", f"external code approved ({item['request_id'][:8]})")
+            run.stage = WorkflowStage(run.resume_stage or WorkflowStage.EXPERIMENTING.value)
+            run.resume_stage = None
+            run.event("approved", f"external code execution approved ({item.get('grant_id')})")
+        else:
+            run.stage = WorkflowStage.BLOCKED
+            run.blocked_reason = (f"external code execution {item['status']} ({item['request_id'][:8]}): "
+                                  "change the experiment or ask again with a different scope")
+            run.event("external_code", run.blocked_reason)
+        _save(deps, run)
+    try:
+        out["updates"] = refresh(deps.external)
+    except Exception as exc:
+        out["update_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return out
 
 
 def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str, details: list[str]) -> None:

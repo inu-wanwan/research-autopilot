@@ -353,6 +353,7 @@ def _prepare_task(deps: ImplDeps, h: ExecutionHandoff, manifest: ImplementationM
         acceptance_criteria=h.acceptance_criteria, non_goals=h.non_goals, input_artifacts=h.input_artifacts,
         artifact_requirements=h.artifact_requirements, plan=h.plan, sources=h.sources,
         catalog_artifacts=implementer_view(h.catalog_resolution),
+        external_implementations=h.external_implementations,
     )
     manifest.task = task
     if rctx is not None:
@@ -698,7 +699,7 @@ def _build_spec(task: ImplementationTask, wt: WorktreeManager, commit: str,
             phase3_run_id=task.phase3_run_id, repository_id=task.repo_id, repository_url=task.repo_url,
             branch=task.branch, commit=commit),
         experiment_id=d.experiment_id, execution=d.execution, environment=d.environment, inputs=d.inputs,
-        resources=d.resources, outputs=d.outputs,
+        resources=d.resources, outputs=d.outputs, external_code=d.external_code,
         validation=Validation(
             acceptance_criteria=spec_lines(task.acceptance_criteria),
             scientific_invariants=spec_lines(task.scientific_invariants),

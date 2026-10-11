@@ -23,6 +23,12 @@ Hard rules (violations are detected automatically and stop the run):
 - CATALOG ARTIFACTS (catalog_artifacts) are verified, read-only research inputs: read them from the listed
   files (at run time the manifest path is in the RA_CATALOG_INPUTS environment variable); never modify,
   move, regenerate or re-derive them, and do not hard-code their absolute paths.
+- EXTERNAL IMPLEMENTATIONS (external_implementations) are registered third-party repositories at a fixed commit.
+  Never copy them into this repository. To use one, declare it in experiment.json `external_code`
+  (name, purpose, mount_as) and write a script in this repository that imports its modules (they are on
+  PYTHONPATH at run time under /ext/<mount_as>); the experiment then runs offline in that implementation's
+  locked container. Changes to the external code go into `*.patch` files in this repository listed in
+  `external_code.patches`. Its first execution waits for a human approval; do not try to work around that.
 - Finish with a short summary: what you changed, how it is tested, anything you could not verify.
 
 Experiment definition (required): create or update `.autopilot/experiment.json`, matching the JSON schema in
@@ -76,6 +82,7 @@ def _task_block(task: ImplementationTask) -> dict:
         "non_goals": task.non_goals,
         "input_artifacts": task.input_artifacts,
         "catalog_artifacts": task.catalog_artifacts,
+        "external_implementations": getattr(task, "external_implementations", []),
         "artifact_requirements": task.artifact_requirements,
         "allowed_file_scope": task.allowed_file_scope,
         "protected_paths": task.protected_paths,
