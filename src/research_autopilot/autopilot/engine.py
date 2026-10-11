@@ -417,6 +417,8 @@ def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
         return
     if not _budget_gate(deps, run, auth):
         return
+    if run.continue_from and not run.plan_run_id and _continue(deps, run):
+        return
     issue = deps.linear.get_issue(run.task_id)
     deps.ops._guard(issue)
     rec = plan_task(deps.plan, task_id=run.task_id, mode="apply")
@@ -433,9 +435,48 @@ def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
         _block(deps, run, f"Phase 2 {d.status.value}: " + "; ".join(r.message for r in d.reasons)[:400])
 
 
+def _continue(deps: AutopilotDeps, run: WorkflowRun) -> bool:
+    """Reuse the approved plan of a run that was cut off by a non-task limit (usage limit, environment setup).
+
+    The Phase 3 approval gate is re-checked first (apply handoff, Linear In Progress, Notion spec unchanged since
+    planning); if it does not pass, the run is planned again as usual."""
+    from research_autopilot.implementation.orchestrator import _approval_gate, _load_handoff, _Stop
+    from research_autopilot.implementation.models import ImplementationManifest
+    c = run.continue_from
+    rec = deps.store.get_run(c["plan_run_id"])
+    issue = deps.linear.get_issue(run.task_id)
+    deps.ops._guard(issue)
+    try:
+        if rec is None or not rec.handoff_path:
+            raise _Stop(RunState.BLOCKED, "handoff_invalid", "no Phase 2 handoff for the reused plan")
+        if issue.state_type != "started":
+            deps.ops.set_state(issue, deps.plan.settings.in_progress_state_name,
+                               f"continue {c['stage']} with plan {str(c.get('plan_id'))[:8]} (not re-planned)")
+        probe = ImplementationManifest(task_id=run.task_id)
+        _approval_gate(deps.impl, _load_handoff(Path(rec.handoff_path), probe), probe)
+    except _Stop as stop:
+        run.event("replan", f"plan not reused ({stop.message[:200]}); planning again")
+        run.continue_from = None
+        return False
+    run.plan_run_id, run.plan_id = c["plan_run_id"], c.get("plan_id")
+    run.plan_version += 1
+    run.event("planned", f"plan {str(run.plan_id)[:8]} reused: the previous run stopped on a non-task limit")
+    if c["stage"] == "experimenting":
+        run.phase3_run_ids, run.commits = [c["phase3_run_id"]], [c["commit"]]
+        run.stage = WorkflowStage.EXPERIMENTING
+        run.event("implemented", f"commit {c['commit'][:12]} reused (Phase 3 {c['phase3_run_id'][:8]})")
+    else:
+        run.stage = WorkflowStage.IMPLEMENTING
+    return True
+
+
 def _implement(deps: AutopilotDeps, run: WorkflowRun) -> None:
     rec = deps.store.get_run(run.plan_run_id)
-    m = implement(deps.impl, handoff_path=Path(rec.handoff_path))
+    c = run.continue_from
+    if c and c["stage"] == "implementing" and not run.phase3_run_ids:
+        m = implement(deps.impl, continue_run_id=c["phase3_run_id"])
+    else:
+        m = implement(deps.impl, handoff_path=Path(rec.handoff_path))
     run.phase3_run_ids.append(m.phase3_run_id)
     if m.state is RunState.COMPLETED:
         run.commits.append(m.implementation_commit)

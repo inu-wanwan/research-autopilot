@@ -56,6 +56,14 @@ from research_autopilot.tasks.errors import ConnectorError, TransientConnectorEr
 from research_autopilot.tasks.manager import TaskManager
 
 FALLBACK_STATUSES = {"quota_exhausted", "rate_limited", "process_error", "transient_error"}
+# Block classifications that say nothing about the task or its plan: such a run may be continued in its own
+# worktree with the same handoff instead of re-planning (a retry still re-checks the approval gate).
+CONTINUABLE = {"quota_exhausted", "rate_limited", "process_error", "transient_error", "transient", "timeout"}
+
+
+def continuable(m: ImplementationManifest | None) -> bool:
+    return bool(m and m.state is RunState.BLOCKED and m.task is not None and m.handoff_path
+                and m.failure_classification in CONTINUABLE)
 GLOBAL_LEASE = "phase3:__global__"
 
 SPEC_FIELDS = ("purpose", "specification", "scientific_invariants", "acceptance_criteria", "repository",
@@ -100,9 +108,24 @@ class _Stop(Exception):
 
 
 def implement(deps: ImplDeps, *, handoff_path: Path | None = None, task_id: str | None = None,
-              resume_run_id: str | None = None, flow_run_id: str | None = None) -> ImplementationManifest:
+              resume_run_id: str | None = None, flow_run_id: str | None = None,
+              continue_run_id: str | None = None) -> ImplementationManifest:
     deps.store.init_schema()
     rctx = None
+    if continue_run_id:
+        prev = deps.store.get_implementation(continue_run_id)
+        if not continuable(prev):
+            raise ValueError(f"phase3 run {continue_run_id} cannot be continued "
+                             f"({prev.state.value if prev else 'unknown'}, {prev.failure_classification if prev else ''})")
+        manifest = ImplementationManifest(
+            task_id=prev.task_id, handoff_path=prev.handoff_path, continued_from=prev.phase3_run_id,
+            assessment=prev.assessment, implementer_choice=prev.implementer_choice,
+            inherited_usage=prev.inherited_usage.add(prev.usage),  # a continuation never resets the budget
+            inherited_cost_usd=round(prev.inherited_cost_usd + prev.cost_usd_known, 6))
+        manifest.task = prev.task.model_copy(update={"phase3_run_id": manifest.phase3_run_id})
+        manifest.event("continue", f"continuing {prev.phase3_run_id[:8]} ({prev.failure_classification}) in "
+                                   f"{prev.task.worktree_path} on {prev.task.branch}; plan {prev.plan_id} reused")
+        return _execute(deps, manifest, Path(prev.handoff_path), resume=False, flow_run_id=flow_run_id, rctx=None)
     if resume_run_id:
         manifest = deps.store.get_implementation(resume_run_id)
         if manifest is None:
@@ -455,7 +478,8 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
         _check_budget(s, m, started)
         choice = attempt.choice
         backend = deps.backends[choice.backend]
-        resume_context = _resume_context(m, task, wt) if (attempt.fallback_reason or attempt.number > 1) else None
+        resume_context = _resume_context(m, task, wt) \
+            if (attempt.fallback_reason or attempt.number > 1 or m.continued_from) else None
         remaining = s.task_wall_time_seconds - int((utcnow() - started).total_seconds())
         req = BackendRequest(
             task=task, choice=choice,

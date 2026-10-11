@@ -248,6 +248,7 @@ def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
                       prefect_flow_run_id=parent_execution.prefect_flow_run_id)
         wr.root_task_id = parent.parent_task_id
         wr.parent_task_id = parent.parent_task_id
+        wr.continue_from = parent.carry_over.get(node.task_id)
         deps.store.put(db.workflow_runs, wr.run_id, wr.model_dump(mode="json"), task_id=wr.task_id, stage=wr.stage.value)
         parent.child_workflow_run_ids[node.task_id] = wr.run_id
         made.append(wr)

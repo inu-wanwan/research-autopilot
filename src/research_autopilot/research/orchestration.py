@@ -128,6 +128,7 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
 
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, old.dag_id))
     attempt = retries_used + 1
+    carry = {t: c for t in failed if (c := _carry_over(deps, old, t))}
     page = deps.plan.manager.load(run.task_id).page
     # keyed on the ParentRun sequence, not the counted attempt: an uncounted retry must not collide with the next one
     key = f"research-cycle:{cycle.cycle_id}:retry:{attempt}" if len(previous) == attempt else \
@@ -146,14 +147,15 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
                           request_id=req.request_id, task_id=run.task_id, status=er.status.value)
     for task_id in failed:
         # a blocked/failed child keeps its Linear "In Progress"; its execution is terminal, so put it back to Todo
-        # or the Phase 2 start gate refuses the retry as "already In Progress"
+        # or the Phase 2 start gate refuses the retry as "already In Progress" (a continued child skips Phase 2)
         issue = deps.linear.get_issue(task_id)
-        if issue.state_type == "started":
+        if issue.state_type == "started" and task_id not in carry:
             deps.ops.set_state(issue, "Todo", f"research cycle {cycle.number} retry {attempt}")
     parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
                        parent_execution_run_id=er.execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash,
-                       research_cycle_id=cycle.cycle_id,
-                       completion_reasons=[f"retry {attempt} after: {', '.join(failed)}"])
+                       research_cycle_id=cycle.cycle_id, carry_over=carry,
+                       completion_reasons=[f"retry {attempt} after: {', '.join(failed)}"
+                                           + "".join(f"; {t} continues at {c['stage']}" for t, c in carry.items())])
     _save_parent(deps, parent)
     _start_parent(deps, parent, er, None)
     cycle.parent_run_id = parent.parent_run_id
@@ -172,6 +174,33 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     run.stage = WorkflowStage.RESEARCHING
     run.event("resumed", f"cycle {cycle.number} child DAG retry {attempt}/{max_retries}: {', '.join(failed)}")
     return True
+
+
+def _carry_over(deps, old: ParentRun, task_id: str) -> dict | None:
+    """Where can a failed child continue? A completed implementation whose experiment failed on environment
+    setup re-runs Phase 4 only; a Phase 3 run cut off by a non-task limit (usage / rate limit, process or transient
+    failure, wall time) continues in its worktree with the same plan. Anything else is planned again."""
+    from research_autopilot.experiments.models import ExperimentState
+    from research_autopilot.experiments.orchestrator import ENVIRONMENT_FAILURE
+    from research_autopilot.implementation.models import RunState
+    from research_autopilot.implementation.orchestrator import continuable
+    raw = deps.store.get(db.workflow_runs, old.child_workflow_run_ids.get(task_id, ""))
+    if not raw or not raw.get("plan_run_id") or not raw.get("phase3_run_ids"):
+        return None
+    base = {"plan_run_id": raw["plan_run_id"], "plan_id": raw.get("plan_id")}
+    try:
+        manifests = [m for m in (deps.store.get_implementation(i) for i in reversed(raw["phase3_run_ids"])) if m]
+        done = next((m for m in manifests if m.state is RunState.COMPLETED and m.implementation_commit), None)
+        if done and raw.get("experiment_run_ids"):
+            e = deps.store.get_experiment(raw["experiment_run_ids"][-1])
+            if e and e.state is ExperimentState.BLOCKED and ENVIRONMENT_FAILURE in (e.block_reason or ""):
+                return {**base, "stage": "experimenting", "phase3_run_id": done.phase3_run_id,
+                        "commit": done.implementation_commit}
+        if manifests and not raw.get("experiment_run_ids") and continuable(manifests[0]):
+            return {**base, "stage": "implementing", "phase3_run_id": manifests[0].phase3_run_id}
+    except Exception:  # an unreadable record never blocks the retry: plan again
+        return None
+    return None
 
 
 def _first_parent(parents: list[ParentRun]) -> ParentRun:

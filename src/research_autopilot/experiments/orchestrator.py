@@ -59,6 +59,8 @@ from research_autopilot.storage.artifacts import write_json
 from research_autopilot.storage.db import Store
 from research_autopilot.tasks.manager import TaskManager
 
+ENVIRONMENT_FAILURE = "environment preparation failed"  # setup, not the experiment: a retry re-runs Phase 4 only
+
 
 @dataclass
 class ExpDeps:
@@ -331,7 +333,7 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
                     raise EnvironmentError_(f"setup step {step[:3]} failed: {p.stderr[-300:]}")
             m.environment[spec.experiment_id] = prov
     except EnvironmentError_ as exc:
-        raise _Block(f"{spec.experiment_id}: environment preparation failed: {exc}") from exc
+        raise _Block(f"{spec.experiment_id}: {ENVIRONMENT_FAILURE}: {exc}") from exc
     for inp in spec.inputs:
         f = checkout / inp.path
         input_hashes[inp.path] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else ""

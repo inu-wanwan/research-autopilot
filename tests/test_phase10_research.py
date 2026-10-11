@@ -640,6 +640,68 @@ def test_a_retry_cut_off_by_a_backend_usage_limit_does_not_use_up_the_retry_limi
     assert cycle.budget_after["cycle_retry"] == 2
 
 
+def _child_runs(deps, task_id):
+    return sorted([WorkflowRun.model_validate(r) for r in deps.store.find(db.workflow_runs) if r["task_id"] == task_id],
+                  key=lambda r: r.created_at)
+
+
+def test_a_child_cut_off_by_a_usage_limit_continues_its_implementation_without_re_planning(tmp_path):
+    stop = EvaluationDecision(action="stop", rationale="implementation child hit a usage limit")
+    deps, linear, *_ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    deps.impl.settings.fallback_backends = []  # both subscriptions exhausted: nothing to fall back to
+    codex = deps.impl.backends["codex"]
+    codex.script[0] = {"status": "quota_exhausted", "error": "usage limit", "files": {"h2_energy.py": "x = 1\n"}}
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    [cycle] = orchestration.cycles(deps.store, "INU-900")
+    first = next(t for t in cycle.child_task_ids.values() if _child_runs(deps, t)[0].phase3_run_ids)
+    [cut] = _child_runs(deps, first)
+    old = deps.store.get_implementation(cut.phase3_run_ids[-1])
+    assert old.failure_classification == "quota_exhausted"
+    plans_before = len(deps.store.list_runs(task_id=first)) if hasattr(deps.store, "list_runs") else None
+
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    run = _drive(deps, 30)
+    assert run.stage is WorkflowStage.DONE
+    retry = _child_runs(deps, first)[-1]
+    assert retry.plan_run_id == cut.plan_run_id  # the approved plan was reused, Phase 2 did not run again
+    assert any(e["kind"] == "planned" and "reused" in e["message"] for e in retry.events)
+    new = deps.store.get_implementation(retry.phase3_run_ids[0])
+    assert new.continued_from == old.phase3_run_id and new.task.worktree_path == old.task.worktree_path
+    assert "CURRENT STATE OF THE WORKTREE" in codex.calls[-1].prompt or new.attempts[0].choice.backend == "codex"
+    if plans_before is not None:
+        assert len(deps.store.list_runs(task_id=first)) == plans_before
+    cycle = orchestration.cycles(deps.store, "INU-900")[0]
+    assert len([x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]) == 2
+
+
+def test_an_experiment_that_failed_on_environment_setup_re_runs_phase4_only(tmp_path):
+    from research_autopilot.experiments.models import ExperimentState
+    from research_autopilot.experiments.orchestrator import ENVIRONMENT_FAILURE
+
+    stop = EvaluationDecision(action="stop", rationale="environment setup failed")
+    deps, *_ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    cycle = orchestration.cycles(deps.store, "INU-900")[0]
+    task_id = next(iter(cycle.child_task_ids.values()))
+    [done] = _child_runs(deps, task_id)
+    e = deps.store.get_experiment(done.experiment_run_ids[-1])
+    e.state, e.block_reason = ExperimentState.BLOCKED, f"x: {ENVIRONMENT_FAILURE}: no interpreter"
+    deps.store.save_experiment(e)
+    _block_cycle_dag(deps, cycle, worked_on=True)
+    raw = deps.store.get(db.workflow_runs, done.run_id)  # the helper strips ids; put the real record back
+    raw.update(plan_id=done.plan_id, phase3_run_ids=done.phase3_run_ids, experiment_run_ids=done.experiment_run_ids)
+    deps.store.put(db.workflow_runs, done.run_id, raw, task_id=task_id, stage="blocked")
+    calls = len(deps.impl.backends["codex"].calls)
+
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    run = _drive(deps, 30)
+    assert run.stage is WorkflowStage.DONE
+    retry = _child_runs(deps, task_id)[-1]
+    assert retry.plan_run_id == done.plan_run_id and retry.phase3_run_ids[0] == done.phase3_run_ids[0]
+    assert retry.experiment_run_ids and retry.experiment_run_ids[0] != done.experiment_run_ids[-1]
+    assert len(deps.impl.backends["codex"].calls) == calls  # nothing was implemented again
+
+
 def test_planning_prompts_treat_bounded_api_discovery_as_implementation_work():
     from research_autopilot.planning.agents import PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 

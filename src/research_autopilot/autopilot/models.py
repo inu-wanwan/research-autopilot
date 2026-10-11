@@ -257,6 +257,9 @@ class WorkflowRun(BaseModel):
     resume_stage: str | None = None  # stage to continue with after an approval
     research_cost_usd: float = 0.0  # Phase 10 planning / evaluation LLM cost (counted in the chain budget)
     research_cycle_id: str | None = None  # Phase 10B: this run is a task of a research cycle
+    # retry of a run cut off by a non-task limit: {"stage": "implementing"|"experimenting", "plan_run_id",
+    # "plan_id", "phase3_run_id", "commit"?} -- the plan (and a completed implementation) is reused, not redone
+    continue_from: dict | None = None
     chain_depth: int = 0  # 0 = user-created root task
     parent_task_id: str | None = None
     attempts: int = 0

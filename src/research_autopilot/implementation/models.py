@@ -309,6 +309,7 @@ class ImplementationManifest(BaseModel):
     # Budget used by earlier runs of the same chain; budgets are never reset by a repair.
     inherited_usage: Usage = Field(default_factory=Usage)
     inherited_cost_usd: float = 0.0
+    continued_from: str | None = None  # a blocked run cut off by a non-task limit, continued in its worktree
 
     @property
     def revisions_used(self) -> int:
