@@ -59,3 +59,34 @@ def show_plan(task_id: str, version: int | None = typer.Option(None, "--version"
     ps = workflow.plans(_store(), task_id)
     p = next((x for x in ps if x.version == version), ps[-1] if ps else None)
     _out(p.model_dump(mode="json") if p else None)
+
+
+@app.command("plan-dry-run")
+def plan_dry_run(task_id: str, as_objective: bool = typer.Option(
+        False, "--as-objective", help="treat the whole page as a research objective even without the heading")) -> None:
+    """10A without side effects: scope structuring, open questions and the plan draft (nothing saved, no approval)."""
+    from research_autopilot.autopilot.factory import build_autopilot_deps
+    from research_autopilot.research import evidence as evidence_mod
+    from research_autopilot.research import planner as planner_mod
+    from research_autopilot.research import scope as scope_mod
+    from research_autopilot.research.workflow import llm_factory_from_env
+    deps = build_autopilot_deps(dry_run=True)
+    bundle = deps.plan.manager.load(task_id)
+    spec = bundle.spec
+    if spec is None:
+        _out({"error": [r.message for r in bundle.reasons]})
+        raise typer.Exit(1)
+    if as_objective and not scope_mod.is_research_objective(spec):
+        spec = spec.model_copy(update={"research_objective": spec.purpose or spec.title})
+    llm = llm_factory_from_env(deps.plan.settings)()
+    text = scope_mod.spec_text(spec)
+    ev = evidence_mod.collect(spec_text=text, store=deps.store, catalog=getattr(deps.plan, "catalog", None),
+                              literature_reports=evidence_mod.literature_reports(task_id, text),
+                              registry=deps.impl.registry)
+    plan = planner_mod.build_plan(llm, spec, task_id=task_id, notion_page_id=None, evidence=ev,
+                                  registry=deps.impl.registry, version=0)
+    _out({"status": plan.status.value, "cost_usd": plan.cost_usd,
+          "blocking": [q.model_dump() for q in plan.scope.blocking()],
+          "open_questions": [q.model_dump() for q in plan.scope.open_questions],
+          "scope": plan.scope.model_dump(mode="json"), "tasks": [t.model_dump(mode="json") for t in plan.tasks],
+          "validation_problems": plan.validation_problems, "evidence": [e.model_dump() for e in plan.evidence]})

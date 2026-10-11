@@ -276,7 +276,8 @@ def _child_payload(deps, run, bundle, auth, cycle: ResearchCycle, t: PlannedTask
             blocks += [paragraph(x[:1900]) for x in lines]
         else:
             blocks += [bullet(x[:1900]) for x in lines]
-    title = ("[TEST] " if bundle.spec.title.startswith(("[TEST]", "[E2E]")) else "") + f"[RA] {t.title}"[:150]
+    prefix = next((p + " " for p in ("[TEST]", "[E2E]") if bundle.spec.title.startswith(p)), "")
+    title = (prefix + f"[RA] {t.title}")[:150]
     return {"title": title, "blocks": blocks, "pending": False, "category": CATEGORY.get(t.kind),
             "parent_page_id": bundle.page.page_id, "linear_state": "Todo", "labels": [deps.plan.settings.scope_label],
             "description": f"Research cycle {cycle.number} of {run.task_id} (authorization v{auth.version}). Task {t.key}.",

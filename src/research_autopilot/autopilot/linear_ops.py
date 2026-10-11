@@ -1,7 +1,7 @@
 """Linear operations used by Phase 5, with two guards:
 
 - Autopilot may move issues only into non-approval states (it can never "approve" itself);
-- in test-only mode (default on the Mac) writes are allowed only on issues whose title starts with "[TEST]".
+- in test-only mode (default on the Mac) writes are allowed only on issues whose title starts with "[TEST]" or "[E2E]".
 Every status change is recorded so a later history entry can be recognized as Autopilot's own.
 """
 
@@ -17,6 +17,8 @@ AUTOPILOT_STATES = {"Todo", "In Progress", AWAITING, "Done"}
 HUMAN_DECISION_STATES = {APPROVED: "approve", REVISION: "revise", REJECTED: "reject"}
 
 
+TEST_PREFIXES = ("[TEST]", "[E2E]")  # issues that test-only mode may write to
+
 class WriteRefused(Exception):
     pass
 
@@ -31,7 +33,7 @@ class LinearOps:
     def _guard(self, issue) -> None:
         if not self.write_enabled:
             raise WriteRefused("Linear writes disabled (RA_AUTOPILOT_WRITE=false)")
-        if self.test_only and not issue.title.startswith("[TEST]"):
+        if self.test_only and not issue.title.startswith(TEST_PREFIXES):
             raise WriteRefused(f"test-only mode: refusing to write to non-test issue {issue.identifier}")
 
     def missing_states(self, team_id: str) -> list[str]:
