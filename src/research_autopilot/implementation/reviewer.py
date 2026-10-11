@@ -52,7 +52,16 @@ class ReviewerRunner(Protocol):
 
 
 def review_schema() -> dict:
-    return AgentOutputSchema(CodeReviewResult).json_schema()
+    """Strict structured-output schema (codex --output-schema rejects 'default' keywords)."""
+    return _strip_defaults(AgentOutputSchema(CodeReviewResult).json_schema())
+
+
+def _strip_defaults(node):
+    if isinstance(node, dict):
+        return {k: _strip_defaults(v) for k, v in node.items() if k != "default"}
+    if isinstance(node, list):
+        return [_strip_defaults(v) for v in node]
+    return node
 
 
 def parse_review(text: str) -> CodeReviewResult | None:
@@ -74,7 +83,8 @@ def judge_against_dod(parsed: CodeReviewResult, criteria: list, common: dict) ->
     (docs/phase_specs/phase3.md, Code Reviewer and the Definition of Done)."""
     ids = {c.id: c for c in criteria}
     claim = parsed.dod_infeasible
-    if claim and set(claim.criteria) & set(ids) and len(claim.evidence.strip()) >= MIN_INFEASIBILITY_EVIDENCE:
+    plan_items = {i for i in ids if i.startswith("D")}  # baseline items (B*) cannot be re-planned
+    if claim and set(claim.criteria) & plan_items and len(claim.evidence.strip()) >= MIN_INFEASIBILITY_EVIDENCE:
         return ReviewOutcome(verdict="blocked", categories=["dod_infeasible"], llm=parsed, revision_requests=[],
                              reason=f"Definition of Done infeasible ({', '.join(claim.criteria)}): "
                                     f"{claim.evidence[:600]}", **common)
@@ -231,6 +241,8 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
                              categories=[], llm=None, revision_requests=[], **common)
     if criteria := dod.full(task.plan):
         return judge_against_dod(parsed, criteria, common)
+    if parsed.verdict == "pass" and any(f.severity == "blocking" for f in parsed.findings):
+        parsed = parsed.model_copy(update={"verdict": "revise"})  # no Definition of Done: blocking findings bind
     requests = [f"[{f.severity}/{f.aspect}] {f.file}: {f.issue} -> {f.requested_change}" for f in parsed.findings
                 if f.severity != "minor" or parsed.verdict == "revise"]
     if parsed.verdict == "blocked":

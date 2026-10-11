@@ -187,3 +187,56 @@ def test_an_infeasible_item_is_re_planned_once_with_the_claim(tmp_path):
 def test_a_claim_the_re_plan_does_not_accept_goes_to_a_human(tmp_path):
     deps, run = _engine(tmp_path, make_plan())  # the re-plan keeps D1 unchanged
     assert run.stage.value == "blocked" and "not accepted on re-planning" in run.blocked_reason
+
+
+# ---------------------------------------------------------------- audit fixes (2026-10-12)
+
+
+def test_the_review_schema_is_strict_compatible_and_long_reviews_survive():
+    import json as _json
+    from research_autopilot.implementation.backends.codex import parse_events
+    from research_autopilot.implementation.reviewer import parse_review, review_schema
+    assert "default" not in _json.dumps(review_schema())  # codex --output-schema rejects 'default'
+    big = code_review("pass", suggestions=["x" * 300] * 30).model_dump_json()
+    assert len(big) > 8000
+    line = _json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": big}})
+    _, message, _ = parse_events(line)
+    assert parse_review(message[:20000]) is not None
+
+
+def test_a_pass_with_a_blocking_finding_outside_the_dod_is_a_suggestion(tmp_path):
+    blocking = CodeFinding(aspect="reproducibility", severity="blocking", file="x.py", issue="style",
+                           requested_change="restyle")
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [GOOD], reviewer=[code_review("pass", findings=[blocking])])
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.state is RunState.COMPLETED and any("style" in s for s in m.final_review.llm.suggestions)
+
+
+def test_decorated_claims_are_parsed_and_baseline_items_cannot_be_claimed(tmp_path):
+    decorated = "- `" + CLAIM + "`"
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [{**GOOD, "summary": decorated}])
+    assert implement(deps, handoff_path=Path(rec.handoff_path)).failure_classification == "dod_infeasible"
+    baseline = 'DOD_INFEASIBLE: {"criteria": ["B1"], "evidence": "the tests cannot pass in this environment at all"}'
+    deps, _, rec, _, _ = make_impl_deps(tmp_path / "b", [{**GOOD, "summary": baseline}])
+    assert implement(deps, handoff_path=Path(rec.handoff_path)).state is RunState.COMPLETED
+
+
+def test_an_unpriced_api_fallback_is_skipped_and_the_usage_limit_classification_kept(tmp_path):
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [{"status": "quota_exhausted"}], codex_api=[GOOD],
+                                        fallback_backends=["codex_api"])
+    deps.backends["codex_api"].supports = lambda model: False
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.failure_classification == "quota_exhausted" and deps.backends["codex_api"].calls == []
+    assert "no price" in m.block_reasons[-1].message
+
+
+def test_a_continuation_inherits_the_last_review(tmp_path):
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [GOOD, {"status": "quota_exhausted"}, GOOD],
+                                        reviewer=[code_review("pass", criteria={"D1": "not_met"}), code_review()],
+                                        fallback_backends=[])
+    first = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert first.failure_classification == "quota_exhausted"
+    second = implement(deps, continue_run_id=first.phase3_run_id)
+    assert second.state is RunState.COMPLETED
+    assert "[D1 not met]" in deps.backends["codex"].calls[-1].prompt  # the open finding was carried over
+    assert "PREVIOUS ASSESSMENT" in deps.reviewers["codex"].calls[-1][1]

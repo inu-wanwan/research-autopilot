@@ -122,7 +122,8 @@ def implement(deps: ImplDeps, *, handoff_path: Path | None = None, task_id: str 
             task_id=prev.task_id, handoff_path=prev.handoff_path, continued_from=prev.phase3_run_id,
             assessment=prev.assessment, implementer_choice=prev.implementer_choice,
             inherited_usage=prev.inherited_usage.add(prev.usage),  # a continuation never resets the budget
-            inherited_cost_usd=round(prev.inherited_cost_usd + prev.cost_usd_known, 6))
+            inherited_cost_usd=round(prev.inherited_cost_usd + prev.cost_usd_known, 6),
+            inherited_review=next((a.review for a in reversed(prev.attempts) if a.review), prev.inherited_review))
         manifest.task = prev.task.model_copy(update={"phase3_run_id": manifest.phase3_run_id})
         manifest.event("continue", f"continuing {prev.phase3_run_id[:8]} ({prev.failure_classification}) in "
                                    f"{prev.task.worktree_path} on {prev.task.branch}; plan {prev.plan_id} reused")
@@ -425,7 +426,7 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
     s = deps.settings
     started = m.created_at if m.recovery_state is None else utcnow()
     choice = m.attempts[-1].choice if m.attempts else m.implementer_choice
-    last_reviewed = next((a.review for a in reversed(m.attempts) if a.review is not None), None)
+    last_reviewed = next((a.review for a in reversed(m.attempts) if a.review is not None), m.inherited_review)
     requests: list[str] = last_reviewed.revision_requests if last_reviewed else []
 
     # A recovered attempt has work but no review yet: review it before deciding anything.
@@ -544,10 +545,12 @@ def _switch_to_fallback(deps: ImplDeps, m: ImplementationManifest, attempt: Atte
     fb, unusable = None, []
     for name in candidates:  # in the configured order; an unusable one is skipped, not fatal
         status = deps.backends[name].status()
-        if status.installed and status.authenticated:
+        model = routing.choose(s, name, attempt.choice.tier).model
+        if status.installed and status.authenticated and getattr(deps.backends[name], "supports", lambda _m: True)(model):
             fb = name
             break
-        unusable.append(f"{name}: {status.detail}")
+        unusable.append(f"{name}: {status.detail}" if not (status.installed and status.authenticated)
+                        else f"{name}: no price for {model}")
     if fb is None:
         raise _Stop(RunState.BLOCKED, "fallback_unavailable",
                     f"{attempt.choice.backend} {result.status}; fallback not usable ({'; '.join(unusable)})",
@@ -576,7 +579,8 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     choice = routing.reviewer_choice(s, m.assessment)
     fallbacks = [(routing.choose(s, b, choice.tier), deps.reviewers[b]) for b in s.fallback_backends
                  if b != choice.backend and b in deps.reviewers]
-    previous = next((a.review for a in reversed(m.attempts) if a is not attempt and a.review and a.review.llm), None)
+    previous = next((a.review for a in reversed(m.attempts) if a is not attempt and a.review and a.review.llm),
+                    m.inherited_review if m.inherited_review and m.inherited_review.llm else None)
     outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallbacks,
                      previous=previous,
                      on_event=lambda msg: _progress(deps, m, run_dir, msg),
@@ -644,10 +648,12 @@ def _infeasibility_claim(summary: str, task: ImplementationTask) -> dict | None:
     from research_autopilot.planning import dod
     ids = {c.id for c in dod.full(task.plan)}
     for line in reversed((summary or "").splitlines()):
-        if line.strip().startswith("DOD_INFEASIBLE:"):
+        line = line.strip().strip("`*-> ").strip()
+        if line.startswith("DOD_INFEASIBLE:"):
             try:
-                raw = json.loads(line.split(":", 1)[1])
-                criteria = [str(c) for c in raw.get("criteria", []) if str(c) in ids]
+                raw = json.loads(line.split(":", 1)[1].strip().strip("`"))
+                # only the plan's own items can be re-planned; the system baseline (B*) is not negotiable
+                criteria = [str(c) for c in raw.get("criteria", []) if str(c) in ids and str(c).startswith("D")]
                 evidence = str(raw.get("evidence", "")).strip()
             except (ValueError, AttributeError):
                 return None

@@ -50,7 +50,7 @@ class CodexBackend:
                           request.log_path, on_start, env=self.process_env(),
                           on_stdout=(lambda line: _forward_progress(line, request.on_progress)))
         usage, message, errors = parse_events(out.stdout)
-        res = dict(backend=self.name, model=request.choice.model, exit_code=out.exit_code, summary=message[:4000],
+        res = dict(backend=self.name, model=request.choice.model, exit_code=out.exit_code, summary=message[:20000],  # the review JSON (DoD assessments) must stay parseable
                    usage=usage, cost_usd=self.cost(request.choice.model, usage), pid=out.pid, started_at=started,
                    finished_at=utcnow(), log_path=str(request.log_path))
         if out.timed_out:
@@ -96,6 +96,9 @@ class CodexApiBackend(CodexBackend):
     def process_env(self) -> dict[str, str]:
         self.home.mkdir(parents=True, exist_ok=True)
         return {**sanitized_env(), "CODEX_HOME": str(self.home), "CODEX_API_KEY": self._api_key or ""}
+
+    def supports(self, model: str) -> bool:
+        return self.pricing.get(model) is not None  # an unpriced call could not be budgeted
 
     def cost(self, model: str, usage: Usage) -> float | None:
         from research_autopilot.planning.cost import estimate_cost

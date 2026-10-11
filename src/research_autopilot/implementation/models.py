@@ -215,8 +215,9 @@ class CodeReviewResult(BaseModel):
         if self.verdict == "revise" and not self.findings and not self.invariant_violations \
                 and not any(c.status == "not_met" for c in self.criteria):
             raise ValueError("revise needs at least one finding")
-        if self.verdict == "pass" and (self.invariant_violations or any(f.severity == "blocking" for f in self.findings)):
-            raise ValueError("pass cannot contain invariant violations or blocking findings")
+        if self.verdict == "pass" and self.invariant_violations:
+            # (blocking findings are judged against the Definition of Done by the reviewer module, not here)
+            raise ValueError("pass cannot contain invariant violations")
         return self
 
 
@@ -332,6 +333,7 @@ class ImplementationManifest(BaseModel):
     inherited_cost_usd: float = 0.0
     continued_from: str | None = None  # a blocked run cut off by a non-task limit, continued in its worktree
     dod_infeasible: dict | None = None  # {"criteria", "evidence", "by"}: sent back to Phase 2 by the engine
+    inherited_review: "ReviewOutcome | None" = None  # continuation: the cut-off run's last review (requests, DoD)
 
     @property
     def revisions_used(self) -> int:
