@@ -244,6 +244,30 @@ def test_inferred_edge_without_evidence_fails_closed():
     assert any(p.code == "inferred_edge_without_evidence" for p in result.problems)
 
 
+def test_inferred_evidence_accepts_labelled_verbatim_quotes_and_drops_paraphrase():
+    from research_autopilot.autopilot.dag import evidence_text
+    payload = {"children": [{"task_id": "A2", "spec": 'Fairness: 全手法は A1 の同一 "feasible-set" interface を通す\nnext line'}]}
+    dag = _dag([_node("A1"), _node("A2")])
+    proposal = DependencyProposal(edges=[InferredDependency(
+        producer_task_id="A1", consumer_task_id="A2", rationale="shared interface",
+        evidence=['A2 Fairness rules: 「全手法は A1 の同一 "feasible-set" interface を通す」',
+                  "next   LINE", "A2 says every method must share the interface."])], summary="s", unresolved=[])
+    result = apply_dependency_proposal(dag, proposal, evidence_corpus=evidence_text(payload))
+    assert result.status is DAGStatus.PENDING_APPROVAL, result.problems
+    assert result.dependency_proposal.edges[0].evidence[1] == "next   LINE"
+    assert len(result.dependency_proposal.edges[0].evidence) == 2
+
+
+def test_inferred_paraphrase_only_evidence_fails_closed():
+    dag = _dag([_node("A1"), _node("A2")])
+    proposal = DependencyProposal(edges=[InferredDependency(
+        producer_task_id="A1", consumer_task_id="A2", rationale="r",
+        evidence=['A2: "not in the spec"', "A2 paraphrase"])], summary="s", unresolved=[])
+    result = apply_dependency_proposal(dag, proposal, evidence_corpus="the real specification text")
+    assert result.status is DAGStatus.BLOCKED
+    assert any(p.code == "inferred_evidence_not_in_spec" for p in result.problems)
+
+
 def _seed_parent(tmp_path: Path, edges: dict[str, list[str]], repos: dict[str, str], slots: int = 1):
     """Persist a running parent with a fixed DAG so scheduling can be driven step by step."""
     from research_autopilot.autopilot.dag import ParentRun, dag_hash

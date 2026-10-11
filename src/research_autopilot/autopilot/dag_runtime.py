@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from research_autopilot.autopilot import policy
 from research_autopilot.autopilot.dag import (ArtifactHandoff, DAGProblem, DAGStatus, ParentRun, TaskDAG,
                                               aggregate_parent_status, apply_dependency_proposal,
-                                              discover_and_build, inference_payload, needs_dependency_inference,
+                                              discover_and_build, evidence_text, inference_payload, needs_dependency_inference,
                                               ready_nodes, sha256_file, specification_hash)
 from research_autopilot.autopilot.execution import (ExecutionRequest, ExecutionRun, ExecutionStatus,
                                                     accept, record_blocked, request_key, transition)
@@ -45,7 +44,7 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
                 provisional = apply_dependency_proposal(
                     provisional, inferred.output, model=getattr(inferred, "model", None),
                     cost_usd=getattr(inferred, "cost_usd", None),
-                    evidence_corpus=json.dumps(payload, ensure_ascii=False))
+                    evidence_corpus=evidence_text(payload))
             except Exception as exc:  # fail closed; no execution from an incomplete proposal
                 provisional.problems.append(DAGProblem(
                     code="dependency_inference_failed",

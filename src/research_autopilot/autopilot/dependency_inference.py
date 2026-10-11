@@ -16,7 +16,8 @@ propose the minimum directed acyclic graph needed to execute them. producer_task
 consumer_task_id. Use scientific specifications, explicit dependency prose, input artifacts, artifact requirements,
 acceptance criteria, and named interfaces as evidence. Do not infer an edge from A1/A2 numbering or title order alone.
 Do not invent tasks. For each edge, list the concrete artifacts or interfaces the consumer needs and quote concise
-evidence from the supplied fields. Leave truly independent tasks unconnected. Put uncertainties in unresolved.
+evidence from the supplied fields. Each evidence item must be an exact substring copied verbatim from
+the supplied fields (no labels, no paraphrase, no translation); explanations belong in rationale. Leave truly independent tasks unconnected. Put uncertainties in unresolved.
 This is a proposal only; a human will approve the exact hashed DAG before execution.
 """
 

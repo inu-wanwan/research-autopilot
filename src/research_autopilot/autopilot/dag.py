@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -257,6 +258,37 @@ def inference_payload(manager, parent_bundle, dag: TaskDAG) -> dict:
     }
 
 
+_QUOTED = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
+
+
+def evidence_text(value) -> str:
+    """Every string in an inference payload, unescaped (JSON escaping would hide verbatim quotes)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(evidence_text(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return "\n".join(evidence_text(v) for v in value)
+    return ""
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def evidence_supported(quote: str, corpus: str) -> bool:
+    """True when the quote is verbatim in the corpus, or when it locates quoted spans that all are.
+
+    Models often write ``A3 Fairness rules: "<verbatim>"``; the label is a locator, the quoted span is the
+    evidence. A paraphrase without a verbatim span is not evidence.
+    """
+    norm = _norm(corpus)
+    if _norm(quote) in norm:
+        return True
+    spans = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(quote)]
+    return bool(spans) and all(_norm(span) in norm for span in spans)
+
+
 def apply_dependency_proposal(dag: TaskDAG, proposal: DependencyProposal, *,
                               model: str | None = None, cost_usd: float | None = None,
                               evidence_corpus: str | None = None) -> TaskDAG:
@@ -285,13 +317,12 @@ def apply_dependency_proposal(dag: TaskDAG, proposal: DependencyProposal, *,
                                        message=f"inferred edge has no auditable rationale/evidence: {pair}"))
             continue
         if evidence_corpus is not None:
-            corpus = " ".join(evidence_corpus.lower().split())
-            unsupported = [quote for quote in edge.evidence
-                           if " ".join(quote.lower().split()) not in corpus]
-            if unsupported:
+            supported = [quote for quote in edge.evidence if evidence_supported(quote, evidence_corpus)]
+            if not supported:
                 problems.append(DAGProblem(code="inferred_evidence_not_in_spec", task_id=edge.consumer_task_id,
                                            message=f"inferred evidence is not present in the source specification: {pair}"))
                 continue
+            edge.evidence = supported  # paraphrases are not evidence; the approver sees only verbatim quotes
         consumer = by_id[edge.consumer_task_id]
         had_linear = bool(consumer.dependencies)
         consumer.dependencies = sorted(set(consumer.dependencies) | {edge.producer_task_id})
