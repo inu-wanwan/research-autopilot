@@ -58,6 +58,7 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
     last_review: ReviewAttempt | None = None
 
     review_feedback: list[RevisionRequest] = list(feedback)
+    reviewer_requests: list[RevisionRequest] = []  # the reviewer re-checks these instead of starting over
     dod_rejections = 0
     dod_problems: list[str] = []
     iteration = 0
@@ -88,13 +89,16 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
 
         try:
             review_run = _call(record, settings, "reviewer", reviewer.model, iteration, sleep,
-                               lambda: reviewer.review(spec, attempt.plan))
+                               lambda: reviewer.review(spec, attempt.plan, reviewer_requests or None))
         except _Stop as stop:
             stop.outcome.plan = attempt
             return stop.outcome
         last_review = ReviewAttempt(plan_id=attempt.plan_id, iteration=iteration, review=review_run.output)
         record.reviews.append(last_review)
         verdict = review_run.output.verdict
+        if verdict == "revision_required" and all(r.severity == "minor" for r in review_run.output.revision_requests):
+            verdict = "approved"  # only minor suggestions remain (they stay recorded in the review)
+            record.events.append(RunEvent(kind="review", message=f"iteration {iteration}: only minor requests; approved"))
 
         if verdict == "approved":
             return LoopOutcome(DecisionStatus.READY, plan=attempt, review=last_review)
@@ -106,6 +110,7 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
             )])
         previous, feedback = attempt.plan, review_run.output.revision_requests
         review_feedback = list(feedback)
+        reviewer_requests = list(feedback)
         record.events.append(RunEvent(kind="replan", message=(
             f"iteration {iteration}: revision_required ({len(feedback)} requests)")))
         iteration += 1

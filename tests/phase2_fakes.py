@@ -172,7 +172,8 @@ class ScriptedAgent:
     def plan(self, spec, previous, feedback):
         return self._next(spec, previous, feedback)
 
-    def review(self, spec, plan):
+    def review(self, spec, plan, previous=None):
+        self.previous = previous
         return self._next(spec, plan)
 
 

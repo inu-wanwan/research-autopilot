@@ -240,3 +240,16 @@ def test_a_continuation_inherits_the_last_review(tmp_path):
     assert second.state is RunState.COMPLETED
     assert "[D1 not met]" in deps.backends["codex"].calls[-1].prompt  # the open finding was carried over
     assert "PREVIOUS ASSESSMENT" in deps.reviewers["codex"].calls[-1][1]
+
+
+def test_the_plan_reviewer_re_checks_its_previous_requests_and_minor_only_reviews_approve(tmp_path):
+    from phase2_fakes import FakeLinear, FakeNotion, make_deps, make_issue, make_page, review
+    from research_autopilot.models import RevisionRequest
+    from research_autopilot.orchestrator.core import plan_task
+    minor = review("revision_required").model_copy(update={"revision_requests": [RevisionRequest(
+        aspect="evaluation", severity="minor", issue="wording", requested_change="reword", step_ids=[])]})
+    deps = make_deps(tmp_path, FakeNotion(make_page()), FakeLinear(make_issue()), [make_plan(), make_plan()],
+                     [review("revision_required"), minor])
+    rec = plan_task(deps, task_id="INU-900", mode="dry_run")
+    assert rec.decision.status.value == "ready" and len(rec.plans) == 2  # the minor-only second review approves
+    assert deps.reviewer.previous and deps.reviewer.previous[0].issue == "metric unclear"  # re-checked, not restarted

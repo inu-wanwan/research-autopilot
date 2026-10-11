@@ -62,7 +62,8 @@ class Planner(Protocol):
 class Reviewer(Protocol):
     model: str
 
-    def review(self, spec: TaskSpec, plan: ExecutionPlan) -> AgentRun[ReviewResult]: ...
+    def review(self, spec: TaskSpec, plan: ExecutionPlan,
+               previous: list[RevisionRequest] | None = None) -> AgentRun[ReviewResult]: ...
 
 
 PLANNER_INSTRUCTIONS = """\
@@ -76,6 +77,9 @@ Rules:
 - The task's purpose, scientific invariants and acceptance criteria are fixed by the
   researcher. Never change, weaken or reinterpret them. Every acceptance criterion must
   appear in acceptance_mapping, quoted verbatim, with the steps that satisfy it.
+- A Definition of Done item may refer to a contract your early discovery step fixes (e.g. "the convergence
+  status reported by the chosen PySCF solver is true at every point; the criterion used is recorded"); state
+  the pass/fail rule, not an unresolved choice.
 - Steps must be concrete enough for an implementer: inputs, outputs, and how each
   result is verified. depends_on and execution_order must be consistent.
 - List required environment / libraries, constraints (including scientific
@@ -146,6 +150,15 @@ Definition of Done (judge it under spec_consistency and evaluation): every item 
 specification, and proportionate -- request removal of items the specification does not require (extra
 provenance, schemas, tooling) as well as additions where an acceptance criterion is not proven. The code
 reviewer will judge the implementation only against these items, so this is where the acceptance bar is set.
+
+A Definition of Done item may be stated against a contract that the plan's early, bounded discovery step fixes
+(e.g. "every point reports the convergence status of the chosen PySCF solver as true, and the criterion used is
+recorded in the output") -- that is pass/fail checkable; do not require the plan to pick the API or exact
+schema layout up front. Approve when only minor issues remain.
+
+Later iterations (PREVIOUS REVISION REQUESTS given): check whether each of your previous requests was
+addressed. Raise a new major or blocking request only if, without it, an acceptance criterion or a scientific
+invariant could not be proven; everything else is minor. Do not reverse your earlier requests.
 
 Be specific and conservative: if the plan alters the task's purpose, invariants or
 acceptance criteria, that is at least a blocking revision request. Write in the same
@@ -218,8 +231,11 @@ class OpenAIPlanner(_AgentsSdkBase):
 
 
 class OpenAIReviewer(_AgentsSdkBase):
-    def review(self, spec: TaskSpec, plan: ExecutionPlan) -> AgentRun[ReviewResult]:
+    def review(self, spec: TaskSpec, plan: ExecutionPlan,
+               previous: list[RevisionRequest] | None = None) -> AgentRun[ReviewResult]:
         agent = Agent(name="Reviewer", instructions=REVIEWER_INSTRUCTIONS, model=self.model,
                       output_type=ReviewResult)
         payload = {"task_specification": _spec_payload(spec), "plan": plan.model_dump(mode="json")}
+        if previous:
+            payload["previous_revision_requests"] = [r.model_dump(mode="json") for r in previous]
         return self._run(agent, json.dumps(payload, ensure_ascii=False), ReviewResult)

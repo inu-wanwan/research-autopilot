@@ -310,7 +310,7 @@ def test_status_changed_during_planning_blocks(tmp_path):
     class MovingReviewer:
         model = "gpt-5.6-sol"
 
-        def review(self, spec, plan):
+        def review(self, spec, plan, previous=None):
             linear.issues["INU-900"] = make_issue(state=("Backlog", "backlog"))
             from research_autopilot.planning.agents import AgentRun, Usage
             return AgentRun(output=review("approved"), usage=Usage(), model=self.model)
