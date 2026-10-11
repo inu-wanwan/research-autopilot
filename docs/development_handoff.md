@@ -114,6 +114,10 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 検証：`uv run pytest` 647 passed / 1 warning（既存 discord/audioop）。すべて fake での検証で、実 Discord / Linear / Notion では未検証。
 - 未対応（判断待ち・既知）：初期研究計画の Reject は今も研究を CANCELLED にする（方針「打ち切りは明示的な Cancel のみ」と合うか要確認）。Cancel 確認ボタンは 5 分で失効し gateway 再起動で復元しない。DAG 承認の失効後は Run Autopilot で再開（自動再推論なし）。`request_license_decision` は決定済み依頼を返す。単独の Phase 5 run の block には Resume/Cancel ボタンなし（手順のみ）。未回答の承認は約 7 日ごとに再依頼される。Cancel は投入済みの計算ジョブを止めない。
 
+### LLM routing (2026-10-12)
+
+- ユーザー決定（本番まで）：サブスク優先・API は不可能なときだけ。`RA_LLM_SUBSCRIPTION_FIRST=codex`（既定 off）で、`planning/agents.py` `_AgentsSdkBase._run` を通る全構造化呼び出し（Planner / Reviewer、Analyst、Scientific / Completion Reviewer、Dependency Planner、Adapter 生成、`PricedLlm` 経由の文献・Phase 10・外部 repo）が先に `llm_subscription.codex_structured`（`codex exec --json --ephemeral --ignore-user-config -s read-only --output-schema`、空の一時ディレクトリ、API キーなしの sanitized env、effort medium）を試し、usage limit / 認証 / プロセス異常 / timeout / 不正出力（1 回再試行）で従来の API 経路へ fallback。usage limit・認証・codex 不在はプロセス内で 15 分 codex を飛ばす。サブスク呼び出しは cost 0 USD（`billing="subscription"`、`LlmCall` / `LlmUsage` に記録）、API は従来どおり価格計算。価格未設定のモデルはサブスクでは実行し、API への fallback だけを `LlmBudgetError` で拒否。テストは fake codex（`tests/test_llm_subscription.py`）のみで、実 codex での確認は未実施（モデル ID がサブスクで使えるかも未確認、使えなければ毎回 process_error → API）。
+
 ### Exact Next Actions
 
 0. **（2026-10-12 06:2x JST）OpenAI API のクレジット切れで LLM 段階がすべて停止中**（`credit_balance_exhausted`）。ユーザーに Discord 一般チャンネル（1558257920125308991）で補充を依頼済み。補充されるまで：INU-318 は Stop で一時停止（サイクル 2 の最終集約 INU-323 が codex_api の quota で止まった状態。補充後に `research resume INU-318` → サイクル内再試行）。Codex サブスクは 08:14 に回復。
