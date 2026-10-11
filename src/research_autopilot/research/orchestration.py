@@ -75,6 +75,8 @@ def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
     if auth is not None and cs and cs[-1].authorization_id == auth.authorization_id and cs[-1].decision \
             and cs[-1].decision.action == "stop":
         last = cs[-1]  # a human resumed a stopped research: the last cycle is evaluated again
+        if _retry_blocked_cycle(deps, run, last, auth, control):
+            return
         last.status = CycleStatus.EVALUATING
         last.results = []
         last.budget_after = {**last.budget_after, "human_resume": {
@@ -84,6 +86,80 @@ def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
             "previous_decision": last.decision.rationale[:600]}}
         save_cycle(deps.store, last)
         run.event("resumed", f"cycle {last.number} is re-evaluated after the human resume")
+
+
+def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: ResearchAuthorization,
+                         control: ResearchControl) -> bool:
+    """Retry a failed child DAG in the same research cycle.
+
+    A child implementation/planning failure is a task retry, not new scientific
+    information.  Reusing the cycle keeps ``max_cycles`` as a bound on research
+    replanning while the separately approved ``max_retries_per_task`` bounds this
+    recovery path.  Every old parent/execution record remains terminal for audit.
+    """
+    from research_autopilot.autopilot.dag_runtime import _save_parent, _start_parent, schedule_ready
+
+    if not cycle.parent_run_id:
+        return False
+    old_raw = deps.store.get(db.parent_runs, cycle.parent_run_id)
+    if not old_raw:
+        return False
+    old = ParentRun.model_validate(old_raw)
+    if old.status not in (ExecutionStatus.BLOCKED, ExecutionStatus.FAILED):
+        return False
+    failed = []
+    for task_id, execution_id in old.child_execution_run_ids.items():
+        rec = deps.store.get(db.execution_runs, execution_id)
+        if rec and ExecutionRun.model_validate(rec).status in (
+                ExecutionStatus.BLOCKED, ExecutionStatus.FAILED, ExecutionStatus.CANCELED):
+            failed.append(task_id)
+    if not failed:
+        return False
+    previous = [ParentRun.model_validate(x) for x in deps.store.find(db.parent_runs)
+                if x.get("research_cycle_id") == cycle.cycle_id]
+    retries_used = max(0, len(previous) - 1)
+    max_retries = int(((auth.scope or {}).get("autonomy") or {}).get("max_retries_per_task", 2))
+    if retries_used >= max_retries:
+        return False
+
+    dag = TaskDAG.model_validate(deps.store.get(db.task_dags, old.dag_id))
+    attempt = retries_used + 1
+    page = deps.plan.manager.load(run.task_id).page
+    key = f"research-cycle:{cycle.cycle_id}:retry:{attempt}"
+    req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id,
+                           source="research_cycle_retry", specification_hash=dag.parent_specification_hash,
+                           status=ExecutionStatus.ACCEPTED, request_key=key)
+    if not deps.store.insert_new(db.execution_requests, req.request_id, req.model_dump(mode="json"),
+                                 notion_task_id=page.page_id, linear_issue_id=run.task_id,
+                                 status=req.status.value, dedupe_key=key):
+        return False
+    er = ExecutionRun(request_id=req.request_id, task_id=run.task_id, notion_task_id=page.page_id,
+                      retry_metadata={"research_cycle_id": cycle.cycle_id, "retry": attempt,
+                                      "previous_parent_run_id": old.parent_run_id})
+    deps.store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"),
+                          request_id=req.request_id, task_id=run.task_id, status=er.status.value)
+    parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
+                       parent_execution_run_id=er.execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash,
+                       research_cycle_id=cycle.cycle_id,
+                       completion_reasons=[f"retry {attempt} after: {', '.join(failed)}"])
+    _save_parent(deps, parent)
+    _start_parent(deps, parent, er, None)
+    cycle.parent_run_id = parent.parent_run_id
+    cycle.status = CycleStatus.RUNNING
+    cycle.results = []
+    cycle.finished_at = None
+    cycle.budget_after = {**cycle.budget_after, "human_resume": {
+        "actor": control.actor, "at": control.at.isoformat(),
+        "note": (control.actor.split("(", 1)[1].rstrip(")") if "(" in control.actor else
+                 "resumed from Discord: retry the failed child DAG in the same research cycle"),
+        "previous_decision": cycle.decision.rationale[:600]},
+        "cycle_retry": attempt}
+    cycle.decision = None
+    save_cycle(deps.store, cycle)
+    schedule_ready(deps, parent)
+    run.stage = WorkflowStage.RESEARCHING
+    run.event("resumed", f"cycle {cycle.number} child DAG retry {attempt}/{max_retries}: {', '.join(failed)}")
+    return True
 
 
 def request_control(store, task_id: str, action: str, actor: str, channel: str) -> ResearchControl:

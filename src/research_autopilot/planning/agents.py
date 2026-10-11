@@ -82,6 +82,12 @@ Rules:
   invariants), verification methods and a rough compute estimate.
 - Anything ambiguous goes to open_questions; any decision that needs the researcher
   (changing scope, metrics, data, compute beyond the estimate) goes to approvals_needed.
+- Do not escalate ordinary implementation discovery to the researcher. Inspecting the
+  repository or an installed library API, selecting a compatible API exposed by the
+  already-approved dependency, and recording the exact versions/settings used are
+  bounded technical steps. Plan those as early implementation steps with verification.
+  Ask the researcher only when the available implementations require a real change to
+  the scientific specification, invariant, acceptance criterion, or approved budget.
 - If reviewer revision requests are provided, address each of them explicitly while
   still obeying the rules above.
 - LITERATURE EVIDENCE (if present in the input) comes from an automated literature review: claims marked
@@ -109,6 +115,13 @@ Verdict:
   revision_requests (aspect, severity, issue, requested_change, step_ids).
 - blocked: the task cannot proceed without the researcher (e.g. the specification is
   contradictory or infeasible as written); give blocking_reasons.
+
+Technical details that an implementer can determine by inspecting the repository,
+installed dependency, or official API are not missing scientific specifications. A
+plan may deliberately resolve them in an early, bounded discovery step, then record
+the selected version/API/settings in provenance and test the resulting contract. Do
+not require those facts to be known before execution unless choosing among them would
+change a researcher-approved invariant, metric, acceptance criterion, or budget.
 
 Be specific and conservative: if the plan alters the task's purpose, invariants or
 acceptance criteria, that is at least a blocking revision request. Write in the same

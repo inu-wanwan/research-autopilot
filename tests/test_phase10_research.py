@@ -527,6 +527,48 @@ def test_resume_after_a_stop_re_evaluates_the_last_cycle(tmp_path):
     assert "HUMAN_RESUME" not in evals[0] and evals[-1]["HUMAN_RESUME"]["actor"] == "discord:1001"
 
 
+def test_resume_retries_a_blocked_child_dag_inside_the_same_cycle(tmp_path):
+    from research_autopilot.autopilot.dag import ParentRun
+    from research_autopilot.autopilot.execution import ExecutionRun, ExecutionStatus
+
+    stop = EvaluationDecision(action="stop", rationale="implementation child failed")
+    deps, linear, notion, writer, llm, _ = _approve_initial(
+        tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.BLOCKED
+    [cycle] = orchestration.cycles(deps.store, "INU-900")
+    old_parent = ParentRun.model_validate(deps.store.get(db.parent_runs, cycle.parent_run_id))
+    child_id, execution_id = next(iter(old_parent.child_execution_run_ids.items()))
+    child_execution = ExecutionRun.model_validate(deps.store.get(db.execution_runs, execution_id))
+    child_execution.status = ExecutionStatus.BLOCKED
+    child_execution.error_summary = "technical planning failure"
+    deps.store.put(db.execution_runs, execution_id, child_execution.model_dump(mode="json"),
+                   request_id=child_execution.request_id, task_id=child_id, status=child_execution.status.value)
+    old_parent.status = ExecutionStatus.BLOCKED
+    deps.store.put(db.parent_runs, old_parent.parent_run_id, old_parent.model_dump(mode="json"),
+                   parent_task_id=old_parent.parent_task_id,
+                   parent_execution_run_id=old_parent.parent_execution_run_id, status=old_parent.status.value)
+
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    cycle = orchestration.cycles(deps.store, "INU-900")[0]
+    assert cycle.number == 1 and cycle.status.value == "running" and cycle.decision is None
+    parents = [x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]
+    assert len(parents) == 2 and cycle.parent_run_id != old_parent.parent_run_id
+    assert cycle.budget_after["cycle_retry"] == 1
+
+    run = _drive(deps, 30)
+    assert run.stage is WorkflowStage.DONE
+    assert len(orchestration.cycles(deps.store, "INU-900")) == 1
+
+
+def test_planning_prompts_treat_bounded_api_discovery_as_implementation_work():
+    from research_autopilot.planning.agents import PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
+
+    assert "ordinary implementation discovery" in PLANNER_INSTRUCTIONS
+    assert "Technical details that an implementer can determine" in REVIEWER_INSTRUCTIONS
+
+
 def test_a_human_resume_resets_the_no_progress_count(tmp_path):
     noprog = more(("1.5",), progress=False)
     stop = EvaluationDecision(action="stop", rationale="nothing", progress=False)
