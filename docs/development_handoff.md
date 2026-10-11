@@ -26,7 +26,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ## Last Updated
 
-2026-10-11 / Codex
+2026-10-11 / Claude Code
 
 ## Git Branch / Commit
 
@@ -48,6 +48,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 - 実 Notion / Linear read-only dry-run：INU-274 の4子 relation、identity、同一 project は正常。A1〜A4 の Linear blocked-by は0件。親 Acceptance Criteria、各子 `autopilot` label / canonical Specification / Repository が不足し、4-node DAG hash `bbfd39b...237a` は Blocked。本番 task は実行・変更していない。詳細は `docs/operations/phase6b_parent_dag.md`。
 - 着手前 baseline：`uv run pytest` は 355 passed。実装後の全回帰は 362 passed / 1 dependency warning。子 Prefect URL の最終追加後に Phase 6A/6B 13 tests と `git diff --check` が成功。ruff は dev dependency に存在せず未実行（`python -m compileall -q src tests` は成功）。
 - Phase 6B follow-up：Linear blocked-by 未設定時の Dependency Planner を追加。仕様中の evidence と artifact contract を持つ候補 DAG を生成し、unknown/self/duplicate/cycle/根拠不在を決定論的に拒否する。DAG hash の Discord 承認前は子を開始せず、承認待ちの source spec/relation 変更は stale → Blocked。`RA_DAG_INFERENCE_MODEL` は未設定時 reviewer model。新規 Phase 6B tests 11件が成功し、ユーザー指示により全回帰は受け入れ時まで未実行。
+- Phase 6B 追加（2026-10-11 / Claude Code）：Dependency Planner を commit `7042f76`。§12 の不足テスト（global slot 並列、同一 repository 直列化、child approval 待ち中の sibling 継続、child Failed / scientific invariant Blocked、partial DAG recovery）を `58f29e2` で追加。失敗隔離を実装：child が Failed/Blocked でも独立 sibling の管理と ready node の schedule を続け、進行可能 node がなくなってから親を終端化し、child の原因を親 `Execution Error` に集約する。あわせて「親 Awaiting Approval 中に child が Failed → `ValueError` で poll が落ちる」既存バグを Running 経由の遷移で修正。検証済み：`uv run pytest tests/test_phase6b_dag.py` 18 passed、`uv run pytest` 373 passed / 1 dependency warning、`git diff --check` 成功。child の Failed/Blocked は store 上の状態操作で再現しており、実際の scientific invariant 違反から Phase 4 経由で Blocked になる E2E は未確認。`OpenAIDependencyInferer` の実モデル呼び出しは未検証（課金 API のため未実行）。
 
 ### Phase 6A Explicit Execution Control（2026-10-11 / Codex）
 

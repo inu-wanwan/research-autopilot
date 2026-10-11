@@ -336,13 +336,37 @@ def test_failed_child_is_isolated_and_never_releases_its_dependents(tmp_path):
     assert sorted(r.task_id for r in schedule_ready(deps, parent)) == ["INU-901", "INU-903"]
     _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.FAILED, "experiment crashed")
     advance_parents(deps)
+    # The independent sibling is still managed; the parent is not finalized under it.
+    stored = _parent(deps, parent.parent_run_id)
+    assert stored.status is ExecutionStatus.RUNNING and stored.finished_at is None
+    assert _child_runs(deps, "INU-903")[0]["status"] == ExecutionStatus.RUNNING.value
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
     stored = _parent(deps, parent.parent_run_id)
     assert stored.status is ExecutionStatus.FAILED and stored.finished_at is not None
     assert _child_runs(deps, "INU-902") == []  # dependent is never started
-    # The independent sibling's own run is left untouched rather than canceled.
-    assert _child_runs(deps, "INU-903")[0]["status"] == ExecutionStatus.RUNNING.value
-    assert _child_runs(deps, "INU-901")[0]["error_summary"] == "experiment crashed"
+    parent_run = deps.store.get(db.execution_runs, stored.parent_execution_run_id)
+    assert "INU-901 Failed: experiment crashed" in parent_run["error_summary"]
     assert linear.issues["INU-900"].state_name != "Done"
+
+
+def test_independent_ready_child_still_starts_after_sibling_fails(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=1)
+    assert [r.task_id for r in schedule_ready(deps, parent)] == ["INU-901"]
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.FAILED, "experiment crashed")
+    created = advance_parents(deps)
+    assert [r.task_id for r in created] == ["INU-903"]
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.RUNNING
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.AWAITING_APPROVAL)
+    advance_parents(deps)
+    # Only a human decision can move anything now.
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.AWAITING_APPROVAL
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.FAILED
+    assert _child_runs(deps, "INU-902") == []
 
 
 def test_child_blocked_by_scientific_invariant_blocks_parent_and_dependents(tmp_path):

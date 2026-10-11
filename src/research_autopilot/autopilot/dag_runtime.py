@@ -19,6 +19,8 @@ from research_autopilot.notifications.events import EventKind, NotificationEvent
 from research_autopilot.storage import db
 from research_autopilot.tasks.notion_writer import heading, paragraph
 
+_ACTIVE = {ExecutionStatus.ACCEPTED, ExecutionStatus.RUNNING, ExecutionStatus.AWAITING_APPROVAL}
+
 
 def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None) -> tuple[ParentRun | None, list[WorkflowRun]]:
     """Validate before durable acceptance; invalid DAGs are audited and acknowledged Blocked."""
@@ -120,9 +122,19 @@ def advance_parents(deps) -> list[WorkflowRun]:
             _complete_parent(deps, parent, dag)
             continue
         if derived in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}:
-            _sync_parent_status(deps, parent, derived,
-                                "; ".join(parent.completion_reasons) or "child execution did not complete", terminal=True)
-            continue
+            # Failure isolation: independent siblings keep running (and ready
+            # independent nodes still start); the parent is finalized only once
+            # nothing else in the DAG can make progress.
+            in_flight = {t: s for t, s in statuses.items() if s in _ACTIVE}
+            if in_flight or ready_nodes(dag, statuses):
+                waiting_only = in_flight and all(s is ExecutionStatus.AWAITING_APPROVAL for s in in_flight.values())
+                derived = (ExecutionStatus.AWAITING_APPROVAL if waiting_only and not ready_nodes(dag, statuses)
+                           else ExecutionStatus.RUNNING)
+            else:
+                reasons = [*parent.completion_reasons, *_child_failure_reasons(deps, parent, statuses)]
+                _sync_parent_status(deps, parent, derived,
+                                    "; ".join(reasons) or "child execution did not complete", terminal=True)
+                continue
         _sync_parent_status(deps, parent, derived, None)
         created.extend(schedule_ready(deps, parent))
     return created
@@ -182,13 +194,11 @@ def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
     from research_autopilot.autopilot.engine import _new_run
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
     statuses = _child_statuses(deps, parent)
-    active = sum(s in {ExecutionStatus.ACCEPTED, ExecutionStatus.RUNNING, ExecutionStatus.AWAITING_APPROVAL}
-                 for s in statuses.values())
+    active = sum(s in _ACTIVE for s in statuses.values())
     capacity = max(0, deps.settings.max_concurrent_tasks - active)
     if capacity == 0:
         return []
-    running_repos = {n.repository for n in dag.nodes if statuses.get(n.task_id) in
-                     {ExecutionStatus.ACCEPTED, ExecutionStatus.RUNNING, ExecutionStatus.AWAITING_APPROVAL}}
+    running_repos = {n.repository for n in dag.nodes if statuses.get(n.task_id) in _ACTIVE}
     made: list[WorkflowRun] = []
     for node in ready_nodes(dag, statuses):
         if len(made) >= capacity:
@@ -287,6 +297,15 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
                 deps.store.insert_new(db.artifact_handoffs, handoff.handoff_id, handoff.model_dump(mode="json"),
                                       parent_run_id=parent.parent_run_id, producer_task_id=producer,
                                       consumer_task_id=consumer, dedupe_key=handoff.dedupe_key)
+
+
+def _child_failure_reasons(deps, parent: ParentRun, statuses: dict[str, ExecutionStatus]) -> list[str]:
+    out = []
+    for task_id, status in sorted(statuses.items()):
+        if status in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED}:
+            rec = deps.store.get(db.execution_runs, parent.child_execution_run_ids[task_id]) or {}
+            out.append(f"{task_id} {status.value}: {rec.get('error_summary') or 'no cause recorded'}")
+    return out
 
 
 def _validated_inputs(deps, parent: ParentRun, node) -> bool:
@@ -481,13 +500,13 @@ def _sync_parent_status(deps, parent: ParentRun, status: ExecutionStatus, error:
                         terminal: bool = False) -> None:
     changed = parent.status is not status
     if changed:
-        parent.status = transition(parent.status, status)
+        parent.status = _transition_via_running(parent.status, status)
     if terminal:
         parent.finished_at = utcnow()
     _save_parent(deps, parent)
     rec = ExecutionRun.model_validate(deps.store.get(db.execution_runs, parent.parent_execution_run_id))
     if rec.status is not status:
-        rec.status = transition(rec.status, status)
+        rec.status = _transition_via_running(rec.status, status)
     rec.error_summary = error
     if terminal:
         rec.finished_at = utcnow()
@@ -496,6 +515,14 @@ def _sync_parent_status(deps, parent: ParentRun, status: ExecutionStatus, error:
                    request_id=rec.request_id, task_id=rec.task_id, status=rec.status.value)
     if changed:
         _project_parent(deps, parent, error)
+
+
+def _transition_via_running(current: ExecutionStatus, target: ExecutionStatus) -> ExecutionStatus:
+    # A parent waiting on a child's approval can see that child fail; the wait
+    # has ended, so record Running before the terminal Failed state.
+    if current is ExecutionStatus.AWAITING_APPROVAL and target is ExecutionStatus.FAILED:
+        current = transition(current, ExecutionStatus.RUNNING)
+    return transition(current, target)
 
 
 def _spec_hash(spec) -> str:

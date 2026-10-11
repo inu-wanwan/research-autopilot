@@ -26,10 +26,13 @@ Poll ごとに非終端 ParentRun を先に復元する。Completed child は再
 | DAG accepted、parent poll flow 起動済み | Running |
 | 独立 child が一部 approval 待ち、他が進行可能 | Running |
 | 残りが approval 待ちだけ、または parent completion review 待ち | Awaiting Approval |
-| child に unrecoverable failure | Failed |
-| child/dependency/artifact が進行不能 | Blocked |
+| child が Failed/Blocked だが、独立 sibling が進行中または ready | Running（残りが approval 待ちだけなら Awaiting Approval） |
+| child に unrecoverable failure があり、他に進行可能な node がない | Failed |
+| child/dependency/artifact が進行不能で、他に進行可能な node がない | Blocked |
 | 全 mandatory child Completed + parent Completion Gate | Completed |
 | verified parent completion rejection | Canceled |
+
+失敗隔離：Failed/Blocked child の依存先（推移的な依存先を含む）は開始しない。依存関係のない sibling は既存の slot / repository 制約のもとで実行を続け、親は進行可能な node がなくなった時点で終端化する。終端時の親 `Execution Error` には各 Failed/Blocked/Canceled child の task ID と `error_summary` を記録する。Awaiting Approval の親で child が失敗した場合は Running を経由して Failed に遷移する（Phase 6A の状態遷移表は変更しない）。
 
 親 Completion Reviewer が deterministic artifact evidence から全 criterion を確立できない場合、既存 `COMPLETION_REVIEW` を Discord approval に送る。Linear status 変更だけでは承認にならない。
 
