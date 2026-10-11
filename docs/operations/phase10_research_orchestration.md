@@ -90,6 +90,21 @@ done
 - 同じ仕様で **INU-305** を作成（Notion ページの仕様ブロックを複製、RA の計画サブページは複製しない）。10A の計画 v1 は API 予算が RA 既定 $5。ユーザーが予算行に「API 費用 10 USD」を追記 → v2 は別行の引用で ambiguous、v3 は同一行でも `_numbers` が 10 を 1 と正規化するバグで ambiguous（`d483b91` で修正）。v3 の needs_input 通知は errors に Resume なしで届き、Discord から再開できなかった（CLI の `research resume` をユーザー依頼で実行）。
 - ユーザー決定（2026-10-12 01:4x JST）：UX 方針の確定 → 監査・修正 → E2E を最初から、の順で進める。
 
+### INU-305 の E2E 結果（2026-10-12 05:27 JST 完了）
+
+| Acceptance | 結果 | 根拠 |
+|---|---|---|
+| 1. 10A の根拠付き計画・承認・Notion 反映 | ✅ | 計画 v5 を Discord で本人承認（v1〜v4 は予算行の不具合・ユーザーの差し戻しで改訂）、承認履歴・Approval Status 反映 |
+| 2. 承認前は実行しない | ✅ | 承認まで子タスクなし、承認後に既存 Orchestrator 経由で実行 |
+| 3. 複数 geometry の収束済み RHF/FCI・ΔE と再現情報 | ✅ | INU-312（5 点）+ INU-316（2.5 Å）を Phase 4 で検証（PySCF 2.14.0、Python 3.12.2、STO-3G、収束設定・環境を保存）。ΔE：0.5 Å 0.0121635 → 2.5 Å 0.2331113 → 3.0 Å 0.2775836 Eh |
+| 4. 結果に基づく追加サンプリング | ✅ | サイクル 3 の評価で「隣接差最大の 2.0–3.0 Å」→ 2.5 Å を追加（INU-316）→ 6 点集約（INU-317） |
+| 5. Notes / Catalog / Discord 完了通知 | ✅（Evaluator は insufficient と記録） | Notes 作成、Catalog `ra-research` に research-report 登録、results に Notes URL 付き完了通知。Evaluator の判定は公開処理を子タスクの責務と誤解したため（`829bb95` で修正） |
+| 6. SSOT 整合性 | ✅ | Linear：INU-305/312/316/317 Done、未使用の子 9 件 Canceled（理由付き）、承認は authorization v1（discord 本人） |
+
+- 5 サイクルのうち 1・2・4 は仕組みの不具合で消費（Plan Reviewer の基準のぶれ、単位検証、上流成果物の受け渡し）。サイクル 5 でも入力マニフェストの相対パス・Evaluator の誤解で停止し、修正後に Resume（ユーザー 1 回、代行 1 回）。
+- この E2E 中の修正：`f64bb23` `ec8eeb3` `56c2a89` `0d54083` `329e805` `fadf9b1` `bbbc1c8` `c20df64` `352dc68` `9940775` `829bb95`。
+- 2 回目の E2E：INU-318（同一仕様）を 05:2x JST に開始、研究スコープ v1 を dev 限定 CLI 承認（`cli-dev:claude-code (delegated …)`）で承認。
+
 ### 既知の課題（未解決）
 
 - `codex_api` で実タスクを最後まで完了した例は未確認（実行中）。1 回の Codex 実行の途中では費用上限で止められない（呼び出し間で判定、1 実行は wall time 30 分で打ち切り）。エージェントが実行するコマンドに API キーが見えないことは Codex の既定ポリシー頼みで、実タスクでの確認はしていない。

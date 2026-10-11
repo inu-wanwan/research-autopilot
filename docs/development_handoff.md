@@ -116,7 +116,8 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ### Exact Next Actions
 
-0. **（2026-10-12 監査後）INU-305 の E2E を再開する**：`research resume INU-305`（またはユーザーの Run Autopilot）→ 研究スコープの承認依頼が approvals に届く（予算 API $10 が確定しているか確認）→ ユーザー承認 → 監視。
+0. **（2026-10-12 05:3x JST）INU-305 の E2E は完了**（受け入れ条件 1〜6 の確認は `docs/operations/phase10_research_orchestration.md`「INU-305 の E2E 結果」）。**INU-318（2 回目、同一仕様）を実行中**。ユーザー委任（2026-10-12）：承認・Resume は代行可（dev 限定 CLI `research-agent research approve` / `research resume`）、仕組みの改修は自律的に行ってよい（commit を打つ）、INU-318 が長引く場合は E2E をもう 1 回まで実施してよい。poll ループ：scratchpad の `poll_loop2.sh`（INU-305/318 が done で終了、最長 10 時間）。
+0. **（2026-10-12 監査後・済）INU-305 の E2E を再開する**：`research resume INU-305`（またはユーザーの Run Autopilot）→ 研究スコープの承認依頼が approvals に届く（予算 API $10 が確定しているか確認）→ ユーザー承認 → 監視。
 0. **（2026-10-12 01:4x JST、ユーザー決定）進め方：① UX 方針の議論・確定 → ② 監査（不具合、UX 方針に沿わない部分、次の段階へ進めない行き止まり）→ 修正 → ③ E2E を最初から実施。** INU-292 は打ち切り・キャンセル済み（INU-292〜304 を Linear Canceled、DB の WorkflowRun は cancelled）。新しい E2E タスクは **INU-305**（Notion https://app.notion.com/p/E2E-Phase-10-H-RHF-FCI-2026-10-12-3f669893cf8f81eaa1e7c0daa2af091c、仕様は INU-292 と同一＋予算行に「API 費用 10 USD」をユーザーが追記）。INU-305 は計画 v3 が needs_input で blocked（原因の数値照合バグは `d483b91` で修正済み、未再開）。ポーリングは停止済み、Discord gateway（PID 18313）は稼働中。監査後に INU-305 を Run Autopilot（または `research resume INU-305`）で再開する。
 0. 監査で必ず扱う既知の UX / 仕組みの課題：(a) needs_input の通知は errors に Resume なしで届き、Discord からは再開できない（設計上の再開手段は Notion の Run Autopilot。テスト `test_resume_on_a_blocked_research_run_restarts_planning` が「ボタンなし」を固定している）。(b) 予算 `BudgetItem` は引用を1つしか持てず、CPU と API の予算が別の行だと ambiguous になる。(c) Autopilot は Linear を Canceled にできない（人の操作扱い）ため、打ち切りの手順が CLI にない。(d) DoD・codex_api fallback・継続再開（b69f8bd）は実データ未検証。
 0. **DoD の実データ確認**：INU-292 の次の再試行で、Planner が引用付きの DoD を出し、決定論的検証を通り、Code Reviewer が項目別に判定することを確認する。DoD の決定論的検証で Planner が収束しない（`plan not approved after N replans`）場合は、引用一致の厳しさを見直す。
