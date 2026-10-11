@@ -38,3 +38,5 @@ htmlcov/
 
 # Phase 3 repository registry (machine-specific paths)
 config/research_repos.toml
+# Claude Code agent worktrees (temporary)
+.claude/worktrees/

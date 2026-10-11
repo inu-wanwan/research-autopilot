@@ -107,8 +107,16 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 実装：`planning/dod.py`（決定論的検証・基本項目 B1〜B5）、`models.DoneCriterion` / `ExecutionPlan.definition_of_done` / `AcceptanceMapping.done_criteria`、計画ループでの検証と seed 再計画、Planner / Plan Reviewer / Implementer / Code Reviewer のプロンプト、`implementation/facts.py`（環境の事実）、`reviewer.judge_against_dod`、`orchestrator._infeasibility_claim`、engine の `_replan_for_dod`。
 - 検証：`tests/test_definition_of_done.py`（12 件）ほか全テスト（結果は commit メッセージ参照）。実モデル（Planner が DoD を出力し、Plan Reviewer がそれを審査する）での動作は未検証。
 
+### 監査と修正（2026-10-12 / Claude Code、ユーザー委任）
+
+- UX 方針：`docs/phase_specs/ux_policy.md`（ユーザー決定：errors はボタンなしの調査用、仕様編集で自動再計画、Discord に確認付き Cancel、全 Phase に適用、Run Autopilot は残す、再開までの手順をメッセージに書く）。
+- 監査 3 本（今日のコード 14 件、通知 UX 20 件、Phase 10 状態遷移 18 件）→ 修正：`faf133a`（Phase 3）、worktree A（`6b28495`〜`b4d6427`：DoD 引用照合の正規化と DoD 差し戻しの別枠、数値の厳密照合・予算の項目別引用・自律上限の語句対応、Phase 4 環境契約の明記、環境失敗と設定不備の分離）、worktree B（`047cd68`〜`5075e21`：スコープ変更の差し戻し・却下・失効、承認ごとのサイクル上限、完了処理の再試行、tick の例外分離、dedupe、古い制御の無視、予算 None、停止後のスケジュール抑止、Run Autopilot の既存 run 採用、仕様編集での自動再計画、needs_input / 停止メッセージに Resume/Cancel と手順、Cancel の適用と Linear Canceled）、worktree C（`86fb5eb` 相当〜：approvals への集約、手順テンプレート `notifications/guidance.py`、承認依頼の版管理、失効メッセージの編集、制御ボタンの無効化、Phase 5/6B/9 の行き止まり解消、確認付き Cancel ボタン）、`a3c2cb7` / `e29a54c`（Cancel 時に保留中の承認依頼を無効化）。
+- 検証：`uv run pytest` 647 passed / 1 warning（既存 discord/audioop）。すべて fake での検証で、実 Discord / Linear / Notion では未検証。
+- 未対応（判断待ち・既知）：初期研究計画の Reject は今も研究を CANCELLED にする（方針「打ち切りは明示的な Cancel のみ」と合うか要確認）。Cancel 確認ボタンは 5 分で失効し gateway 再起動で復元しない。DAG 承認の失効後は Run Autopilot で再開（自動再推論なし）。`request_license_decision` は決定済み依頼を返す。単独の Phase 5 run の block には Resume/Cancel ボタンなし（手順のみ）。未回答の承認は約 7 日ごとに再依頼される。Cancel は投入済みの計算ジョブを止めない。
+
 ### Exact Next Actions
 
+0. **（2026-10-12 監査後）INU-305 の E2E を再開する**：`research resume INU-305`（またはユーザーの Run Autopilot）→ 研究スコープの承認依頼が approvals に届く（予算 API $10 が確定しているか確認）→ ユーザー承認 → 監視。
 0. **（2026-10-12 01:4x JST、ユーザー決定）進め方：① UX 方針の議論・確定 → ② 監査（不具合、UX 方針に沿わない部分、次の段階へ進めない行き止まり）→ 修正 → ③ E2E を最初から実施。** INU-292 は打ち切り・キャンセル済み（INU-292〜304 を Linear Canceled、DB の WorkflowRun は cancelled）。新しい E2E タスクは **INU-305**（Notion https://app.notion.com/p/E2E-Phase-10-H-RHF-FCI-2026-10-12-3f669893cf8f81eaa1e7c0daa2af091c、仕様は INU-292 と同一＋予算行に「API 費用 10 USD」をユーザーが追記）。INU-305 は計画 v3 が needs_input で blocked（原因の数値照合バグは `d483b91` で修正済み、未再開）。ポーリングは停止済み、Discord gateway（PID 18313）は稼働中。監査後に INU-305 を Run Autopilot（または `research resume INU-305`）で再開する。
 0. 監査で必ず扱う既知の UX / 仕組みの課題：(a) needs_input の通知は errors に Resume なしで届き、Discord からは再開できない（設計上の再開手段は Notion の Run Autopilot。テスト `test_resume_on_a_blocked_research_run_restarts_planning` が「ボタンなし」を固定している）。(b) 予算 `BudgetItem` は引用を1つしか持てず、CPU と API の予算が別の行だと ambiguous になる。(c) Autopilot は Linear を Canceled にできない（人の操作扱い）ため、打ち切りの手順が CLI にない。(d) DoD・codex_api fallback・継続再開（b69f8bd）は実データ未検証。
 0. **DoD の実データ確認**：INU-292 の次の再試行で、Planner が引用付きの DoD を出し、決定論的検証を通り、Code Reviewer が項目別に判定することを確認する。DoD の決定論的検証で Planner が収束しない（`plan not approved after N replans`）場合は、引用一致の厳しさを見直す。
