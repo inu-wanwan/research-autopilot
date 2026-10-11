@@ -53,6 +53,33 @@ def resume(task_id: str, actor: str = typer.Option(..., "--actor")) -> None:
     _out(orchestration.request_control(_store(), task_id, "resume", f"cli:{actor}", "cli").model_dump())
 
 
+@app.command("approve")
+def approve(task_id: str, decision: str = typer.Option("approve", "--decision", help="approve | reject | revise"),
+            actor: str = typer.Option(..., "--actor", help="who decides and on whose behalf"),
+            comment: str = typer.Option("", "--comment")) -> None:
+    """Development only (RA_ENVIRONMENT=dev): decide the task's pending approval request from the terminal,
+    recorded as cli-dev:<actor>. In production approvals are made only in Discord."""
+    from research_autopilot.autopilot.approvals import submit_cli_decision
+    from research_autopilot.autopilot.models import ApprovalRequest
+    from research_autopilot.storage import db
+    if decision not in ("approve", "reject", "revise"):
+        raise typer.BadParameter("decision must be approve, reject or revise")
+    store = _store()
+    pending = sorted((ApprovalRequest.model_validate(r) for r in store.find(db.approval_requests, task_id=task_id)
+                      if r.get("status") == "pending"), key=lambda r: r.created_at)
+    if not pending:
+        typer.echo(f"no pending approval request for {task_id}", err=True)
+        raise typer.Exit(1)
+    req = pending[-1]
+    try:
+        sub = submit_cli_decision(store, req, decision, actor, comment)
+    except (PermissionError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    _out({"request_id": req.request_id, "kind": req.kind.value, "title": req.title, "decision": decision,
+          "actor": f"cli-dev:{sub.user_id}", "note": "applied on the next poll (same spec-hash / expiry checks)"})
+
+
 @app.command("plan")
 def show_plan(task_id: str, version: int | None = typer.Option(None, "--version")) -> None:
     from research_autopilot.research import workflow

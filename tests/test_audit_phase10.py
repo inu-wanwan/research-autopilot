@@ -610,3 +610,23 @@ def test_a_completed_research_closes_its_unused_child_tasks_as_superseded(tmp_pa
     done = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r
             and r["event"].get("dedupe_key", "").startswith("research:INU-900:done")]
     assert done and any("INU-950" in d for d in done[0]["details"])
+
+
+def test_dev_only_cli_approval_is_audited_and_ignored_outside_dev(tmp_path, monkeypatch):
+    import pytest as _pytest
+    from research_autopilot.autopilot.approvals import submit_cli_decision
+    deps, *_ = _build(tmp_path)
+    poll(deps)
+    (req,) = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    monkeypatch.delenv("RA_ENVIRONMENT", raising=False)
+    with _pytest.raises(PermissionError):
+        submit_cli_decision(deps.store, req, "approve", "claude-code (delegated)")
+    monkeypatch.setenv("RA_ENVIRONMENT", "dev")
+    submit_cli_decision(deps.store, req, "approve", "claude-code (delegated by the user)")
+    monkeypatch.setenv("RA_ENVIRONMENT", "production")
+    poll(deps)  # recorded in dev, but production never counts a CLI decision
+    assert workflow.research_authorization(deps.store, "INU-900") is None
+    monkeypatch.setenv("RA_ENVIRONMENT", "dev")
+    poll(deps)
+    auth = workflow.research_authorization(deps.store, "INU-900")
+    assert auth and auth.approved_by == "cli-dev:claude-code (delegated by the user)"

@@ -132,7 +132,7 @@ class ApprovalDecision(BaseModel):
     request_id: str
     decision: Literal["approve", "reject", "revise"]
     actor: str
-    channel: Literal["prefect_form", "linear_status", "discord"]
+    channel: Literal["prefect_form", "linear_status", "discord", "cli_dev"]
     linear_state: str
     spec_hash: str
     comment: str = ""

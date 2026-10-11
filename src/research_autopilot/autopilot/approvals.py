@@ -41,6 +41,31 @@ class CheckResult:
     note: str
 
 
+CLI_DEV = "cli-dev"  # marks a decision recorded by `research-agent research approve` (development only)
+
+
+def dev_environment() -> bool:
+    """RA_ENVIRONMENT=dev: the operator may decide approvals from the CLI (delegated by the user; audited)."""
+    import os
+    return os.environ.get("RA_ENVIRONMENT", "").strip().lower() == "dev"
+
+
+def submit_cli_decision(store, req, decision: str, actor: str, comment: str = "") -> DiscordSubmission:
+    """Development only: record a decision for a pending request as if from an approver, labelled cli-dev."""
+    import uuid
+    if not dev_environment():
+        raise PermissionError("CLI approval is only available with RA_ENVIRONMENT=dev")
+    if not actor.strip():
+        raise ValueError("--actor is required (who decides and on whose behalf)")
+    if decision == "revise" and not comment.strip():
+        raise ValueError("a revise decision needs a comment")
+    sub = DiscordSubmission(interaction_id=f"{CLI_DEV}:{uuid.uuid4()}", request_id=req.request_id, decision=decision,
+                            spec_hash=req.spec_hash, user_id=actor.strip()[:200], guild_id=CLI_DEV,
+                            channel_id=CLI_DEV, comment=comment)
+    store.put(db.discord_interactions, sub.interaction_id, sub.model_dump(mode="json"), request_id=req.request_id)
+    return sub
+
+
 class ApprovalController:
     """``mode="linear"``: the Linear status change alone decides, verified by the actor's user id
     (``approver_ids``), non-bot actor, ordering after the request, no own write of that state, unchanged
@@ -119,10 +144,17 @@ class ApprovalController:
                     for s in self.store.find(db.discord_interactions, request_id=req.request_id)]
             if not subs:
                 return CheckResult(ApprovalStatus.PENDING, None, "waiting for an authorized Discord interaction")
+            if not dev_environment():  # a dev-only CLI decision never counts outside dev
+                subs = [x for x in subs if x.guild_id != CLI_DEV]
+                if not subs:
+                    return CheckResult(ApprovalStatus.PENDING, None, "waiting for an authorized Discord interaction")
             sub = subs[-1]
             if sub.spec_hash != req.spec_hash:
                 return CheckResult(ApprovalStatus.PENDING, None,
                                    "Discord interaction refers to a different spec version; ignored")
+            if sub.guild_id == CLI_DEV:
+                return self._decide(req, sub.decision, f"cli-dev:{sub.user_id}", "cli_dev", issue.state_name,
+                                    sub.comment)
             return self._decide(req, sub.decision, f"discord:{sub.user_id}", "discord", issue.state_name, sub.comment)
         if self.mode == "linear":
             if not decision_state:
