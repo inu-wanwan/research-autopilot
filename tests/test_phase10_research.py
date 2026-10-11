@@ -480,3 +480,46 @@ def test_a_new_scope_after_a_stopped_research_starts_the_next_cycle(tmp_path):
     assert run.stage is WorkflowStage.DONE, (run.blocked_reason, run.events[-4:])
     cs = orchestration.cycles(deps.store, "INU-900")
     assert [c.number for c in cs] == [1, 2] and cs[1].authorization_version == 2
+
+
+def test_child_tasks_carry_the_scope_and_the_whole_cycle_plan(tmp_path):
+    from research_fakes import ScriptedResearchLlm, draft
+    plan = draft(rationale="r", tasks=[task("T1", values=(), kind="implementation", title="implement scan"),
+                                       task("T2", deps=("T1",), title="compute")], replanning_rules=["r"])
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(plans=[plan],
+                                                                                              decisions=[complete]))
+    poll(deps)
+    impl = next(p for p in notion.pages.values() if p.origin == "RA" and "implement scan" in p.title)
+    text = str(impl.sections) + str(impl.other_sections)
+    assert "bond_length_r=0.5, 1.0, 2.0" in text and "← このタスク" in text and "0.5, 3.0" in text
+
+
+def test_no_progress_counts_only_cycles_of_the_current_authorization(tmp_path):
+    from research_autopilot.research.models import ResearchCycle
+    noprog = EvaluationDecision(action="stop", rationale="nothing yet", progress=False)
+    retry = more(("1.5",), progress=False)
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(
+        decisions=[noprog, retry, complete]))
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.BLOCKED
+    auth = workflow.research_authorization(deps.store, "INU-900")
+    deps.store.put(db.authorizations, auth.authorization_id, {**auth.model_dump(mode="json"), "revoked": True},
+                   root_task_id="INU-900")
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    (req,) = _pending(deps)
+    _discord(deps, req)
+    run = _drive(deps, 30)
+    # cycle 2 (new scope) made no progress but cycle 1 belonged to the revoked scope: the retry is allowed
+    cs = orchestration.cycles(deps.store, "INU-900")
+    assert cs[1].decision.action == "continue" and run.stage is WorkflowStage.DONE, (run.blocked_reason, [c.decision.action for c in cs])
+
+
+def test_resume_after_a_stop_re_evaluates_the_last_cycle(tmp_path):
+    stop = EvaluationDecision(action="stop", rationale="needs a human look")
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.BLOCKED
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.DONE and orchestration.cycles(deps.store, "INU-900")[0].decision.action == "complete"

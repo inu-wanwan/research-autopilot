@@ -70,6 +70,15 @@ def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
     run.execution_run_id, run.execution_request_id = er.execution_run_id, req.request_id
     run.stage, run.blocked_reason, run.waiting_for = WorkflowStage.DISCOVERED, None, None
     run.event("resumed", f"blocked research restarted by {control.actor}: authorization and plan are re-checked")
+    auth = rw.research_authorization(deps.store, run.task_id)
+    cs = cycles(deps.store, run.task_id)
+    if auth is not None and cs and cs[-1].authorization_id == auth.authorization_id and cs[-1].decision \
+            and cs[-1].decision.action == "stop":
+        last = cs[-1]  # a human resumed a stopped research: the last cycle is evaluated again
+        last.status = CycleStatus.EVALUATING
+        last.results = []
+        save_cycle(deps.store, last)
+        run.event("resumed", f"cycle {last.number} is re-evaluated after the human resume")
 
 
 def request_control(store, task_id: str, action: str, actor: str, channel: str) -> ResearchControl:
@@ -294,12 +303,22 @@ class _Stop(Exception):
 
 
 def _child_payload(deps, run, bundle, auth, cycle: ResearchCycle, t: PlannedTask) -> dict:
+    from research_autopilot.research.models import ConditionBound
     scope = auth.scope or {}
     invariants = [i.get("value") for i in scope.get("invariants", []) if i.get("value")]
     params = [f"{k}: {', '.join(v)}" for k, v in t.parameters.items()]
+    research_scope = [f"研究目的：{(scope.get('objective') or {}).get('value', '')}",
+                      f"主指標：{(scope.get('primary_metric') or {}).get('value', '')}",
+                      *[f"承認済み条件：{rw._cond(ConditionBound.model_validate(c))}" for c in scope.get("conditions", [])]]
+    cycle_plan = [f"{x.key} {x.kind}: {x.title}"
+                  + (f"（パラメータ {'; '.join(f'{k}=' + ', '.join(v) for k, v in x.parameters.items())}）" if x.parameters else "")
+                  + (f"（依存 {', '.join(x.depends_on)}）" if x.depends_on else "")
+                  + ("  ← このタスク" if x.key == t.key else "") for x in cycle.tasks]
     sections = [("目的", [t.objective, f"研究目的 {run.task_id}（{bundle.spec.title}）の研究サイクル {cycle.number} のタスク。"]),
                 ("Specification", [t.specification, *(["パラメータ：" + "; ".join(params)] if params else [])]),
                 ("Scientific invariants", invariants),
+                ("研究スコープ（承認済み・変更不可）", research_scope),
+                ("このサイクルの計画", cycle_plan),
                 ("Acceptance criteria", t.acceptance_criteria or ["成果物が検証済みで、主指標の算出に使えること"]),
                 ("Repository", [t.repository or ""]),
                 ("Allowed files", t.file_scope),
@@ -420,7 +439,8 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     elif problems and d.action == "complete":
         d.action = "stop"
         d.conclusion = (d.conclusion + " " if d.conclusion else "") + "Success is not established: " + "; ".join(problems)
-    stalled = [c for c in cs[:-1] if c.decision and not c.decision.progress][-(scope.autonomy.no_progress_cycles - 1):] \
+    same_auth = [c for c in cs[:-1] if c.authorization_id == auth.authorization_id]  # earlier scopes do not count
+    stalled = [c for c in same_auth if c.decision and not c.decision.progress][-(scope.autonomy.no_progress_cycles - 1):] \
         if scope.autonomy.no_progress_cycles > 1 else []
     if d.action == "continue" and not d.progress and len(stalled) >= scope.autonomy.no_progress_cycles - 1:
         d.action, d.conclusion = "stop", f"{scope.autonomy.no_progress_cycles} cycles without new information"
