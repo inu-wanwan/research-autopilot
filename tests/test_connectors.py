@@ -41,6 +41,8 @@ def page_json(linear_id="INU-265", parent_ds=DS, pending=False):
             "Pending": {"type": "checkbox", "checkbox": pending},
             "Linear Issue ID": {"type": "rich_text", "rich_text": rt(linear_id)},
             "分類": {"type": "select", "select": {"name": "実装"}},
+            "親タスク": {"type": "relation", "relation": [{"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]},
+            "サブタスク": {"type": "relation", "relation": [{"id": "11111111-2222-3333-4444-555555555555"}]},
         },
     }
 
@@ -91,6 +93,8 @@ def test_notion_get_task_maps_sections_across_pages():
     assert "nested detail" in task.sections["specification"]
     assert task.sections["acceptance_criteria"] == "- table exists"
     assert task.sections["input_artifacts"] == "data" and task.other_sections == {"Notes": "n"}
+    assert task.parent_page_ids == ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]
+    assert task.child_page_ids == ["11111111-2222-3333-4444-555555555555"]
 
 
 def test_notion_rejects_page_outside_data_source():

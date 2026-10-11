@@ -88,6 +88,10 @@ class NotionTask(BaseModel):
     execution_status: str | None = None
     last_run_url: str | None = None
     execution_error: str | None = None
+    # Phase 6B self-relation.  Keep both directions because Notion exposes
+    # them as separate properties even though they target the same data source.
+    parent_page_ids: list[str] = Field(default_factory=list)
+    child_page_ids: list[str] = Field(default_factory=list)
 
     def source_ref(self) -> SourceRef:
         return SourceRef(

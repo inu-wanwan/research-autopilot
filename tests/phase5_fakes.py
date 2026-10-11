@@ -79,6 +79,12 @@ class FakeLinearFull(FakeLinear):
         issue = next(i for i in self.issues.values() if i.id == issue_id)
         frm = issue.state_name
         name = super().set_state(issue_id, state_id)
+        # Linear returns the current state on inverse-relation nodes. Keep the
+        # fake faithful so a completed DAG predecessor releases its consumers.
+        completed = self.STATES[name]
+        for other in self.issues.values():
+            other.blocked_by = [b.model_copy(update={"state_name": name, "state_type": completed})
+                                if b.identifier == issue.identifier else b for b in other.blocked_by]
         self._hist(issue.identifier, frm, name)  # Autopilot's own write: actor is the API-key user
         return name
 

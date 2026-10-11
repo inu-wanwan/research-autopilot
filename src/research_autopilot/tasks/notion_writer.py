@@ -19,7 +19,7 @@ NOTES_STATUS = "ステータス"
 NOTES_CATEGORY = "分類"
 NOTES_ADOPTED = "採用"
 NOTES_RESULT = "結果"
-PROP_PARENT = "親タスク"
+from research_autopilot.tasks.notion import PROP_PARENT
 MAX_TEXT = 1900  # Notion rich_text limit is 2000 chars per element
 
 

@@ -1,0 +1,161 @@
+from pathlib import Path
+
+from phase2_fakes import PAGE, make_issue, make_page
+from phase5_fakes import ACC, INV, SECTIONS, FakeCompletionReviewer, build
+from research_autopilot.autopilot.dag import (DAGStatus, TaskDAG, TaskDAGNode, aggregate_parent_status,
+                                              discover_and_build, ready_nodes)
+from research_autopilot.autopilot.engine import poll
+from research_autopilot.autopilot.execution import ExecutionStatus
+from research_autopilot.autopilot.models import Budget, CompletionReview, CriterionResult, ResearchAuthorization
+from research_autopilot.experiments.analyst import LlmRun
+from research_autopilot.models import IssueRef
+from research_autopilot.planning.agents import Usage
+from research_autopilot.storage import db
+
+
+def _dag(nodes):
+    return TaskDAG(parent_task_id="INU-900", parent_notion_page_id=PAGE,
+                   parent_execution_run_id="er-parent", parent_specification_hash="parent-hash",
+                   dag_hash="h", nodes=nodes, status=DAGStatus.VALID)
+
+
+def _node(task, deps=(), repo="h2-test"):
+    return TaskDAGNode(task_id=task, notion_page_id=f"page-{task}", parent_task_id="INU-900",
+                       project_id="p", repository=repo, specification_hash=f"hash-{task}",
+                       dependencies=list(deps), dependency_source="linear" if deps else "none")
+
+
+def test_ready_nodes_and_parent_status_are_deterministic():
+    dag = _dag([_node("A1"), _node("A2", ["A1"]), _node("A3", ["A1"])])
+    assert [n.task_id for n in ready_nodes(dag, {})] == ["A1"]
+    statuses = {"A1": ExecutionStatus.COMPLETED}
+    assert [n.task_id for n in ready_nodes(dag, statuses)] == ["A2", "A3"]
+    statuses |= {"A2": ExecutionStatus.AWAITING_APPROVAL, "A3": ExecutionStatus.RUNNING}
+    assert aggregate_parent_status(dag, statuses) is ExecutionStatus.RUNNING
+    statuses["A3"] = ExecutionStatus.COMPLETED
+    assert aggregate_parent_status(dag, statuses) is ExecutionStatus.AWAITING_APPROVAL
+
+
+def test_cycle_and_missing_dependency_are_blocked(tmp_path):
+    deps, linear, notion, *_ = build(tmp_path)
+    parent_id = next(iter(notion.pages))
+    p1, p2 = "21111111-2222-3333-4444-555555555555", "31111111-2222-3333-4444-555555555555"
+    notion.pages[parent_id] = notion.pages[parent_id].model_copy(update={"child_page_ids": [p1, p2]})
+    ref1 = IssueRef(identifier="INU-902", title="two", state_name="Todo", state_type="unstarted")
+    ref2 = IssueRef(identifier="INU-901", title="one", state_name="Todo", state_type="unstarted")
+    i1 = make_issue("INU-901", blocked_by=(ref1,), notion_ids=(p1,)).model_copy(update={"title": "[TEST] one"})
+    i2 = make_issue("INU-902", blocked_by=(ref2, IssueRef(identifier="INU-999", title="missing", state_name="Todo", state_type="unstarted")), notion_ids=(p2,)).model_copy(update={"title": "[TEST] two"})
+    linear.issues.update({i1.identifier: i1, i2.identifier: i2})
+    for page_id, task_id in ((p1, "INU-901"), (p2, "INU-902")):
+        notion.pages[page_id] = make_page(page_id=page_id, linear_id=task_id, sections=dict(SECTIONS)).model_copy(
+            update={"parent_page_ids": [parent_id]})
+    parent = deps.plan.manager.load("INU-900")
+    dag = discover_and_build(deps.plan.manager, parent, "er")
+    assert dag.status is DAGStatus.BLOCKED
+    assert {p.code for p in dag.problems} >= {"cycle", "missing_dependency"}
+
+
+def test_identity_cross_project_and_missing_spec_are_blocked(tmp_path):
+    deps, linear, notion, *_ = build(tmp_path)
+    parent_id = next(iter(notion.pages)); child_id = "41111111-2222-3333-4444-555555555555"
+    notion.pages[parent_id] = notion.pages[parent_id].model_copy(update={"child_page_ids": [child_id]})
+    issue = make_issue("INU-901", notion_ids=(child_id,), project="another").model_copy(update={"title": "[TEST] child"})
+    linear.issues[issue.identifier] = issue
+    notion.pages[child_id] = make_page(page_id=child_id, linear_id="INU-901", sections={"purpose": "x"})
+    dag = discover_and_build(deps.plan.manager, deps.plan.manager.load("INU-900"), "er")
+    codes = {p.code for p in dag.problems}
+    assert {"identity_mismatch", "cross_project", "missing_implementation_specification",
+            "missing_acceptance_criteria", "invalid_repository_mapping"} <= codes
+
+
+class ParentAwareReviewer:
+    model = "fake"
+
+    def __init__(self):
+        self.child = FakeCompletionReviewer()
+
+    def review(self, payload):
+        if "children" not in payload:
+            return self.child.review(payload)
+        evidence = payload["allowed_evidence"][:1]
+        out = CompletionReview(criteria=[CriterionResult(criterion=c, status="met", evidence=evidence, note="")
+                                         for c in payload["task"]["acceptance_criteria"]],
+                               hypothesis_outcome="supported", summary="aggregate complete", limitations=[], unresolved=[])
+        return LlmRun(output=out, usage=Usage(input_tokens=1, output_tokens=1), model=self.model, cost_usd=0.0)
+
+
+def _parent_fixture(tmp_path: Path, count: int = 4):
+    deps, linear, notion, writer, channel = build(tmp_path, drafts=[], n=20, completion=ParentAwareReviewer())
+    deps.settings.prefect_ui_url = "http://prefect"
+    parent_id = next(iter(notion.pages))
+    child_pages = []
+    previous = None
+    for offset in range(count):
+        task_id = f"INU-{901 + offset}"
+        page_id = f"{offset + 2:08d}-2222-3333-4444-555555555555"
+        blockers = () if previous is None else (IssueRef(identifier=previous, title=previous, state_name="Todo", state_type="unstarted"),)
+        issue = make_issue(task_id, blocked_by=blockers, notion_ids=(page_id,)).model_copy(update={"title": f"[TEST] child {task_id}"})
+        linear.issues[task_id] = issue; linear.histories[task_id] = []
+        notion.pages[page_id] = make_page(page_id=page_id, linear_id=task_id, sections=dict(SECTIONS)).model_copy(
+            update={"title": f"[TEST] child {task_id}", "parent_page_ids": [parent_id]})
+        child_pages.append(page_id); previous = task_id
+    notion.pages[parent_id] = notion.pages[parent_id].model_copy(update={"child_page_ids": child_pages})
+    auth = ResearchAuthorization(root_task_id="INU-900", approved_by="human", approval_request_id="approved",
+                                 spec_hash="parent", purpose=SECTIONS["purpose"], research_target="parent", hypothesis=None,
+                                 scientific_invariants=list(INV), acceptance_criteria=list(ACC), budget=Budget(api_usd=100, compute_cpu_hours=100))
+    deps.store.init_schema()
+    deps.store.put(db.authorizations, auth.authorization_id, auth.model_dump(mode="json"), root_task_id="INU-900")
+    return deps, linear, notion, writer, child_pages
+
+
+def test_parent_intake_runs_children_and_completes_with_artifact_handoffs(tmp_path):
+    deps, linear, notion, writer, child_pages = _parent_fixture(tmp_path)
+    for _ in range(8):
+        poll(deps, prefect_flow_run_id="parent-flow")
+        parents = deps.store.find(db.parent_runs)
+        if parents and parents[0]["status"] == "Completed":
+            break
+    parent = deps.store.find(db.parent_runs)[0]
+    assert parent["status"] == "Completed"
+    assert len(parent["child_execution_run_ids"]) == 4
+    assert all(notion.pages[p].execution_status == "Completed" for p in child_pages)
+    assert all(notion.pages[p].last_run_url == "http://prefect/runs/flow-run/parent-flow" for p in child_pages)
+    assert linear.issues["INU-900"].state_name == "Done"
+    assert all(linear.issues[f"INU-{n}"].state_name == "Done" for n in range(901, 905))
+    assert deps.store.find(db.artifact_handoffs)
+    assert writer.notes
+
+
+def test_duplicate_parent_request_and_restart_do_not_duplicate_children(tmp_path):
+    deps, _, notion, _, _ = _parent_fixture(tmp_path, count=1)
+    poll(deps)
+    parent_page = notion.pages[PAGE]
+    notion.pages[PAGE] = parent_page.model_copy(update={"run_requested": True, "execution_status": "Requested"})
+    poll(deps)
+    assert len(deps.store.find(db.parent_runs)) == 1
+    assert len(deps.store.find(db.execution_runs, task_id="INU-901")) == 1
+
+
+def test_completed_parent_rerun_creates_new_version_and_history(tmp_path):
+    deps, _, notion, _, _ = _parent_fixture(tmp_path, count=1)
+    poll(deps)
+    page = notion.pages[PAGE]
+    notion.pages[PAGE] = page.model_copy(update={"run_requested": True, "execution_status": "Requested",
+                                                 "last_edited_time": "2026-10-11T12:00:00.000Z"})
+    poll(deps)
+    assert len(deps.store.find(db.parent_runs)) == 2
+    assert [x["version"] for x in deps.store.find(db.task_dags, parent_task_id="INU-900")] == [1, 2]
+    assert len(deps.store.find(db.execution_runs, task_id="INU-901")) == 2
+
+
+def test_stale_artifact_blocks_consumer(tmp_path):
+    # Hash/path validation is fail-closed at scheduling time.
+    deps, _, notion, _, _ = _parent_fixture(tmp_path, count=2)
+    poll(deps)
+    for row in deps.store.find(db.artifact_handoffs):
+        if row["consumer_task_id"] == "INU-902":
+            Path(row["path"]).write_text("tampered")
+            break
+    poll(deps)
+    runs = deps.store.find(db.execution_runs, task_id="INU-902")
+    assert runs and runs[0]["status"] == "Blocked"

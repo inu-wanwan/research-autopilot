@@ -28,6 +28,8 @@ PROP_RUN_REQUESTED = "Run Requested"
 PROP_EXECUTION_STATUS = "Execution Status"
 PROP_LAST_RUN = "Last Run"
 PROP_EXECUTION_ERROR = "Execution Error"
+PROP_PARENT = "親タスク"
+PROP_CHILDREN = "サブタスク"
 
 MAX_BLOCKS = 2000
 MAX_DEPTH = 4
@@ -101,6 +103,8 @@ class NotionClient:
             execution_status=_select(props.get(PROP_EXECUTION_STATUS)),
             last_run_url=(props.get(PROP_LAST_RUN) or {}).get("url"),
             execution_error=_plain(props.get(PROP_EXECUTION_ERROR)) or None,
+            parent_page_ids=_relation_ids(props.get(PROP_PARENT)),
+            child_page_ids=_relation_ids(props.get(PROP_CHILDREN)),
         )
 
     def find_page_ids_by_linear_id(self, identifier: str) -> list[str]:
@@ -144,6 +148,12 @@ def _select(prop: dict | None) -> str | None:
         return None
     value = prop.get(prop.get("type"))
     return value.get("name") if isinstance(value, dict) else None
+
+
+def _relation_ids(prop: dict | None) -> list[str]:
+    if not prop or prop.get("type") != "relation":
+        return []
+    return [normalize_page_id(item["id"]) for item in prop.get("relation", []) if item.get("id")]
 
 
 def _block_lines(b: dict, depth: int):

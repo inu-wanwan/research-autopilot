@@ -31,6 +31,7 @@ from research_autopilot.autopilot.models import (
 from research_autopilot.autopilot.notes import notes_blocks, proposal_blocks
 from research_autopilot.autopilot.outbox import Outbox
 from research_autopilot.autopilot.execution import ExecutionStatus, ExecutionRun, accept, record_blocked, transition
+from research_autopilot.autopilot.dag_runtime import advance_parents, intake_parent, validate_child_inputs
 from research_autopilot.experiments.models import ExperimentState, ReviewedExperimentProposal
 from research_autopilot.experiments.orchestrator import ExpDeps, run_experiment
 from research_autopilot.experiments.scope import dedupe_key
@@ -93,6 +94,9 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 summary["outbox"].append((item.key, deps.outbox.process(item).state.value))
         for req in deps.approvals.pending():
             summary["approvals"].append(_check_approval(deps, req))
+        # Recovery-first: persisted parents may have newly-ready children even
+        # when no fresh Notion checkbox is present after a process restart.
+        advance_parents(deps)
         active = [r for r in _runs(deps) if r.stage not in TERMINAL and r.stage not in WAITING
                   and r.stage is not WorkflowStage.BLOCKED]
         if only_task:
@@ -104,6 +108,20 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 if not page.run_requested or not page.linear_issue_id or (only_task and page.linear_issue_id != only_task):
                     continue
                 bundle = deps.plan.manager.load(page.linear_issue_id)
+                if page.child_page_ids:
+                    if deps.settings.dry_run:
+                        from research_autopilot.autopilot.dag import discover_and_build
+                        dag = discover_and_build(deps.plan.manager, bundle, "")
+                        summary["discovered"].append({"parent": bundle.issue.identifier,
+                                                      "dag_status": dag.status.value,
+                                                      "problems": [p.model_dump() for p in dag.problems]})
+                        continue
+                    parent, child_runs = intake_parent(deps, bundle, page,
+                                                       prefect_flow_run_id=prefect_flow_run_id)
+                    if parent:
+                        summary["discovered"].append(bundle.issue.identifier)
+                        active.extend(child_runs)
+                    continue
                 # A new explicit request may rerun a completed task.  Its Linear
                 # lifecycle is reset to the verified Todo state before workflow
                 # start; other invalid/blocked states remain fail-closed.
@@ -140,8 +158,16 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
         for run in active[: deps.settings.max_concurrent_tasks]:
             if deps.settings.dry_run:
                 continue
+            if input_error := validate_child_inputs(deps, run):
+                _block(deps, run, input_error)
+                _save(deps, run)
+                summary["advanced"].append((run.task_id, run.stage.value, run.blocked_reason))
+                continue
             advance(deps, run)
             summary["advanced"].append((run.task_id, run.stage.value, run.blocked_reason))
+        # Capture completed child artifacts and project the derived parent
+        # status in the same tick. Newly-ready work starts on the next tick.
+        advance_parents(deps)
     finally:
         store.release_lease(POLL_LEASE, "poller")
     return summary
@@ -557,6 +583,9 @@ def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
 
 
 def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: ApprovalDecision, issue) -> None:
+    from research_autopilot.autopilot.dag_runtime import apply_parent_approval
+    if apply_parent_approval(deps, req, approval):
+        return
     decision, actor = approval.decision, approval.actor
     run = next((r for r in _runs(deps) if r.waiting_for == req.request_id), None)
     if req.kind is ApprovalKind.PROPOSAL:

@@ -142,6 +142,21 @@ execution_runs = _record_table("autopilot_execution_runs", "execution_run_id",
                                sa.Column("request_id", sa.String(64), index=True, nullable=False),
                                sa.Column("task_id", sa.String(64), index=True, nullable=False),
                                sa.Column("status", sa.String(24), index=True, nullable=False))
+# Phase 6B.  Records remain JSON for forward-compatible DAG/artifact schemas;
+# indexed columns are only the stable lookup/uniqueness boundary.
+task_dags = _record_table("autopilot_task_dags", "dag_id",
+                          sa.Column("parent_task_id", sa.String(64), index=True, nullable=False),
+                          sa.Column("parent_execution_run_id", sa.String(64), index=True, unique=True, nullable=False),
+                          sa.Column("dag_hash", sa.String(64), index=True, nullable=False))
+parent_runs = _record_table("autopilot_parent_runs", "parent_run_id",
+                            sa.Column("parent_task_id", sa.String(64), index=True, nullable=False),
+                            sa.Column("parent_execution_run_id", sa.String(64), index=True, unique=True, nullable=False),
+                            sa.Column("status", sa.String(24), index=True, nullable=False))
+artifact_handoffs = _record_table("autopilot_artifact_handoffs", "handoff_id",
+                                  sa.Column("parent_run_id", sa.String(64), index=True, nullable=False),
+                                  sa.Column("producer_task_id", sa.String(64), index=True, nullable=False),
+                                  sa.Column("consumer_task_id", sa.String(64), index=True, nullable=False),
+                                  sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False))
 notifications_sent = _record_table("autopilot_notifications", "dedupe_key")
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,
