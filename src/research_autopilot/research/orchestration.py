@@ -446,7 +446,14 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     elif problems and d.action == "complete":
         d.action = "stop"
         d.conclusion = (d.conclusion + " " if d.conclusion else "") + "Success is not established: " + "; ".join(problems)
-    same_auth = [c for c in cs[:-1] if c.authorization_id == auth.authorization_id]  # earlier scopes do not count
+    resumes = [c.at for c in controls(store, run.task_id) if c.action == "resume"]
+    since = max(resumes) if resumes else None
+    # Only cycles of the current scope that started after the last human Resume count towards "no progress":
+    # a Resume is the human's decision to continue despite the earlier stalls.
+    same_auth = [c for c in cs[:-1] if c.authorization_id == auth.authorization_id
+                 and (since is None or c.started_at > since)]
+    if resume and d.action == "continue":
+        same_auth = []
     stalled = [c for c in same_auth if c.decision and not c.decision.progress][-(scope.autonomy.no_progress_cycles - 1):] \
         if scope.autonomy.no_progress_cycles > 1 else []
     if d.action == "continue" and not d.progress and len(stalled) >= scope.autonomy.no_progress_cycles - 1:

@@ -525,3 +525,17 @@ def test_resume_after_a_stop_re_evaluates_the_last_cycle(tmp_path):
     assert run.stage is WorkflowStage.DONE and orchestration.cycles(deps.store, "INU-900")[0].decision.action == "complete"
     evals = [c[1] for c in llm.calls if c[0] == "ResearchEvaluator"]
     assert "HUMAN_RESUME" not in evals[0] and evals[-1]["HUMAN_RESUME"]["actor"] == "discord:1001"
+
+
+def test_a_human_resume_resets_the_no_progress_count(tmp_path):
+    noprog = more(("1.5",), progress=False)
+    stop = EvaluationDecision(action="stop", rationale="nothing", progress=False)
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(
+        decisions=[noprog, stop, noprog, complete]))
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.BLOCKED
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    run = _drive(deps, 30)
+    cs = orchestration.cycles(deps.store, "INU-900")
+    assert [c.decision.action for c in cs] == ["continue", "continue", "complete"], [c.decision.action for c in cs]
+    assert run.stage is WorkflowStage.DONE
