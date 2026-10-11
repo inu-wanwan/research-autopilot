@@ -387,6 +387,7 @@ class LlmCall(BaseModel):
     requests: int = 0
     estimated_cost_usd: float | None = None  # None = price unknown, not estimated
     error: str | None = None
+    billing: str | None = None  # "subscription" (0 USD) or "api"; None for failed / older records
 
 
 class RunEvent(BaseModel):

@@ -183,5 +183,7 @@ def _log_call(record: PlanRunRecord, settings: Settings, agent: str, model: str,
         input_tokens=u.input_tokens if u else 0, output_tokens=u.output_tokens if u else 0,
         cached_input_tokens=u.cached_input_tokens if u else 0,
         reasoning_tokens=u.reasoning_tokens if u else 0, requests=u.requests if u else 0,
-        estimated_cost_usd=estimate_cost(u, settings.model_pricing.get(model)) if u else None,
+        estimated_cost_usd=(0.0 if run.billing == "subscription" else estimate_cost(u, settings.model_pricing.get(model)))
+        if u else None,
+        billing=run.billing if run else None,
     ))

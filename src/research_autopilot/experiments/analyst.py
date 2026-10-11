@@ -2,6 +2,7 @@
 
 Paid API: a call is made only if the model's price is configured (RA_MODEL_PRICING)
 and the run's LLM budget allows it; otherwise ``LlmBudgetError`` (-> analysis blocked).
+With RA_LLM_SUBSCRIPTION_FIRST=codex the call is tried on the subscription first (0 USD).
 """
 
 import json
@@ -10,6 +11,7 @@ from typing import Protocol
 
 from research_autopilot.config import ModelPrice
 from research_autopilot.experiments.models import AnalysisResult, ExperimentProposal, ScientificReviewResult
+from research_autopilot.llm_subscription import subscription_mode
 from research_autopilot.planning.agents import AgentConfigError, InvalidAgentOutput, TransientAgentError, Usage, _AgentsSdkBase
 from research_autopilot.planning.cost import estimate_cost
 
@@ -24,6 +26,7 @@ class LlmRun:
     usage: Usage
     model: str
     cost_usd: float | None
+    billing: str = "api"  # "subscription" calls cost 0 USD (known), "api" calls keep their priced cost
 
 
 class Analyst(Protocol):
@@ -81,12 +84,17 @@ class _PricedAgent(_AgentsSdkBase):
         from agents import Agent
 
         price = self.prices.get(self.model)
-        if price is None:
-            raise LlmBudgetError(f"no price configured for {self.model} (RA_MODEL_PRICING); paid call refused")
         if self.remaining_budget() <= 0:
             raise LlmBudgetError("LLM budget for this run is exhausted")
+        # an unpriced model may still run on the subscription; only the paid API call is refused
+        refusal = (LlmBudgetError(f"no price configured for {self.model} (RA_MODEL_PRICING); paid call refused")
+                   if price is None else None)
+        if refusal is not None and subscription_mode() is None:
+            raise refusal
         agent = Agent(name=name, instructions=instructions, model=self.model, output_type=out_type)
-        run = self._run(agent, json.dumps(payload, ensure_ascii=False, default=str), out_type)
+        run = self._run(agent, json.dumps(payload, ensure_ascii=False, default=str), out_type, api_refusal=refusal)
+        if run.billing == "subscription":
+            return LlmRun(output=run.output, usage=run.usage, model=self.model, cost_usd=0.0, billing="subscription")
         return LlmRun(output=run.output, usage=run.usage, model=self.model, cost_usd=estimate_cost(run.usage, price))
 
 

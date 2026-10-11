@@ -12,6 +12,17 @@ def prefect_backend():
 
 
 @pytest.fixture(autouse=True)
+def no_llm_subscription(monkeypatch):
+    """Never route a test's LLM call to a real ``codex`` (a developer's .env / shell may enable it)."""
+    from research_autopilot import llm_subscription
+    monkeypatch.delenv("RA_LLM_SUBSCRIPTION_FIRST", raising=False)
+    monkeypatch.delenv("RA_LLM_SUBSCRIPTION_CODEX", raising=False)
+    llm_subscription.reset()
+    yield
+    llm_subscription.reset()
+
+
+@pytest.fixture(autouse=True)
 def state_dir(tmp_path, monkeypatch):
     path = tmp_path / "state"
     monkeypatch.setenv("RA_STATE_DIR", str(path))

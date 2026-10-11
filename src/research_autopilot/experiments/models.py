@@ -318,6 +318,7 @@ class LlmUsage(BaseModel):
     cost_usd: float | None = None
     error: str | None = None
     at: datetime = Field(default_factory=utcnow)
+    billing: str | None = None  # "subscription" (0 USD) or "api"
 
 
 class ExperimentManifest(BaseModel):

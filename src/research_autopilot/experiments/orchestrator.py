@@ -585,7 +585,8 @@ def _analyze_and_propose(deps: ExpDeps, m: ExperimentManifest, run_dir: Path) ->
         m.llm_usage.append(LlmUsage(agent="analyst", model=deps.analyst.model, error=f"{type(exc).__name__}: {exc}"))
         raise _Block(f"analysis failed: {type(exc).__name__}: {exc}") from exc
     m.llm_usage.append(LlmUsage(agent="analyst", model=run.model, input_tokens=run.usage.input_tokens,
-                                output_tokens=run.usage.output_tokens, cost_usd=run.cost_usd))
+                                output_tokens=run.usage.output_tokens, cost_usd=run.cost_usd,
+                                billing=getattr(run, "billing", None)))
     analysis: AnalysisResult = run.output
     m.analysis = analysis
     m.artifact_paths["analysis"] = str(write_json(run_dir / "analysis.json", analysis))
@@ -618,7 +619,8 @@ def _review_proposals(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, analy
                                            "existing_proposals": [p["proposal"]["draft"]["title"] for p in existing]})
                 review = rr.output
                 m.llm_usage.append(LlmUsage(agent="reviewer", model=rr.model, input_tokens=rr.usage.input_tokens,
-                                            output_tokens=rr.usage.output_tokens, cost_usd=rr.cost_usd))
+                                            output_tokens=rr.usage.output_tokens, cost_usd=rr.cost_usd,
+                                            billing=getattr(rr, "billing", None)))
             except Exception as exc:  # noqa: BLE001 - recorded; scope then requires a human
                 err = f"{type(exc).__name__}: {exc}"
                 m.llm_usage.append(LlmUsage(agent="reviewer", model=deps.reviewer.model, error=err))
