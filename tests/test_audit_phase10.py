@@ -635,3 +635,29 @@ def test_dev_only_cli_approval_is_audited_and_ignored_outside_dev(tmp_path, monk
 def test_the_evaluator_knows_publishing_is_done_by_research_autopilot():
     from research_autopilot.research.evaluator import EVAL_INSTRUCTIONS
     assert "Publishing is NOT a task" in EVAL_INSTRUCTIONS and "Artifact" in EVAL_INSTRUCTIONS
+
+
+def test_exhausted_llm_credits_wait_without_counting_failures_or_dead_lettering(tmp_path):
+    from research_autopilot.autopilot import engine
+    assert engine.provider_exhausted("Error code: 429 - credit_balance_exhausted: You have no credits remaining")
+    assert engine.provider_exhausted(RuntimeError("x")) is False
+    deps, *_ = _build(tmp_path)
+    calls = {"n": 0}
+    real = deps.research.llm_factory
+
+    def broke():
+        calls["n"] += 1
+        raise RuntimeError("Error code: 429 - {'error': {'message': 'You have no credits remaining.', 'code': "
+                           "'credit_balance_exhausted'}}")
+    deps.research = ResearchDeps(llm_factory=broke)
+    for _ in range(5):
+        poll(deps)
+    run = _runs(deps)[-1]
+    assert run.stage is not WorkflowStage.DEAD_LETTER and run.attempts == 0 and calls["n"] >= 3
+    assert any(e["kind"] == "provider_unavailable" for e in run.events)
+    notices = [r for r in deps.store.find(db.notifications_sent) if "event" in r
+               and r["event"].get("dedupe_key", "").startswith("provider-credits:")]
+    assert len(notices) == 1 and notices[0]["event"]["needs_human"]
+    deps.research = ResearchDeps(llm_factory=real)  # credits added: the same run continues by itself
+    poll(deps)
+    assert _runs(deps)[-1].stage is WorkflowStage.AWAITING_AUTHORIZATION

@@ -284,6 +284,10 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
         except WriteRefused as exc:
             _block(deps, run, f"write refused: {exc}")
         except Exception as exc:  # noqa: BLE001 - transient or unexpected: retry, then dead-letter
+            if provider_exhausted(exc):  # no retry can fix it and it is not this run's failure: wait for credits
+                _wait_for_provider(deps, run, before, exc)
+                _save(deps, run)
+                break
             run.attempts += 1
             run.event("error", f"{before.value}: {type(exc).__name__}: {str(exc)[:300]}")
             if run.attempts >= deps.settings.max_stage_attempts:
@@ -307,6 +311,37 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
         if run.stage == before or run.stage in TERMINAL or run.stage in WAITING or run.stage is WorkflowStage.BLOCKED:
             break
     return run
+
+
+_EXHAUSTED = ("credit_balance_exhausted", "insufficient_quota", "no credits remaining",
+              "quota exceeded. check your plan and billing")
+
+
+class ProviderExhausted(RuntimeError):
+    """The LLM provider account has no credits left: every LLM step waits until a human adds credits."""
+
+
+def provider_exhausted(exc: BaseException | str | None) -> bool:
+    seen = 0
+    while exc is not None and seen < 5:
+        text = str(exc).lower()
+        if isinstance(exc, ProviderExhausted) or any(k in text for k in _EXHAUSTED):
+            return True
+        exc = (exc.__cause__ or exc.__context__) if isinstance(exc, BaseException) else None
+        seen += 1
+    return False
+
+
+def _wait_for_provider(deps: AutopilotDeps, run: WorkflowRun, stage: WorkflowStage, exc: BaseException) -> None:
+    """Keep the run where it is (no attempt counted, no dead letter); tell a human once a day what to do."""
+    run.event("provider_unavailable", f"{stage.value}: LLM provider credits exhausted; waiting ({str(exc)[:160]})")
+    notify_once(deps.store, human_event(
+        flow_name="autopilot", task_id=run.root_task_id or run.task_id, state="waiting",
+        headline="OpenAI API のクレジットが残っていないため、計画・評価・レビューを待機しています",
+        reason=f"{type(exc).__name__}: {str(exc)[:300]}", control_actions=[],
+        steps=["https://platform.openai.com/settings/organization/billing/ で API クレジットを追加する",
+               "追加後は次のポーリングから自動で再開します（失敗回数には数えていません）"],
+        dedupe_key=f"provider-credits:{utcnow():%Y-%m-%d}"), deps.notifier)
 
 
 def _block(deps: AutopilotDeps, run: WorkflowRun, reason: str) -> None:
@@ -495,6 +530,8 @@ def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
     run.plan_version += 1
     if seed is not None and d.status is DecisionStatus.READY:
         run.dod_claim = {**run.dod_claim, "consumed": True}  # a transient failure keeps the seed for the retry
+    if d.status is not DecisionStatus.READY and any(provider_exhausted(r.message) for r in d.reasons):
+        raise ProviderExhausted("; ".join(r.message for r in d.reasons)[:300])
     if seed is not None and d.status is DecisionStatus.READY and (kept := _claim_rejected(rec, run.dod_claim)):
         _block(deps, run, "Definition of Done infeasibility not accepted on re-planning (items kept unchanged: "
                           f"{', '.join(kept)}); a human decides. Claim: {run.dod_claim['evidence'][:300]}")
