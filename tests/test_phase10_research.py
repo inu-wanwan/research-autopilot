@@ -426,3 +426,49 @@ def test_count_limits_are_tied_to_the_varied_quantity_and_never_used_as_paramete
     assert "geometry" not in t.parameters and check_tasks([t], s, registry={"h2-test": object()}, evidence_ids=set()) == []
     seven = task(values=tuple(str(0.5 + 0.3 * i) for i in range(7)))
     assert any("maximum of 6" in p for p in check_tasks([seven], s, registry={"h2-test": object()}, evidence_ids=set()))
+
+
+def test_autonomy_numbers_must_be_in_the_quote_or_the_defaults_apply():
+    from phase2_fakes import make_issue, make_page
+
+    from research_autopilot.models import TaskSpec
+    from research_autopilot.research.models import Autonomy
+    sections = dict(RESEARCH_SECTIONS, purpose="E2E では原則1回以上の Evaluate→Replan→Execute を観測する。")
+    spec = TaskSpec.from_sources(make_issue(), make_page(sections=sections))
+    invented = scope(autonomy=Autonomy(max_cycles=1, max_new_tasks_per_cycle=0, max_retries_per_task=0,
+                                       no_progress_cycles=0, status="stated",
+                                       quote="E2E では原則1回以上の Evaluate→Replan→Execute を観測する。"))
+    a = scope_mod.verify(invented, spec).autonomy
+    assert (a.max_new_tasks_per_cycle, a.max_retries_per_task, a.no_progress_cycles) == (3, 2, 2)
+    assert a.max_cycles == 1  # the only number actually in the text (and >= 1) is kept
+
+
+def test_controls_only_on_results_and_errors_messages(tmp_path):
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path)
+    _drive(deps, 20)
+    sent = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r and r["event"]["flow_name"] == "research"]
+    with_controls = [e for e in sent if e.get("control_task_id")]
+    assert with_controls and all(e["kind"] in ("analysis_completed", "unrecoverable_error", "budget_exceeded")
+                                 for e in with_controls)
+    assert all(e["control_actions"] == ["stop"] for e in with_controls if e["kind"] == "analysis_completed")
+    assert not [e for e in sent if e["kind"] == "phase_transition" and e.get("control_task_id")]
+
+
+def test_a_new_scope_after_a_stopped_research_starts_the_next_cycle(tmp_path):
+    from research_autopilot.autopilot.models import ResearchAuthorization
+    stop = EvaluationDecision(action="stop", rationale="limits")
+    llm = ScriptedResearchLlm(decisions=[stop, complete])
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=llm)
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.BLOCKED
+    auth = workflow.research_authorization(deps.store, "INU-900")
+    deps.store.put(db.authorizations, auth.authorization_id, {**auth.model_dump(mode="json"), "revoked": True},
+                   root_task_id="INU-900")
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    (req,) = _pending(deps)
+    _discord(deps, req)
+    run = _drive(deps, 20)
+    assert run.stage is WorkflowStage.DONE, (run.blocked_reason, run.events[-4:])
+    cs = orchestration.cycles(deps.store, "INU-900")
+    assert [c.number for c in cs] == [1, 2] and cs[1].authorization_version == 2

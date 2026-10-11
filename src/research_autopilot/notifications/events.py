@@ -44,6 +44,7 @@ class NotificationEvent(BaseModel):
     dedupe_key: str | None = None
     approval_request_id: str | None = None
     control_task_id: str | None = None  # Phase 10: research run that Stop / Resume buttons act on
+    control_actions: list[str] = Field(default_factory=list)  # which buttons ("stop" / "resume") the message offers
 
     def title(self) -> str:
         return f"[Research Autopilot] {self.flow_name}: {self.kind.value}"

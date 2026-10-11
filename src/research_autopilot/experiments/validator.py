@@ -30,6 +30,41 @@ def _pointer(doc, pointer: str):
     return cur
 
 
+def _expand(doc, pointer: str) -> list[tuple[str, object]]:
+    """JSON pointer with ``*`` segments expanded over list items / dict values: [(concrete pointer, value)]."""
+    parts = pointer.lstrip("/").split("/") if pointer not in ("", "/") else []
+    out = [("", doc)]
+    for part in parts:
+        nxt = []
+        for path, cur in out:
+            if part == "*":
+                items = enumerate(cur) if isinstance(cur, list) else (cur.items() if isinstance(cur, dict) else [])
+                nxt += [(f"{path}/{k}", v) for k, v in items]
+            else:
+                key = part.replace("~1", "/").replace("~0", "~")
+                nxt.append((f"{path}/{part}", cur[int(key)] if isinstance(cur, list) else cur[key]))
+        out = nxt
+    return out
+
+
+def _find_key(obj, key: str, path: str = "") -> list[tuple[str, object]]:
+    """Every occurrence of a field name in nested records (e.g. units declared per record of a results list)."""
+    hits = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key:
+                hits.append((f"{path}/{k}", v))
+            hits += _find_key(v, key, f"{path}/{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            hits += _find_key(v, key, f"{path}/{i}")
+    return hits
+
+
+def _finite_number(raw) -> bool:
+    return not isinstance(raw, bool) and isinstance(raw, (int, float)) and math.isfinite(float(raw))
+
+
 def _nonfinite(obj, path="") -> list[str]:
     bad = []
     if isinstance(obj, float) and not math.isfinite(obj):
@@ -113,8 +148,14 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
                         value=float(raw) if numeric else None,
                     ))
                 except (KeyError, IndexError, ValueError, TypeError):
-                    checks.append(ValidationCheck(name=f"units:{out.path}:{field}", kind="units", status="fail",
-                                                  detail=f"field with declared unit {unit} missing"))
+                    # not at the top level: the field may be declared per record (e.g. results[*].delta_e_hartree)
+                    hits = _find_key(doc, field) if not field.startswith("/") else []
+                    ok = bool(hits) and all(_finite_number(v) for _, v in hits)
+                    checks.append(ValidationCheck(
+                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
+                        detail=(f"{len(hits)} nested numeric finite occurrence(s); declared unit {unit}" if ok else
+                                f"field with declared unit {unit} missing" if not hits else
+                                f"nested field is not always a finite number; declared unit {unit}")))
         elif out.format in ("npy",):
             import numpy as np
 
@@ -124,6 +165,22 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
 
     for m in spec.validation.metrics:
         doc = loaded.get(m.output)
+        if doc is not None and m.json_pointer and "*" in m.json_pointer.split("/"):
+            try:  # one metric value per record: name[<concrete pointer>]
+                vals = [(p, float(v)) for p, v in _expand(doc, m.json_pointer)]
+            except (KeyError, IndexError, ValueError, TypeError):
+                vals = []
+            ok = bool(vals) and all(math.isfinite(v) for _, v in vals)
+            for p, v in vals:
+                metrics[f"{m.name}[{p}]"] = v
+            checks.append(ValidationCheck(name=f"metric:{m.name}", kind="metric", status="pass" if ok else "fail",
+                                          detail=(f"{len(vals)} value(s) from {m.json_pointer}: {m.definition}" if vals
+                                                  else f"cannot extract {m.json_pointer} from {m.output}")))
+            if m.units and vals:
+                checks.append(ValidationCheck(name=f"metric_units:{m.name}", kind="units",
+                                              status="pass" if ok else "fail",
+                                              detail=f"metric extracted; declared unit {m.units}"))
+            continue
         try:
             val = float(_pointer(doc, m.json_pointer)) if doc is not None and m.json_pointer else None
         except (KeyError, IndexError, ValueError, TypeError):
@@ -142,6 +199,23 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
 
     for c in spec.validation.numeric_checks:
         doc = loaded.get(c.output)
+        if doc is not None and "*" in c.json_pointer.split("/"):
+            try:  # the condition must hold for every record
+                pairs = _expand(doc, c.json_pointer)
+                refs = _expand(doc, c.reference_pointer) if c.reference_pointer else None
+                if refs is not None and len(refs) != len(pairs):
+                    raise ValueError("reference pointer does not expand to the same records")
+                results = [(_cmp(c.condition, float(v), float(refs[i][1]) if refs else c.value, c.tolerance), p, v)
+                           for i, (p, v) in enumerate(pairs)]
+                ok = bool(results) and all(r[0] for r in results)
+                bad = [p for r, p, _ in results if not r]
+                checks.append(ValidationCheck(name=f"check:{c.name}", kind="numeric_check", status="pass" if ok else "fail",
+                                              detail=f"{len(results)} record(s) {c.condition} "
+                                                     f"{c.reference_pointer or c.value}" + (f"; failing {bad[:5]}" if bad else "")))
+            except (KeyError, IndexError, ValueError, TypeError) as exc:
+                checks.append(ValidationCheck(name=f"check:{c.name}", kind="numeric_check", status="fail",
+                                              detail=f"cannot evaluate: {type(exc).__name__}"))
+            continue
         try:
             x = float(_pointer(doc, c.json_pointer))
             y = float(_pointer(doc, c.reference_pointer)) if c.reference_pointer else c.value

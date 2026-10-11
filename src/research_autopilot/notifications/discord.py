@@ -377,9 +377,9 @@ class ControlButton(discord.ui.Button):
 
 
 class ControlView(discord.ui.View):
-    def __init__(self, service: DiscordControlInput, task_id: str) -> None:
+    def __init__(self, service: DiscordControlInput, task_id: str, actions: list[str] | None = None) -> None:
         super().__init__(timeout=None)
-        for action in ("stop", "resume"):
+        for action in actions or ("stop", "resume"):
             self.add_item(ControlButton(service, task_id, action))
 
 
@@ -416,8 +416,8 @@ class DiscordGatewayClient(discord.Client):
                 if delivery.state is DeliveryState.SENT and delivery.message_id and req_id:
                     self.add_view(ApprovalView(self.approvals, req_id), message_id=int(delivery.message_id))
                 elif delivery.state is DeliveryState.SENT and delivery.message_id and delivery.event.control_task_id:
-                    self.add_view(ControlView(self.controls, delivery.event.control_task_id),
-                                  message_id=int(delivery.message_id))
+                    self.add_view(ControlView(self.controls, delivery.event.control_task_id,
+                                              delivery.event.control_actions), message_id=int(delivery.message_id))
             self._views_restored = True
         if not self.deliver_pending.is_running():
             self.deliver_pending.start()
@@ -465,8 +465,8 @@ class DiscordGatewayClient(discord.Client):
                     raw = self.notifier.store.get(db.approval_requests, delivery.event.approval_request_id)
                     if raw and raw.get("status") == ApprovalStatus.PENDING.value:
                         view = ApprovalView(self.approvals, delivery.event.approval_request_id)
-                elif delivery.event.control_task_id:
-                    view = ControlView(self.controls, delivery.event.control_task_id)
+                elif delivery.event.control_task_id and delivery.route is not DiscordRoute.LOGS:
+                    view = ControlView(self.controls, delivery.event.control_task_id, delivery.event.control_actions)
                 message = await channel.send(embed=_embed(delivery.event, marker), view=view)
             except Exception as exc:  # discord.py handles 429; keep other failures retryable
                 attempts = delivery.attempts + 1

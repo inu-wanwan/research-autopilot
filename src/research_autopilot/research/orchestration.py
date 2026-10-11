@@ -103,13 +103,15 @@ def tick(deps) -> dict:
             run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
             run.event("paused", "stopped by the user: no new work starts; running jobs finish")
             _save(deps, run)
-            _milestone(deps, run.task_id, "paused", ["Research paused by the user (running jobs finish)."])
+            _milestone(deps, run.task_id, "paused", ["Research paused by the user (running jobs finish)."],
+                       kind=_ev().UNRECOVERABLE_ERROR, buttons="resume")
             out["controls"].append(f"{run.task_id}: paused")
         elif not stop and run.stage is WorkflowStage.PAUSED:
             run.stage, run.resume_stage = WorkflowStage.RESEARCHING, None
             run.event("resumed", "resumed by the user; authorization and budget are re-checked")
             _save(deps, run)
-            _milestone(deps, run.task_id, "resumed", ["Research resumed; authorization and budget re-checked."])
+            _milestone(deps, run.task_id, "resumed", ["Research resumed; authorization and budget re-checked."],
+                       kind=_ev().PHASE_TRANSITION, buttons=None)
             out["controls"].append(f"{run.task_id}: resumed")
         if run.stage in (WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.AWAITING_APPROVAL) and run.waiting_for:
             raw = deps.store.get(db.approval_requests, run.waiting_for)
@@ -160,6 +162,11 @@ def _advance_cycles(deps, run, bundle, auth, plan, cs) -> None:
     cur = cs[-1] if cs else None
     if cur is None:
         _start_cycle(deps, run, bundle, auth, 1, plan.tasks, plan.plan_id)
+        return
+    if cur.authorization_id != auth.authorization_id and cur.status is CycleStatus.COMPLETED and cur.decision \
+            and cur.decision.action in ("stop", "complete") and not any(c.plan_id == plan.plan_id for c in cs):
+        # a newly approved scope after a stopped research: its plan starts the next cycle
+        _start_cycle(deps, run, bundle, auth, cur.number + 1, plan.tasks, plan.plan_id)
         return
     if cur.status in (CycleStatus.RUNNING, CycleStatus.EVALUATING):
         parent = ParentRun.model_validate(store.get(db.parent_runs, cur.parent_run_id)) if cur.parent_run_id else None
@@ -508,7 +515,7 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         run.event("research_completed", reason[:300])
         _milestone(deps, run.task_id, f"done:{run.run_id}",
                    [f"Research completed after {len(cs)} cycle(s)", reason[:600], f"Notes: {note_url}",
-                    f"Task: {bundle.page.url if bundle.page else ''}"], kind=EventKind.TASK_COMPLETED, buttons=False)
+                    f"Task: {bundle.page.url if bundle.page else ''}"], kind=EventKind.TASK_COMPLETED, buttons=None)
     else:
         run.stage = WorkflowStage.BLOCKED
         run.blocked_reason = f"research stopped: {reason}"[:900]
@@ -516,7 +523,7 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         _milestone(deps, run.task_id, f"stopped:{run.run_id}",
                    [f"Research stopped after {len(cs)} cycle(s): {reason[:500]}", f"Notes: {note_url}",
                     f"Task: {bundle.page.url if bundle.page else ''}"],
-                   kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR, buttons=False)
+                   kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR, buttons="resume")
 
 
 def report_record(deps, run, bundle, auth, cs: list[ResearchCycle], outcome: str, reason: str,
@@ -617,13 +624,21 @@ def report_blocks(r: dict) -> list[dict]:
     return blocks
 
 
-def _milestone(deps, task_id: str, key: str, details: list[str], *, kind=None, buttons: bool = True) -> None:
+def _ev():
+    from research_autopilot.notifications.events import EventKind
+    return EventKind
+
+
+def _milestone(deps, task_id: str, key: str, details: list[str], *, kind=None, buttons: str | None = "stop") -> None:
+    """Research milestones. ``buttons``: "stop" on cycle evaluations (results), "resume" on stops / anomalies
+    (errors), None elsewhere -- the logs channel never carries controls."""
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
     try:
         notify_once(deps.store, NotificationEvent(kind=kind or EventKind.ANALYSIS_COMPLETED, flow_name="research",
                                                   flow_run_name=task_id, details=[x for x in details if x][:12],
                                                   dedupe_key=f"research:{task_id}:{key}",
-                                                  control_task_id=task_id if buttons else None), deps.notifier)
+                                                  control_task_id=task_id if buttons else None,
+                                                  control_actions=[buttons] if buttons else []), deps.notifier)
     except Exception:
         pass

@@ -60,6 +60,13 @@ def research_authorization(store, task_id: str) -> ResearchAuthorization | None:
     return max(auths, key=lambda a: a.version) if auths else None
 
 
+def _next_auth_version(store, task_id: str) -> int:
+    """Versions are never reused (revoked / superseded authorizations keep theirs)."""
+    vs = [r.get("version", 1) for r in store.find(db.authorizations, root_task_id=task_id)
+          if r.get("kind") == "research_scope"]
+    return max(vs, default=0) + 1
+
+
 def authorization_problems(store, auth: ResearchAuthorization | None, spec) -> list[str]:
     """Re-checked before execution, before every replanning step and on resume."""
     if auth is None:
@@ -188,7 +195,7 @@ def apply_decision(deps, req: ApprovalRequest, approval, issue, run: WorkflowRun
             acceptance_criteria=[c.value for c in s.success_criteria],
             budget=Budget(api_usd=s.budget.api_usd if s.budget.api_usd is not None else 0.0,
                           compute_cpu_hours=s.budget.cpu_hours if s.budget.cpu_hours is not None else 0.0),
-            version=(prev.version + 1) if prev else 1, kind="research_scope", plan_id=plan.plan_id,
+            version=_next_auth_version(deps.store, plan.task_id), kind="research_scope", plan_id=plan.plan_id,
             content_hash=plan.content_hash, scope=s.model_dump(mode="json"))
         deps.store.put(db.authorizations, auth.authorization_id, auth.model_dump(mode="json"), root_task_id=plan.task_id)
         if prev is not None:
@@ -335,7 +342,7 @@ def _notify(deps, run: WorkflowRun | None, key: str, plan: ResearchPlan, details
         notify_once(deps.store, NotificationEvent(kind=kind, flow_name="research", flow_run_name=plan.task_id,
                                                   state_name=plan.status.value, details=details[:12],
                                                   dedupe_key=f"{key}:{plan.plan_id}",
-                                                  control_task_id=plan.task_id if controls else None), deps.notifier)
+                                                  control_task_id=None), deps.notifier)
     except Exception:
         pass
 

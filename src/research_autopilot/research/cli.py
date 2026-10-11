@@ -90,3 +90,22 @@ def plan_dry_run(task_id: str, as_objective: bool = typer.Option(
           "open_questions": [q.model_dump() for q in plan.scope.open_questions],
           "scope": plan.scope.model_dump(mode="json"), "tasks": [t.model_dump(mode="json") for t in plan.tasks],
           "validation_problems": plan.validation_problems, "evidence": [e.model_dump() for e in plan.evidence]})
+
+
+@app.command("revoke")
+def revoke(task_id: str, reason: str = typer.Option(..., "--reason"), actor: str = typer.Option(..., "--actor")) -> None:
+    """Revoke the current research-scope authorization (e.g. it contains a value that was not verified).
+    The next Resume / Run Autopilot drafts a new plan version that must be approved again."""
+    from research_autopilot.autopilot.models import ResearchAuthorization
+    from research_autopilot.research import workflow
+    from research_autopilot.storage import db
+    store = _store()
+    auth = workflow.research_authorization(store, task_id)
+    if auth is None:
+        _out({"revoked": None})
+        return
+    auth = ResearchAuthorization.model_validate({**auth.model_dump(mode="json"), "revoked": True})
+    rec = auth.model_dump(mode="json")
+    rec["revocation"] = {"actor": actor, "reason": reason}
+    store.put(db.authorizations, auth.authorization_id, rec, root_task_id=auth.root_task_id)
+    _out({"revoked": auth.authorization_id, "version": auth.version, "reason": reason, "actor": actor})

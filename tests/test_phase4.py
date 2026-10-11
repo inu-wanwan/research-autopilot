@@ -392,3 +392,34 @@ def test_reviewed_proposal_roundtrip_and_phase5_compat(tmp_path):
                 "limits_metadata", "schema_version"):
         assert key in data
     assert data["proposal"]["draft"]["scientific_invariants"] == INVARIANTS
+
+
+def test_nested_record_units_and_wildcard_metrics_and_checks(tmp_path):
+    import json as _json
+
+    from research_autopilot.experiments.models import ArtifactRecord, CollectResult, JobState, JobStatus
+    from research_autopilot.experiments.validator import validate
+    from research_autopilot.implementation.experiment import Metric, NumericCheck, OutputFile
+    deps, runs, *_ = make_exp(tmp_path, compute=FakeComputeBackend([OK]))
+    m = run_experiment(deps, phase3_run_ids=runs)
+    spec = next(iter(m.specs.values()))
+    doc = {"results": [{"r": 0.5, "delta_e_hartree": 0.01}, {"r": 1.0, "delta_e_hartree": 0.03}]}
+    out = tmp_path / "res.json"
+    out.write_text(_json.dumps(doc))
+    spec = spec.model_copy(deep=True, update={
+        "outputs": [OutputFile(path="res.json", format="json", required=True, units={"delta_e_hartree": "Hartree"})],
+        "inputs": []})
+    spec.validation.metrics = [Metric(name="dE", definition="E_RHF-E_FCI", output="res.json",
+                                      json_pointer="/results/*/delta_e_hartree", units="Hartree")]
+    spec.validation.numeric_checks = [NumericCheck(name="dE_nonneg", output="res.json",
+                                                   json_pointer="/results/*/delta_e_hartree", condition="ge", value=0.0)]
+    collected = CollectResult(job_key="k", artifacts=[ArtifactRecord(path="res.json", stored_path=str(out),
+                                                                     sha256="x", size_bytes=out.stat().st_size)],
+                              missing=[], stdout_path="", stderr_path="")
+    v = validate(spec, JobStatus(job_key="k", state=JobState.SUCCEEDED, exit_code=0), collected, tmp_path, {})
+    assert v.status == "pass", v.failure_reason
+    assert v.metrics == {"dE[/results/0/delta_e_hartree]": 0.01, "dE[/results/1/delta_e_hartree]": 0.03}
+    doc["results"][1]["delta_e_hartree"] = -0.1
+    out.write_text(_json.dumps(doc))
+    v = validate(spec, JobStatus(job_key="k", state=JobState.SUCCEEDED, exit_code=0), collected, tmp_path, {})
+    assert v.status == "fail" and "failing ['/results/1/delta_e_hartree']" in v.failure_reason
