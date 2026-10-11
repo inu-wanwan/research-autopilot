@@ -56,11 +56,15 @@ EXPERIMENT DEFINITION SCHEMA. It tells the experiment runner exactly how to run 
   metrics[].json_pointer and numeric_checks[].json_pointer must point at numbers: use "/results/*/<field>" to
   check every record of a list (each record must satisfy the check); a pointer to a list or object fails.
 - environment: Phase 4 builds the Python environment itself from the commit: `uv venv --python <python_version>`,
-  then installs the dependencies declared in environment.dependency_files from the package index (`uv.lock` ->
-  `uv sync --frozen`; else `requirements.txt`; else the `pyproject.toml` dependencies) and records the exact
-  installed versions (`uv pip freeze`) as provenance. install_argv is NOT executed. So declare every runtime
-  dependency (with the version constraints the task requires) in a dependency file that exists in the repository;
-  a lock file, an offline/wheelhouse install or a container image is not needed.
+  then installs only the dependencies declared in environment.dependency_files from the package index (`uv.lock`
+  -> `uv sync --frozen --no-install-project`; else `-r requirements.txt`; else `-r pyproject.toml`) and records
+  the exact installed versions (`uv pip freeze`) as provenance. The repository itself is NOT pip-installed and
+  install_argv is NOT executed. So declare every runtime dependency (with the version constraints the task
+  requires) in a dependency file that exists in the repository; a lock file, an offline/wheelhouse install or a
+  container image is not needed. execution.setup steps and execution.argv run with that venv's Python from
+  <checkout>/<working_directory> of a plain `git archive` export: the code must import from the checkout as it
+  is (run scripts by path; with a src/ layout put src/ on sys.path explicitly or use working_directory "src"
+  for `python -m`); never rely on the package being installed.
 - resources (cpu, memory_gb, gpu, walltime_minutes): give a value, "required" or "estimated", the rationale
   and a confidence level. Do not invent hard requirements; mark estimates as estimates.
 - Do not run the actual research calculation; only implement it and make it runnable. Real research outputs are
@@ -115,9 +119,12 @@ Role boundary:
   changes an explicit scientific invariant, metric, acceptance criterion, or budget. A conservative numerical setting
   is not by itself an unapproved scientific change when the specification leaves the implementation setting open.
 - Environment reproducibility is judged against how Phase 4 actually runs: it creates `uv venv --python
-  <python_version>`, installs environment.dependency_files from the package index (uv.lock -> `uv sync --frozen`,
-  else requirements.txt, else pyproject.toml dependencies) and records the exact installed versions with
-  `uv pip freeze`; install_argv is not executed. Require only that every runtime dependency is declared there with
+  <python_version>`, installs only the dependencies of environment.dependency_files from the package index
+  (uv.lock -> `uv sync --frozen --no-install-project`, else `-r requirements.txt`, else `-r pyproject.toml`) and
+  records the exact installed versions with `uv pip freeze`; the repository itself is NOT pip-installed and
+  install_argv is not executed. execution.setup and execution.argv run with the venv's Python from
+  <checkout>/<working_directory>, so imports must work from the checkout as it is (a src/ layout package imported
+  without being on sys.path fails in Phase 4 even if the tests pass). Require only that every runtime dependency is declared there with
   the version constraints the task demands. Do not require a lock file, transitive pins, an offline/wheelhouse
   install or a container image unless the task specification explicitly asks for one.
 - Judge the submitted task specification, not an assumed predecessor implementation. If the base repository is empty
