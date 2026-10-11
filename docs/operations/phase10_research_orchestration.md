@@ -84,6 +84,12 @@ done
 - `.env`（Git 管理外）：`RA_IMPL_FALLBACK_BACKEND=codex_api`（ユーザー指示：手元開発用に Claude の枠を残すため、研究パイプラインでは Claude を使わない）。
 - 検証：`uv run pytest` 550 passed / 1 warning（既存 discord/audioop）。継続再開（b69f8bd）は fake backend の統合テストのみで、実データでは未検証。
 
+### INU-292 の打ち切りと INU-305（2026-10-12）
+
+- INU-292 は最大サイクル（5/5）に達しており、受け入れ条件（追加サンプリングのサイクル）を満たせないため、ユーザー判断で打ち切り。INU-292 と未完了の子 INU-293〜304 を Linear Canceled（操作者として API で変更、DB の linear_writes に理由を記録）、WorkflowRun を cancelled。
+- 同じ仕様で **INU-305** を作成（Notion ページの仕様ブロックを複製、RA の計画サブページは複製しない）。10A の計画 v1 は API 予算が RA 既定 $5。ユーザーが予算行に「API 費用 10 USD」を追記 → v2 は別行の引用で ambiguous、v3 は同一行でも `_numbers` が 10 を 1 と正規化するバグで ambiguous（`d483b91` で修正）。v3 の needs_input 通知は errors に Resume なしで届き、Discord から再開できなかった（CLI の `research resume` をユーザー依頼で実行）。
+- ユーザー決定（2026-10-12 01:4x JST）：UX 方針の確定 → 監査・修正 → E2E を最初から、の順で進める。
+
 ### 既知の課題（未解決）
 
 - `codex_api` で実タスクを最後まで完了した例は未確認（実行中）。1 回の Codex 実行の途中では費用上限で止められない（呼び出し間で判定、1 実行は wall time 30 分で打ち切り）。エージェントが実行するコマンドに API キーが見えないことは Codex の既定ポリシー頼みで、実タスクでの確認はしていない。
