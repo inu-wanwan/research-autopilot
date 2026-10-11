@@ -26,6 +26,8 @@ Hard rules (violations are detected automatically and stop the run):
   required setting -- do what you can, then end your final message with one line
   `DOD_INFEASIBLE: {"criteria": ["D3"], "evidence": "<what you checked and what it showed>"}`. The plan is then
   revised. Difficulty, effort or time are not infeasibility.
+- BASED_ON (if present): the worktree already contains this research's last approved implementation (task,
+  commit, changed files). Build on it -- fix or extend that code and its tests -- instead of re-implementing.
 - Write or update automated tests that check the acceptance criteria where they are testable.
 - Keep the change minimal and focused on the task; respect NON-GOALS.
 - Resolve bounded technical details by inspecting the repository and installed APIs. Selecting an API supported by
@@ -152,6 +154,7 @@ def _task_block(task: ImplementationTask) -> dict:
         "protected_paths": task.protected_paths,
         "plan": task.plan.model_dump(mode="json"),
         "definition_of_done": [c.model_dump(mode="json") for c in dod.full(task.plan)],
+        **({"based_on": task.based_on} if getattr(task, "based_on", None) else {}),
     }
 
 

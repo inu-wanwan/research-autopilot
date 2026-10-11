@@ -563,3 +563,24 @@ def test_a_research_task_sees_validated_outputs_of_earlier_cycles(tmp_path):
     later = next(iter(second.child_task_ids.values()))
     seen = {a["identity"]["producer_task_id"] for a in upstream_artifacts(deps.store, later)}
     assert seen & producers  # cycle-2 work can read what cycle 1 validated
+
+
+def test_later_cycles_build_on_the_last_validated_implementation_of_the_research(tmp_path):
+    deps, *_ = _build(tmp_path, llm=ScriptedResearchLlm(decisions=[more(), complete]))
+    from test_phase10_research import _discord
+    poll(deps)
+    (req,) = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    _discord(deps, req)
+    for _ in range(40):
+        poll(deps)
+        if _runs(deps)[-1].stage in (WorkflowStage.DONE, WorkflowStage.BLOCKED):
+            break
+    first, second = orchestration.cycles(deps.store, "INU-900")[:2]
+    manifests = [deps.store.get_implementation(rid) for r in _runs_all(deps) if r.research_cycle_id == second.cycle_id
+                 for rid in r.phase3_run_ids]
+    earlier = {deps.store.get_implementation(rid).implementation_commit for r in _runs_all(deps)
+               if r.research_cycle_id == first.cycle_id for rid in r.phase3_run_ids}
+    based = [m for m in manifests if m and m.task.based_on]
+    assert based and all(m.task.base_commit in earlier | {x.implementation_commit for x in manifests if x}
+                         for m in based)
+    assert any('"based_on"' in c.prompt for c in deps.impl.backends["codex"].calls)

@@ -77,6 +77,8 @@ class ImplementationTask(BaseModel):
     sources: list[SourceRef]
     catalog_artifacts: list[dict] = Field(default_factory=list)  # Phase 7A verified read-only inputs
     external_implementations: list[dict] = Field(default_factory=list)  # Phase 9 Registry entries usable via external_code
+    # research: the worktree starts from the research's last approved implementation (task, commit, changed files)
+    based_on: dict | None = None
 
 
 class BackendStatus(BaseModel):

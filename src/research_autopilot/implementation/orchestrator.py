@@ -363,6 +363,10 @@ def _prepare_task(deps: ImplDeps, h: ExecutionHandoff, manifest: ImplementationM
         info["base_commit"] = base
         scope = list(rctx.report.allowed_repair_scope)
         protected += rctx.original_spec.locked_scientific_inputs()
+    based_on = None
+    if rctx is None and (prior := _research_predecessor(deps, h.task_id, repo.id, wt)):
+        # a research builds one code base across cycles: start from its last approved implementation (never main)
+        info["base_commit"], based_on = prior["commit"], prior
     # The experiment definition file is system-defined metadata and always in scope.
     scope = scope + ([EXPERIMENT_DEFINITION_PATH] if EXPERIMENT_DEFINITION_PATH not in scope else [])
     run8 = manifest.phase3_run_id[:8]
@@ -380,9 +384,11 @@ def _prepare_task(deps: ImplDeps, h: ExecutionHandoff, manifest: ImplementationM
         acceptance_criteria=h.acceptance_criteria, non_goals=h.non_goals, input_artifacts=h.input_artifacts,
         artifact_requirements=h.artifact_requirements, plan=h.plan, sources=h.sources,
         catalog_artifacts=implementer_view(h.catalog_resolution) + upstream_artifacts(deps.store, h.task_id),
-        external_implementations=h.external_implementations,
+        external_implementations=h.external_implementations, based_on=based_on,
     )
     manifest.task = task
+    if based_on:
+        manifest.event("worktree", f"based on {based_on['task_id']}'s approved implementation {based_on['commit'][:12]}")
     if rctx is not None:
         manifest.assessment = rctx.original.assessment
         manifest.implementer_choice = rctx.original.implementer_choice
@@ -640,6 +646,35 @@ def _complete(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTas
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _research_predecessor(deps: ImplDeps, task_id: str, repo_id: str, wt: WorktreeManager) -> dict | None:
+    """The latest implementation of another task of the same research objective in this repository whose
+    experiment also validated (an approved commit that failed in Phase 4 is not a base to build on)."""
+    from research_autopilot.experiments.models import ExperimentState
+    from research_autopilot.storage import db
+    runs = list(deps.store.find(db.workflow_runs, task_id=task_id))
+    root = next((r.get("root_task_id") for r in runs if r.get("research_cycle_id")), None)
+    if not root:
+        return None
+    best = None
+    for r in deps.store.find(db.workflow_runs):
+        if r.get("root_task_id") != root or not r.get("research_cycle_id") or r.get("task_id") == task_id:
+            continue
+        validated = set()
+        for eid in r.get("experiment_run_ids", []):
+            e = deps.store.get_experiment(eid)
+            if e and e.state is ExperimentState.COMPLETED:
+                validated.add(e.phase3_run_id)
+        for rid in r.get("phase3_run_ids", []):
+            m = deps.store.get_implementation(rid) if rid in validated else None
+            if m and m.state is RunState.COMPLETED and m.implementation_commit and m.task and m.task.repo_id == repo_id \
+                    and (best is None or m.updated_at > best.updated_at):
+                best = m
+    if best is None or wt.git("cat-file", "-t", best.implementation_commit, check=False).strip() != "commit":
+        return None
+    return {"task_id": best.task_id, "commit": best.implementation_commit, "branch": best.task.branch,
+            "phase3_run_id": best.phase3_run_id, "changed_files": list(best.changed_files)[:50]}
 
 
 def _infeasibility_claim(summary: str, task: ImplementationTask) -> dict | None:
