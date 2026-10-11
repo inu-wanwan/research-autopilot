@@ -170,6 +170,21 @@ def verify(scope: ResearchScope, spec) -> ResearchScope:
     return s
 
 
+MINIMUM = re.compile(r"^\s*(?:回|件|点|cycles?|times?|サイクル)?\s*(?:以上|or more|at least|minimum|を下回らない)", re.I)
+AT_LEAST = re.compile(r"(?:at least|minimum of|少なくとも|最低)\s*$", re.I)
+
+
+def _upper_bounds(quote: str) -> set[str]:
+    """Numbers that can be read as a limit: "1回以上" / "at least 2" are minimums, never upper limits."""
+    out = set()
+    for m in NUMBER.finditer(quote or ""):
+        if MINIMUM.match(quote[m.end():]) or AT_LEAST.search(quote[:m.start()]):
+            continue
+        n = m.group(0).lstrip("-").rstrip("0").rstrip(".") if "." in m.group(0) else m.group(0).lstrip("-")
+        out.add(n or "0")
+    return out
+
+
 def _check_autonomy(a, text: str, qs: list[OpenQuestion]):
     """Each stated limit must be a number in the quoted text and within sane bounds; otherwise the RA default
     applies (and is shown as such for approval)."""
@@ -177,7 +192,7 @@ def _check_autonomy(a, text: str, qs: list[OpenQuestion]):
     default = Autonomy()
     if a.status != "stated" or not a.quote or find_quote(a.quote, [text]) is None:
         return default
-    nums = _numbers(a.quote)
+    nums = _upper_bounds(a.quote)
     lows = {"max_cycles": 1, "max_new_tasks_per_cycle": 1, "max_retries_per_task": 0, "no_progress_cycles": 1}
     kept, reverted = {}, []
     for field, low in lows.items():

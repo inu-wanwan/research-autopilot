@@ -439,8 +439,16 @@ def test_autonomy_numbers_must_be_in_the_quote_or_the_defaults_apply():
                                        no_progress_cycles=0, status="stated",
                                        quote="E2E では原則1回以上の Evaluate→Replan→Execute を観測する。"))
     a = scope_mod.verify(invented, spec).autonomy
-    assert (a.max_new_tasks_per_cycle, a.max_retries_per_task, a.no_progress_cycles) == (3, 2, 2)
-    assert a.max_cycles == 1  # the only number actually in the text (and >= 1) is kept
+    # "1回以上" is a minimum, never an upper limit: every limit falls back to the RA default
+    assert (a.max_cycles, a.max_new_tasks_per_cycle, a.max_retries_per_task, a.no_progress_cycles) == (5, 3, 2, 2)
+    assert a.status == "ra_default"
+    sections["purpose"] = "Autonomy: at most 4 cycles and 2 new tasks per cycle; retries up to 1."
+    spec = TaskSpec.from_sources(make_issue(), make_page(sections=sections))
+    stated = scope(autonomy=Autonomy(max_cycles=4, max_new_tasks_per_cycle=2, max_retries_per_task=1,
+                                     no_progress_cycles=2, status="stated",
+                                     quote="Autonomy: at most 4 cycles and 2 new tasks per cycle; retries up to 1."))
+    a = scope_mod.verify(stated, spec).autonomy
+    assert (a.max_cycles, a.max_new_tasks_per_cycle, a.max_retries_per_task) == (4, 2, 1)
 
 
 def test_controls_only_on_results_and_errors_messages(tmp_path):
