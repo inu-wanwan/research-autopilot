@@ -152,7 +152,7 @@ def phase2_apply(tmp_path: Path, sections: dict | None = None, mode: str = "appl
 
 def make_impl_deps(tmp_path: Path, codex: list[dict], claude: list[dict] | None = None, reviewer: list | None = None,
                    claude_reviewer: list | None = None, sections: dict | None = None, mode: str = "apply",
-                   **settings_kw):
+                   codex_api: list[dict] | None = None, codex_api_reviewer: list | None = None, **settings_kw):
     repo = make_repo(tmp_path)
     deps2, notion, linear, rec = phase2_apply(tmp_path, sections, mode)
     settings = Phase3Settings(worktrees_dir=tmp_path / "worktrees", **settings_kw)
@@ -162,4 +162,7 @@ def make_impl_deps(tmp_path: Path, codex: list[dict], claude: list[dict] | None 
         backends={"codex": FakeBackend("codex", codex), "claude": FakeBackend("claude", claude or [])},
         reviewers={"codex": FakeReviewer("codex", reviewer or []), "claude": FakeReviewer("claude", claude_reviewer or [])},
     )
+    if codex_api is not None:  # the pay-as-you-go fallback is wired only when a test scripts it
+        deps.backends["codex_api"] = FakeBackend("codex_api", codex_api)
+        deps.reviewers["codex_api"] = FakeReviewer("codex_api", codex_api_reviewer or [])
     return deps, repo, rec, notion, linear

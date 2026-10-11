@@ -505,13 +505,23 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
 def _switch_to_fallback(deps: ImplDeps, m: ImplementationManifest, attempt: AttemptRecord, result: ImplementationResult,
                         wt: WorktreeManager, task: ImplementationTask, run_dir: Path) -> None:
     s = deps.settings
-    fb = s.fallback_backend
-    if fb is None or fb == attempt.choice.backend or m.fallback_used or s.max_fallbacks < 1:
+    tried = {m.implementer_choice.backend if m.implementer_choice else attempt.choice.backend,
+             attempt.choice.backend, *m.fallbacks_used}
+    candidates = [b for b in s.fallback_backends if b not in tried and b in deps.backends]
+    if not candidates or len(m.fallbacks_used) >= s.max_fallbacks:
         raise _Stop(RunState.BLOCKED, "fallback_unavailable",
                     f"{attempt.choice.backend} {result.status} and no fallback left", result.status)
-    status = deps.backends[fb].status()
-    if not (status.installed and status.authenticated):
-        raise _Stop(RunState.BLOCKED, "fallback_unavailable", f"fallback {fb} not usable: {status.detail}", result.status)
+    fb, unusable = None, []
+    for name in candidates:  # in the configured order; an unusable one is skipped, not fatal
+        status = deps.backends[name].status()
+        if status.installed and status.authenticated:
+            fb = name
+            break
+        unusable.append(f"{name}: {status.detail}")
+    if fb is None:
+        raise _Stop(RunState.BLOCKED, "fallback_unavailable",
+                    f"{attempt.choice.backend} {result.status}; fallback not usable ({'; '.join(unusable)})",
+                    result.status)
     # Old process must be gone before another backend touches the worktree.
     if result.pid and pid_alive(result.pid):
         terminate_group(result.pid)
@@ -519,6 +529,7 @@ def _switch_to_fallback(deps: ImplDeps, m: ImplementationManifest, attempt: Atte
         raise _Stop(RunState.BLOCKED, "fallback_unavailable", f"previous backend process {result.pid} still running")
     _save_diff(wt, task, run_dir, attempt.number, suffix=f"before-fallback-{attempt.choice.backend}")
     m.fallback_used = True
+    m.fallbacks_used.append(fb)
     attempt.fallback_reason = f"{attempt.choice.backend} {result.status}: {result.error or ''}".strip()
     attempt.choice = routing.choose(s, fb, attempt.choice.tier)
     m.event("fallback", f"switching to {fb}/{attempt.choice.model} ({attempt.fallback_reason})")
@@ -533,9 +544,9 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     _save(deps, m, run_dir)
     _progress(deps, m, run_dir, f"review for attempt {attempt.number} started")
     choice = routing.reviewer_choice(s, m.assessment)
-    other = s.fallback_backend if s.fallback_backend and s.fallback_backend != choice.backend else None
-    fallback = (routing.choose(s, other, choice.tier), deps.reviewers[other]) if other and other in deps.reviewers else None
-    outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallback,
+    fallbacks = [(routing.choose(s, b, choice.tier), deps.reviewers[b]) for b in s.fallback_backends
+                 if b != choice.backend and b in deps.reviewers]
+    outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallbacks,
                      on_event=lambda msg: _progress(deps, m, run_dir, msg),
                      extra_checks=lambda: [_experiment_check(task, wt)],
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,

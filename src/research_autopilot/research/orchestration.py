@@ -118,7 +118,8 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     previous = [ParentRun.model_validate(x) for x in deps.store.find(db.parent_runs)
                 if x.get("research_cycle_id") == cycle.cycle_id]
     # only retries in which some child was planned / worked on count against max_retries_per_task: a retry refused
-    # by a start gate before any work (e.g. a stale Linear state) did not try the task again (user decision)
+    # by a start gate before any work (e.g. a stale Linear state) or cut off by a backend usage limit did not try
+    # the task again (user decisions)
     retries_used = sum(1 for p in previous if p.parent_run_id != _first_parent(previous).parent_run_id
                        and _attempted(deps, p))
     max_retries = int(((auth.scope or {}).get("autonomy") or {}).get("max_retries_per_task", 2))
@@ -177,14 +178,31 @@ def _first_parent(parents: list[ParentRun]) -> ParentRun:
     return min(parents, key=lambda p: p.created_at)
 
 
+_USAGE_LIMITS = {"quota_exhausted", "rate_limited"}
+
+
 def _attempted(deps, parent: ParentRun) -> bool:
     """Was any child of this ParentRun actually worked on? Phase 2 planning ran (a plan id, even if the plan was
-    then blocked) -- a start-gate refusal never gets one."""
+    then blocked) -- a start-gate refusal never gets one -- and the child was not cut off by a coding backend's
+    usage limit (an interruption by the provider, not a failed try of the task; user decision)."""
     for run_id in parent.child_workflow_run_ids.values():
         raw = deps.store.get(db.workflow_runs, run_id)
-        if raw and (raw.get("plan_id") or raw.get("phase3_run_ids") or raw.get("experiment_run_ids")):
-            return True
+        if not raw or not (raw.get("plan_id") or raw.get("phase3_run_ids") or raw.get("experiment_run_ids")):
+            continue
+        if raw.get("stage") == WorkflowStage.BLOCKED.value and raw.get("phase3_run_ids") \
+                and _usage_limited(deps, raw["phase3_run_ids"][-1]):
+            continue
+        return True
     return False
+
+
+def _usage_limited(deps, phase3_run_id: str) -> bool:
+    get = getattr(deps.store, "get_implementation", None)
+    try:
+        m = get(phase3_run_id) if get else None
+    except Exception:
+        return False
+    return bool(m and m.failure_classification in _USAGE_LIMITS)
 
 
 def request_control(store, task_id: str, action: str, actor: str, channel: str) -> ResearchControl:

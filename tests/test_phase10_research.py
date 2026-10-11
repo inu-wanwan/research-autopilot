@@ -574,7 +574,7 @@ def test_resume_retries_a_blocked_child_dag_inside_the_same_cycle(tmp_path):
     assert len(orchestration.cycles(deps.store, "INU-900")) == 1
 
 
-def _block_cycle_dag(deps, cycle, *, worked_on: bool) -> None:
+def _block_cycle_dag(deps, cycle, *, worked_on: bool, usage_limited: bool = False) -> None:
     from research_autopilot.autopilot.dag import ParentRun
     from research_autopilot.autopilot.execution import ExecutionRun, ExecutionStatus
 
@@ -587,6 +587,11 @@ def _block_cycle_dag(deps, cycle, *, worked_on: bool) -> None:
     for task_id, run_id in parent.child_workflow_run_ids.items():
         raw = deps.store.get(db.workflow_runs, run_id)
         raw.update(stage="blocked", plan_id="p1" if worked_on else None, phase3_run_ids=[], experiment_run_ids=[])
+        if usage_limited:  # Phase 3 was cut off by the coding backends' usage limits
+            from research_autopilot.implementation.models import ImplementationManifest, RunState
+            m = ImplementationManifest(task_id=task_id, state=RunState.BLOCKED, failure_classification="quota_exhausted")
+            deps.store.save_implementation(m)
+            raw["phase3_run_ids"] = [m.phase3_run_id]
         deps.store.put(db.workflow_runs, run_id, raw, task_id=task_id, stage="blocked")
     parent.status = ExecutionStatus.BLOCKED
     deps.store.put(db.parent_runs, parent.parent_run_id, parent.model_dump(mode="json"),
@@ -619,6 +624,20 @@ def test_a_retry_refused_before_any_work_does_not_use_up_the_retry_limit(tmp_pat
     poll(deps)
     cycle = orchestration.cycles(deps.store, "INU-900")[0]
     assert len([x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]) == 5
+
+
+def test_a_retry_cut_off_by_a_backend_usage_limit_does_not_use_up_the_retry_limit(tmp_path):
+    stop = EvaluationDecision(action="stop", rationale="implementation child failed")
+    deps, *_ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    for i, (worked_on, limited) in enumerate([(True, False), (True, True), (True, True), (True, False)]):
+        cycle = orchestration.cycles(deps.store, "INU-900")[0]
+        _block_cycle_dag(deps, cycle, worked_on=worked_on, usage_limited=limited)
+        orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+        poll(deps)
+        cycle = orchestration.cycles(deps.store, "INU-900")[0]
+        assert len([x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]) == i + 2
+    assert cycle.budget_after["cycle_retry"] == 2
 
 
 def test_planning_prompts_treat_bounded_api_discovery_as_implementation_work():

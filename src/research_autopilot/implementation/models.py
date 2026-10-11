@@ -14,7 +14,7 @@ from research_autopilot.models import ExecutionPlan, SourceRef, new_id, utcnow
 
 Level = Literal["low", "medium", "high"]
 Tier = Literal["lightweight", "standard", "high_reasoning"]
-BackendName = Literal["codex", "claude"]
+BackendName = Literal["codex", "claude", "codex_api"]  # codex_api: Codex CLI billed to the OpenAI API key
 
 TIER_ORDER: list[Tier] = ["lightweight", "standard", "high_reasoning"]
 
@@ -289,6 +289,7 @@ class ImplementationManifest(BaseModel):
     attempts: list[AttemptRecord] = Field(default_factory=list)
     backend_invocations: int = 0
     fallback_used: bool = False
+    fallbacks_used: list[BackendName] = Field(default_factory=list)  # in switch order
     active_backend_pid: int | None = None
     active_backend: BackendName | None = None
     usage: Usage = Field(default_factory=Usage)

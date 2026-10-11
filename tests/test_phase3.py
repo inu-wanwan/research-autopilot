@@ -339,10 +339,69 @@ def test_auth_error_does_not_fall_back(tmp_path):
     assert codes(m) == ["auth_error"] and deps.backends["claude"].calls == []
 
 
-def test_only_one_fallback(tmp_path):
+def test_no_fallback_left_after_every_configured_backend(tmp_path):
     deps, _, rec, _, _ = make_impl_deps(tmp_path, [{"status": "quota_exhausted"}], claude=[{"status": "rate_limited"}])
     m = implement(deps, handoff_path=Path(rec.handoff_path))
     assert codes(m) == ["fallback_unavailable"]
+
+
+def test_subscription_limits_on_both_backends_fall_back_to_the_api_billed_codex(tmp_path):
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [{"status": "quota_exhausted", "files": {"h2_energy.py": GOOD_CODE}}],
+                                        claude=[{"status": "quota_exhausted"}],
+                                        codex_api=[{"files": {"tests/test_h2.py": GOOD_TEST, **EXP}, "cost": 0.4}])
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.state is RunState.COMPLETED, m.block_reasons
+    assert m.fallbacks_used == ["claude", "codex_api"] and m.attempts[0].choice.backend == "codex_api"
+    assert m.cost_usd_known >= 0.4  # API-billed calls are accounted against the cost limits
+    assert "CURRENT STATE OF THE WORKTREE" in deps.backends["codex_api"].calls[0].prompt
+
+
+def test_an_unusable_fallback_is_skipped_and_the_fallback_limit_holds(tmp_path):
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [{"status": "quota_exhausted"}], codex_api=[GOOD])
+    deps.backends["claude"].authenticated = False
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.state is RunState.COMPLETED and m.fallbacks_used == ["codex_api"]
+    deps, _, rec, _, _ = make_impl_deps(tmp_path / "limit", [{"status": "quota_exhausted"}],
+                                        claude=[{"status": "quota_exhausted"}], codex_api=[GOOD], max_fallbacks=1)
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert codes(m) == ["fallback_unavailable"] and deps.backends["codex_api"].calls == []
+
+
+def test_reviewer_falls_back_through_every_backend(tmp_path):
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [GOOD], reviewer=["quota_exhausted"],
+                                        claude_reviewer=["quota_exhausted"], codex_api=[])
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.state is RunState.COMPLETED and m.final_review.reviewer.backend == "codex_api"
+
+
+def test_api_billed_codex_backend_isolates_its_login_and_prices_every_call(tmp_path, monkeypatch):
+    from research_autopilot.config import ModelPrice
+    from research_autopilot.implementation.backends.base import BackendRequest
+    from research_autopilot.implementation.backends.codex import CodexApiBackend
+    from research_autopilot.implementation.models import ImplementationTask, ModelChoice
+
+    fake = tmp_path / "codex"
+    fake.write_text("#!/bin/sh\ncat >/dev/null\n"
+                    '[ -n "$CODEX_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ "$CODEX_HOME" = "' + str(tmp_path / "home")
+                    + '" ] || exit 3\n'
+                    'echo \'{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\'\n'
+                    'echo \'{"type":"turn.completed","usage":{"input_tokens":1000000,"cached_input_tokens":0,'
+                    '"output_tokens":100000}}\'\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-forwarded")
+    backend = CodexApiBackend("sk-test", {"gpt-priced": ModelPrice(input_per_1m=1.0, output_per_1m=10.0)},
+                              tmp_path / "home", executable=str(fake))
+    assert backend.status().authenticated and backend.status().billing == "api"
+    task = ImplementationTask.model_construct(worktree_path=str(tmp_path))
+    req = lambda model: BackendRequest(task=task, choice=ModelChoice(backend="codex_api", tier="high_reasoning",
+                                                                     model=model), prompt="p", timeout_seconds=30,
+                                       log_path=tmp_path / f"{model}.log")
+    r = backend.run(req("gpt-priced"), lambda pid: None)
+    assert r.status == "completed" and r.backend == "codex_api" and r.cost_usd == 2.0
+    refused = backend.run(req("gpt-unpriced"), lambda pid: None)
+    assert refused.status == "process_error" and "RA_MODEL_PRICING" in refused.error
+    assert not (tmp_path / "gpt-unpriced.log").exists()  # never launched
+    assert not CodexApiBackend(None, {}, tmp_path / "home", executable=str(fake)).status().authenticated
 
 
 # ---------------------------------------------------------------- budget / time

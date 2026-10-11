@@ -14,6 +14,7 @@ DEFAULT_MODELS: dict[BackendName, dict[Tier, str]] = {
     "claude": {"lightweight": "claude-haiku-4-5-20251001", "standard": "claude-sonnet-5-5",
                "high_reasoning": "claude-opus-5-5"},
 }
+DEFAULT_MODELS["codex_api"] = dict(DEFAULT_MODELS["codex"])  # same Codex models, billed to the API key
 DEFAULT_EFFORT: dict[Tier, str] = {"lightweight": "low", "standard": "medium", "high_reasoning": "high"}
 
 
@@ -21,7 +22,9 @@ class Phase3Settings(BaseModel):
     repos_file: Path = Path("config/research_repos.toml")
     worktrees_dir: Path = Path.home() / ".research-autopilot" / "worktrees"
     primary_backend: BackendName = "codex"
-    fallback_backend: BackendName | None = "claude"
+    # tried in order when the active backend hits a usage limit / rate limit / process failure; codex_api is the
+    # pay-as-you-go last resort after both subscriptions (user decision 2026-10-12)
+    fallback_backends: list[BackendName] = Field(default_factory=lambda: ["claude", "codex_api"])
     reviewer_backend: BackendName = "codex"
     models: dict[BackendName, dict[Tier, str]] = Field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_MODELS.items()})
     reasoning_effort: dict[Tier, str] = Field(default_factory=lambda: dict(DEFAULT_EFFORT))
@@ -31,7 +34,7 @@ class Phase3Settings(BaseModel):
 
     max_revisions: int = Field(default=2, ge=0, le=2)
     max_attempts: int = Field(default=3, ge=1, le=3)
-    max_fallbacks: int = Field(default=1, ge=0, le=1)
+    max_fallbacks: int = Field(default=2, ge=0, le=2)
     max_concurrent_tasks: int = Field(default=1, ge=1, le=1)
     task_wall_time_seconds: int = Field(default=1800, ge=60)
     max_tokens_per_run: int = Field(default=3_000_000, ge=1)
@@ -57,9 +60,11 @@ def load_phase3_settings(env: dict[str, str] | None = None) -> Phase3Settings:
         if (raw := env.get(var, "").strip()):
             data[field] = conv(raw)
     data["worktrees_dir"] = Path(data["worktrees_dir"]).expanduser()
-    if "RA_IMPL_FALLBACK_BACKEND" in env:
-        data["fallback_backend"] = env["RA_IMPL_FALLBACK_BACKEND"].strip() or None
-    for backend in ("codex", "claude"):
+    if "RA_IMPL_FALLBACK_BACKEND" in env:  # comma-separated, in order; empty disables fallback
+        data["fallback_backends"] = [b.strip() for b in env["RA_IMPL_FALLBACK_BACKEND"].split(",") if b.strip()]
+    if (raw := env.get("RA_IMPL_MAX_FALLBACKS", "").strip()):
+        data["max_fallbacks"] = int(raw)
+    for backend in ("codex", "claude", "codex_api"):
         for tier, suffix in (("lightweight", "LIGHT"), ("standard", "STANDARD"), ("high_reasoning", "HIGH")):
             if (raw := env.get(f"RA_{backend.upper()}_MODEL_{suffix}", "").strip()):
                 data["models"][backend][tier] = raw

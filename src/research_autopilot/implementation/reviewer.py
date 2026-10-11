@@ -108,7 +108,8 @@ def deterministic_report(task: ImplementationTask, repo: RepoConfig, wt: Worktre
 
 
 def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choice: ModelChoice,
-           runner: ReviewerRunner, log_dir: Path, fallback: tuple[ModelChoice, ReviewerRunner] | None = None,
+           runner: ReviewerRunner, log_dir: Path,
+           fallback: tuple[ModelChoice, ReviewerRunner] | list[tuple[ModelChoice, ReviewerRunner]] | None = None,
            on_event: Callable[[str], None] = lambda m: None,
            extra_checks: Callable[[], list[CheckResult]] | None = None,
            science_guard: Callable[[], list[str]] | None = None,
@@ -156,7 +157,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
     usage, cost = Usage(), 0.0
     cost_known = True
     parsed, used = None, None
-    candidates = [(choice, runner)] + ([fallback] if fallback else [])
+    candidates = [(choice, runner)] + (fallback if isinstance(fallback, list) else [fallback] if fallback else [])
     for i, (ch, run) in enumerate(candidates):
         for attempt in range(2):  # one retry for invalid JSON
             on_event(f"reviewer {ch.backend}/{ch.model} started (try {attempt + 1})")

@@ -2,7 +2,7 @@
 
 from research_autopilot.config import Settings, load_settings
 from research_autopilot.implementation.backends.claude import ClaudeBackend
-from research_autopilot.implementation.backends.codex import CodexBackend
+from research_autopilot.implementation.backends.codex import CodexApiBackend, CodexBackend
 from research_autopilot.implementation.backends.review_runners import ClaudeReviewRunner, CodexReviewRunner
 from research_autopilot.implementation.config import Phase3Settings, load_phase3_settings, load_registry
 from research_autopilot.implementation.orchestrator import ImplDeps
@@ -24,11 +24,13 @@ def build_impl_deps(phase2: Settings | None = None, settings: Phase3Settings | N
     else:
         raise RuntimeError("Phase 3 requires NOTION_API_TOKEN and LINEAR_API_KEY for the approval gate")
     store = Store(phase2.resolved_database_url())
+    codex_api = CodexApiBackend(phase2.openai_api_key.get_secret_value() if phase2.openai_api_key else None,
+                                phase2.model_pricing, settings.worktrees_dir.parent / "codex-api-home")
     return ImplDeps(
         settings=settings, phase2=phase2, registry=load_registry(settings.repos_file),
         store=store, manager=manager,
-        backends={"codex": CodexBackend(), "claude": ClaudeBackend()},
-        reviewers={"codex": CodexReviewRunner(),
+        backends={"codex": CodexBackend(), "claude": ClaudeBackend(), "codex_api": codex_api},
+        reviewers={"codex": CodexReviewRunner(), "codex_api": CodexReviewRunner(codex_api),
                    "claude": ClaudeReviewRunner(max_budget_usd=settings.claude_max_budget_usd_per_call)},
         notifier=get_notifier(store=store),
     )
