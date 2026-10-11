@@ -18,8 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from research_autopilot.catalog.integration import (INPUTS_ENV, context_from_env, recheck,
-                                                   write_inputs_manifest)
+from research_autopilot.catalog.integration import INPUTS_ENV, context_from_env, recheck, upstream_artifacts
 from research_autopilot.config import Settings
 from research_autopilot.experiments import resources as res
 from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, ScientificReviewer
@@ -166,7 +165,7 @@ def _accept_contract(deps: ExpDeps, m: ExperimentManifest, phase3_run_id: str) -
     if errors:
         raise _Block("ExperimentSpec invalid at its commit: " + "; ".join(errors[:5]))
     missing_env = [n for n in spec.execution.env_var_names if n not in deps.extra.get("host_env", __import__("os").environ)
-                   and not n.endswith("_NUM_THREADS")]
+                   and not n.endswith("_NUM_THREADS") and n != INPUTS_ENV]  # the inputs manifest is set per job
     if missing_env:
         raise _Block(f"required environment variables not set on this host: {missing_env}")
     m.specs[spec.experiment_id] = spec
@@ -176,19 +175,29 @@ def _accept_contract(deps: ExpDeps, m: ExperimentManifest, phase3_run_id: str) -
 
 
 def _catalog_inputs(deps: ExpDeps, m: ExperimentManifest, impl, jdir: Path, experiment_id: str) -> Path | None:
-    """Phase 7A: re-verify the planned catalog inputs on this host right before the job starts."""
-    if not impl.handoff_path or not Path(impl.handoff_path).exists():
+    """Phase 7A catalog inputs re-verified on this host right before the job starts, plus the validated outputs of
+    upstream tasks (ArtifactHandoff, bytes re-hashed): one manifest in RA_CATALOG_INPUTS."""
+    upstream = upstream_artifacts(deps.store, m.task_id)
+    handoff = ExecutionHandoff.model_validate_json(Path(impl.handoff_path).read_text()) \
+        if impl.handoff_path and Path(impl.handoff_path).exists() else None
+    if not (handoff and handoff.catalog_resolution) and not upstream:
         return None
-    handoff = ExecutionHandoff.model_validate_json(Path(impl.handoff_path).read_text())
-    if not handoff.catalog_resolution:
-        return None
-    ctx = deps.extra.get("catalog") or context_from_env(deps.store, deps.registry)
-    now, problems = recheck(ctx, handoff.catalog_resolution)
-    if problems:
-        raise _Block(f"{experiment_id}: catalog inputs are not reusable: " + "; ".join(problems[:5]))
-    path = write_inputs_manifest(now, jdir / "catalog_inputs.json")
+    if handoff and handoff.catalog_resolution:
+        ctx = deps.extra.get("catalog") or context_from_env(deps.store, deps.registry)
+        now, problems = recheck(ctx, handoff.catalog_resolution)
+        if problems:
+            raise _Block(f"{experiment_id}: catalog inputs are not reusable: " + "; ".join(problems[:5]))
+        doc = now.model_dump(mode="json")
+        where = now.environment
+    else:
+        doc, where = {"artifacts": []}, "this host"
+    doc["artifacts"] = list(doc.get("artifacts") or []) + upstream
+    path = jdir / "catalog_inputs.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, ensure_ascii=False, indent=2))
     m.artifact_paths[f"catalog_inputs:{experiment_id}"] = str(path)
-    m.event("catalog", f"{experiment_id}: {len(now.artifacts)} verified input artifact(s) on {now.environment}")
+    m.event("catalog", f"{experiment_id}: {len(doc['artifacts'])} verified input artifact(s) on {where} "
+                       f"({len(upstream)} from upstream tasks)")
     return path
 
 

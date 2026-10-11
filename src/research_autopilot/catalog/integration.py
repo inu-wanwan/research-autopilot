@@ -141,3 +141,26 @@ def write_inputs_manifest(res: Resolution, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(res.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return path
+
+
+def upstream_artifacts(store, task_id: str) -> list[dict]:
+    """Validated outputs of the tasks this task depends on (Phase 6B / research ArtifactHandoff rows whose bytes
+    still match), in the catalog manifest's artifact shape so one RA_CATALOG_INPUTS manifest carries both."""
+    from research_autopilot.storage import db
+    from research_autopilot.autopilot.dag import sha256_file
+    latest: dict[tuple[str, str], dict] = {}
+    for row in store.find(db.artifact_handoffs, consumer_task_id=task_id):
+        key = (row["producer_task_id"], row["artifact_id"])
+        if row.get("validation_status") == "validated" and str(row.get("created_at", "")) >= str(
+                latest.get(key, {}).get("created_at", "")):
+            latest[key] = row
+    out = []
+    for (producer, name), row in sorted(latest.items()):
+        path = Path(row["path"])
+        if not path.is_file() or sha256_file(path) != row["content_hash"]:
+            continue
+        out.append({"artifact_id": f"{producer}:{name}", "kind": "upstream", "identity": {"producer_task_id": producer,
+                    "name": name}, "content_hash": row["content_hash"], "files": [str(path)],
+                    "metadata": row.get("scientific_metadata") or {},
+                    "provenance": {"git_commit": row.get("git_commit"), "handoff_id": row.get("handoff_id")}})
+    return out

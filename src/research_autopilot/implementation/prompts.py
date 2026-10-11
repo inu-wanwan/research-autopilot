@@ -32,9 +32,12 @@ Hard rules (violations are detected automatically and stop the run):
   an already-approved dependency, recording exact runtime versions/settings, and adding tests for that contract are
   implementation work, not a reason to invent a researcher approval. Stop only when the available implementation
   would require changing a scientific invariant, metric, acceptance criterion, or approved budget.
-- CATALOG ARTIFACTS (catalog_artifacts) are verified, read-only research inputs: read them from the listed
-  files (at run time the manifest path is in the RA_CATALOG_INPUTS environment variable); never modify,
-  move, regenerate or re-derive them, and do not hard-code their absolute paths.
+- CATALOG ARTIFACTS (catalog_artifacts) are verified, read-only research inputs; entries with kind "upstream" are
+  the validated outputs of the tasks this task depends on. At run time Phase 4 passes a JSON manifest whose path
+  is in the RA_CATALOG_INPUTS environment variable: {"artifacts": [{"artifact_id": ..., "files": [absolute
+  paths], ...}]}. Select inputs by the artifact_id exactly as listed here (never invent names), read them from
+  the manifest's files, never modify/move/regenerate them, and do not hard-code their absolute paths (tests may
+  use small fixture copies). You may read the listed files now to learn their format.
 - EXTERNAL IMPLEMENTATIONS (external_implementations) are registered third-party repositories at a fixed commit.
   Never copy them into this repository. To use one, declare it in experiment.json `external_code`
   (name, purpose, mount_as) and write a script in this repository that imports its modules (they are on

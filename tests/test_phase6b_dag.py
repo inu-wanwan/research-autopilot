@@ -446,3 +446,26 @@ def test_missing_allowed_files_is_blocked_before_paid_planning(tmp_path):
     assert any(p.code == "missing_allowed_files" and p.task_id == "INU-901" for p in dag.problems)
     poll(deps)
     assert deps.store.find(db.execution_runs, task_id="INU-901") == []
+
+
+def test_a_consumer_gets_the_validated_outputs_of_its_producer_in_phase3_and_phase4(tmp_path):
+    import json as _json
+    deps, *_ = _parent_fixture(tmp_path, count=2)
+    for _ in range(10):
+        poll(deps, prefect_flow_run_id="parent-flow")
+        parents = deps.store.find(db.parent_runs)
+        if parents and parents[0]["status"] == "Completed":
+            break
+    rows = deps.store.find(db.artifact_handoffs, consumer_task_id="INU-902")
+    producer_exp = deps.store.get_experiment(next(r for r in deps.store.find(db.workflow_runs, task_id="INU-901"))
+                                             ["experiment_run_ids"][-1])
+    outputs = {a.path for j in producer_exp.jobs if j.collect for a in j.collect.artifacts}
+    assert outputs and outputs <= {r["artifact_id"] for r in rows}  # the job's validated outputs, not only records
+    consumer = next(r for r in deps.store.find(db.workflow_runs, task_id="INU-902"))
+    task = deps.store.get_implementation(consumer["phase3_run_ids"][-1]).task
+    upstream = [a for a in task.catalog_artifacts if a.get("kind") == "upstream"]
+    assert {a["artifact_id"] for a in upstream} >= {f"INU-901:{p}" for p in outputs}  # shown to the implementer
+    exp = deps.store.get_experiment(consumer["experiment_run_ids"][-1])
+    manifest = _json.loads(Path(next(v for k, v in exp.artifact_paths.items() if k.startswith("catalog_inputs:")))
+                           .read_text())
+    assert {a["artifact_id"] for a in manifest["artifacts"]} >= {f"INU-901:{p}" for p in outputs}  # RA_CATALOG_INPUTS

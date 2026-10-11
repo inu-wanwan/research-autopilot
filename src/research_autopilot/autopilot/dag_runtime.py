@@ -319,7 +319,13 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
         if not exp:
             continue
         consumers = dependents.get(producer) or [parent.parent_task_id]
-        for name, raw_path in sorted(exp.artifact_paths.items()):
+        # the validated outputs of the last attempt of each experiment are what downstream tasks consume; the run's
+        # own records (analysis, manifest, proposals) are handed over too
+        outputs: dict[str, str] = {}
+        for job in exp.jobs:
+            if job.validation and job.validation.status == "pass" and job.collect:
+                outputs.update({a.path: a.stored_path for a in job.collect.artifacts})
+        for name, raw_path in sorted({**exp.artifact_paths, **outputs}.items()):
             path = Path(raw_path)
             if not path.is_file():
                 continue
