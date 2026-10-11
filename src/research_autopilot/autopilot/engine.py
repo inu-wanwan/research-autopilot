@@ -314,7 +314,7 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
 
 
 _EXHAUSTED = ("credit_balance_exhausted", "insufficient_quota", "no credits remaining",
-              "quota exceeded. check your plan and billing")
+              "quota exceeded. check your plan and billing", "enforced spend limit")
 
 
 class ProviderExhausted(RuntimeError):
@@ -337,9 +337,10 @@ def _wait_for_provider(deps: AutopilotDeps, run: WorkflowRun, stage: WorkflowSta
     run.event("provider_unavailable", f"{stage.value}: LLM provider credits exhausted; waiting ({str(exc)[:160]})")
     notify_once(deps.store, human_event(
         flow_name="autopilot", task_id=run.root_task_id or run.task_id, state="waiting",
-        headline="OpenAI API のクレジットが残っていないため、計画・評価・レビューを待機しています",
+        headline="OpenAI API が使えない（クレジット切れ・使用額の上限）ため、計画・評価・レビューを待機しています",
         reason=f"{type(exc).__name__}: {str(exc)[:300]}", control_actions=[],
-        steps=["https://platform.openai.com/settings/organization/billing/ で API クレジットを追加する",
+        steps=["https://platform.openai.com/settings/organization/billing/ で API クレジットを追加する、またはプロジェクトの"
+               "使用額の上限（Settings → Project → Limits）を引き上げる",
                "追加後は次のポーリングから自動で再開します（失敗回数には数えていません）"],
         dedupe_key=f"provider-credits:{utcnow():%Y-%m-%d}"), deps.notifier)
 

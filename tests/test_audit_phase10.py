@@ -641,6 +641,7 @@ def test_exhausted_llm_credits_wait_without_counting_failures_or_dead_lettering(
     from research_autopilot.autopilot import engine
     assert engine.provider_exhausted("Error code: 429 - credit_balance_exhausted: You have no credits remaining")
     assert engine.provider_exhausted(RuntimeError("x")) is False
+    assert engine.provider_exhausted("429 - Your project has reached its configured enforced spend limit.")
     deps, *_ = _build(tmp_path)
     calls = {"n": 0}
     real = deps.research.llm_factory
