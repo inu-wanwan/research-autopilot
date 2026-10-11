@@ -55,6 +55,7 @@ class Deps:
     store: Store
     settings: Settings
     catalog: Any = None  # catalog.service.CatalogContext (Phase 7A); None -> catalog requirements block
+    literature: Any = None  # Phase 8: (question, task_id, seeds) -> LiteratureReport; None disables research
 
 
 def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
@@ -124,7 +125,17 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
         if resolution is not None:
             spec = spec.model_copy(update={"input_artifacts": "\n\n".join(
                 x for x in (spec.input_artifacts, planner_context(resolution)) if x)})
+        reports = []
+        if spec.literature:  # Phase 8: the task asks for literature research before planning
+            reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier)
+            spec = _with_evidence(bundle.spec, spec, reports)
         outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
+        requests = (outcome.plan.plan.literature_requests if outcome.status is DecisionStatus.READY and outcome.plan
+                    else [])
+        if requests and deps.literature is not None:  # the Planner asked for evidence: research, re-plan once
+            reports += _research(deps, record, [(q, False) for q in requests[:2]], bundle.issue.identifier)
+            spec = _with_evidence(bundle.spec, spec, reports)
+            outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         if outcome.status is not DecisionStatus.READY:
             return _decision(record, outcome.status, outcome.reasons, _loop_rationale(outcome), bundle, approval, outcome)
 
@@ -170,10 +181,41 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                 repository=bundle.spec.repository, file_scope=bundle.spec.file_scope,
                 non_goals=bundle.spec.non_goals, input_artifacts=bundle.spec.input_artifacts,
                 catalog_resolution=resolution.model_dump(mode="json") if resolution is not None else None,
+                literature_reports=[r.report_id for r in reports],
             )))
         return decision
     finally:
         deps.store.release_lease(bundle.issue.identifier, record.plan_run_id)
+
+
+def _research(deps: Deps, record: PlanRunRecord, questions: list[tuple[str, bool]], task_id: str) -> list:
+    """Run the Researcher for each question; a failure becomes planner-visible context, never a crash."""
+    from research_autopilot.literature.integration import seeds_from
+    out = []
+    for question, from_spec in questions:
+        if deps.literature is None:
+            record.events.append(RunEvent(kind="literature", message="literature research requested but not configured"))
+            continue
+        try:
+            report = deps.literature(question, task_id, seeds_from(question) if from_spec else [])
+        except Exception as exc:
+            record.events.append(RunEvent(kind="literature", message=f"research failed: {type(exc).__name__}: {exc}"[:300]))
+            continue
+        record.events.append(RunEvent(kind="literature", message=(
+            f"report {report.report_id} ({'reused, no new cost' if report.reused else f'${report.total_cost_usd:.4f}'}): "
+            f"{len(report.sources)} source(s), {len(report.verified_claims)} verified claim(s), "
+            f"{len(report.failures)} failure(s)")))
+        out.append(report)
+    return out
+
+
+def _with_evidence(original, current, reports: list):
+    """Literature evidence is appended to the planner's view only; the stored specification never changes."""
+    if not reports:
+        return current
+    from research_autopilot.literature.integration import planner_context
+    base = (current.input_artifacts or "").split("\n\nLITERATURE EVIDENCE")[0]  # replace, never stack
+    return current.model_copy(update={"input_artifacts": "\n\n".join(x for x in (base, planner_context(reports)) if x)})
 
 
 class _NoCandidate(Exception):

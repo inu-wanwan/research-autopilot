@@ -51,6 +51,8 @@ CANONICAL_SECTIONS: dict[str, tuple[set[str], tuple[str, ...]]] = {
     ),
     "non_goals": ({"non-goals", "non goals", "nongoals", "out of scope", "スコープ外", "対象外"}, ()),
     "input_artifacts": ({"inputs", "input", "input artifacts", "入力", "入力データ"}, ()),
+    # Phase 8: literature research to run before planning (question; DOIs / arXiv ids / GitHub URLs as seeds)
+    "literature": ({"literature", "literature research", "literature survey", "文献調査"}, ()),
 }
 
 _NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*[.)]?|[-*・])\s*")

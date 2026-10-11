@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 7A（Artifact Catalog Core / Repository Adapter）と Phase 7B（Autonomous Adapter Generation）を実装済み。Phase 6B は main に fast-forward merge 済み（`2f662bc`、origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針（ユーザー指示 2026-10-11）。
+Phase 8（Evidence-grounded Literature Research）を実装済み（ブランチ `phase8/literature-research`、main 未 merge・未 push）。Phase 7 は main に merge 済み（origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針。
 
 ## Current Task
 
-登録済み研究 Repository の Artifact を Adapter 経由で発見・検証し、Planner / Executor が検証済み Artifact だけを再利用できるようにする（`docs/phase_specs/phase7a.md`）。
+研究タスクの文献調査（検索・原文取得・根拠抽出・Artifact 化）を Researcher Agent として自律実行し、Planner に検証可能な根拠を渡す（`docs/phase_specs/phase8.md`）。
 
 ## Status
 
-Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase 2/3/4 連携を実装・検証済み。Phase 7B の検出・survey・AI 生成・自動検証・有効化ポリシー・sandbox・trust policy を実装し、実モデルで合成 3 構造と実 repository の生成・導入を作業用 SQLite で確認済み。本番 PostgreSQL への Adapter 登録・有効化は未実施。
+Phase 8 の検索・取得（PoC 移植の Zotero Connector を含む）・本文抽出・主張抽出と引用照合・Catalog 連携・Notion Notes・Planner 連携・CLI を実装・検証済み。BOCS の E2E を Mac の実サービスで実施（詳細と未検証事項は `docs/operations/phase8_literature.md`）。購読論文は利用条件未確認のため未対応、Windows は未検証。
 
 ## Last Updated
 
@@ -40,6 +40,14 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 8 Literature Research（2026-10-11 / Claude Code）
+
+- ユーザー決定：推奨案すべて（依存 `playwright` / `pypdf`、arXiv・Crossref・OpenAlex・Unpaywall・GitHub、許可リスト、購読論文は自動取得しない、PDF は Zotero/Drive と非公開キャッシュのみ、Zotero コレクション `ResearchAutopilot`、Planner 連携、`gpt-5.6-sol`・$2/調査、Notes 分類「文献」、E2E は BOCS）。連絡先 `RA_LITERATURE_CONTACT_EMAIL` を `.env` に追加。
+- PoC 調査：`~/workspace_callduck/dev/zotero-connector-poc`（58b3871、判定 PARTIALLY_FEASIBLE、Mac 検証済み・Windows 未検証）。方式 C を `literature/zotero/` に移植し、Connector 5.0.217 を `~/.research-autopilot/zotero/connector` に固定。
+- 検証済み：`uv run pytest` 445 passed（Phase 8 18 件）。実データ：BOCS 発見・Zotero 保存・repo snapshot（fef0d4e）・66 主張中 63 件照合・矛盾 5 件・Catalog verified・Notion Note 作成、実 Planner が保存済みレポートを再利用し S1/S2 を引用（Reviewer 差し戻しで Blocked、試験仕様が簡素なため）。費用 BOCS 調査 $0.52 + Planner $0.32 + 失敗した 1 回分（未記録）。
+- commit：`022ca30`（仕様）→ `176a3b6`（検索・取得・本文）→ `cf7f9e4`（Researcher・Catalog・Notes・Planner）→ docs commit。
+
 
 ### Phase 7B Autonomous Adapter Generation（2026-10-11 / Claude Code）
 
@@ -80,7 +88,8 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 
 ### Exact Next Actions
 
-0. Phase 7 は実装済み。次 Phase の仕様はユーザー提供待ち。ブランチ `phase7/artifact-catalog` は未 merge・未 push。
+0. Phase 8 は `phase8/literature-research` で実装済み。main への merge と origin への push はユーザー指示待ち（ユーザーは push 前に Phase 8 まで進める方針）。
+0. 購読論文：ユーザー決定（2026-10-11）により CAPTCHA が出ない限り Zotero Connector で自動保存、1 回の調査あたり自動取得 10 件まで（`acquire.MAX_RETRIEVALS`）。実出版社ページでの検証は未実施。
 0. 未検証：Eagle（Linux）での bwrap sandbox と catalog scan、本番 PostgreSQL での運用、autopilot poll からの生成自動起動（未実装・仕様外）。
 0. 本番 DB で使う場合は人間が `research-agent catalog adapter register/validate/activate/bind/scan` を実行（`RA_CATALOG_ENVIRONMENT=mac`）。Phase A の A2/A3 で cache を使うなら、人間が Input artifacts に `catalog: kind=orbital-casci-exhaustive-condition repository=active-space-research molecule=N2,BeO,NH3 k=2..10 git_commit=6c0d1dd expect=81` を追記するか判断する（科学仕様の変更にあたるため RA は書かない）。
 1. Phase A の本番投入はユーザー方針により**全 Phase 完了後**。それまで Phase A の実行・E2E はしない。

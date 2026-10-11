@@ -163,7 +163,7 @@ class FakeNotionWriter:
         self.notion.pages[page_id] = p.model_copy(update={"execution_status": status, "last_run_url": run_url or p.last_run_url,
                                                            "execution_error": error, "run_requested": False if acknowledge else p.run_requested})
 
-    def create_note(self, title, blocks):
+    def create_note(self, title, blocks, category="結果"):
         if self.fail_notes > 0:
             self.fail_notes -= 1
             raise RuntimeError("notion 502 (simulated)")

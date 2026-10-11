@@ -110,12 +110,12 @@ class NotionWriter:
             props[PROP_RUN_REQUESTED] = {"checkbox": False}
         self._call("PATCH", f"/pages/{page_id}", json={"properties": props})
 
-    def create_note(self, title: str, blocks: list[dict]) -> tuple[str, str]:
+    def create_note(self, title: str, blocks: list[dict], category: str = NOTES_RESULT) -> tuple[str, str]:
         props = {
             NOTES_TITLE: {"title": _rt(title)},
             NOTES_CREATED: {"date": {"start": date.today().isoformat()}},
             NOTES_STATUS: {"status": {"name": NOTES_ADOPTED}},
-            NOTES_CATEGORY: {"multi_select": [{"name": NOTES_RESULT}]},
+            NOTES_CATEGORY: {"multi_select": [{"name": category}]},
         }
         page = self._call("POST", "/pages", json={"parent": {"type": "data_source_id", "data_source_id": self.notes_ds},
                                                   "properties": props, "children": blocks[:100]})
