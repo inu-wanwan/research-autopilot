@@ -14,15 +14,15 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 9（Trusted External Repository Onboarding）を実装済み（ブランチ `phase9/external-repositories`、main 未 merge・未 push）。Phase 8 は main に merge 済み（push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行は全 Phase 実装完了後の方針。
+Phase 10（Autonomous Research Planning & Orchestration、10A / 10B）を実装中・実データ E2E 実施中（ブランチ `phase10/research-planning`、main 未 merge・未 push）。Phase 9 は main に merge 済み（push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行は全 Phase 実装完了後の方針。
 
 ## Current Task
 
-外部の参照実装を、識別・ライセンス確認・固定 commit での隔離取得・サンドボックス検証・Registry 自動登録まで自動化し、研究環境での初回実行は人間（Discord）が承認、承認範囲内で自動再利用する（`docs/phase_specs/phase9.md`）。
+INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B の E2E を進めている。詳細手順・現状・再開方法は `docs/operations/phase10_research_orchestration.md` の「E2E 実施記録（INU-292）」と「引き継ぎ：E2E の続け方」。
 
 ## Status
 
-Phase 9 を実装・検証済み。BOCS で E2E 工程 1〜10 を Mac の実サービス（GitHub・Docker・Discord・OpenAI）で実施（詳細と未検証事項は `docs/operations/phase9_external_repositories.md`）。Eagle（Linux）は未検証。
+10A / 10B 実装済み、`uv run pytest` 521 passed（`810986e` 時点。以後の小修正は `tests/test_phase10_research.py` 32 passed / 関連テストで確認）。E2E は承認 v3（計画 v6）でサイクル 4（INU-301 計算再実行 → INU-302 解析）が実行中（2026-10-11 13:3x UTC 時点）。Phase A（INU-274）の 10A dry-run は不足情報（予算・baseline 手法等）を blocking として検出し計画を作らないことを確認済み。
 
 ## Last Updated
 
@@ -40,6 +40,12 @@ Phase 9 を実装・検証済み。BOCS で E2E 工程 1〜10 を Mac の実サ�
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 10 Research Planning / Orchestration（2026-10-11 / Claude Code）
+
+- 実装：`src/research_autopilot/research/`（models / scope / evidence / planner / workflow / evaluator / orchestration / cli）。既存 Phase 5 engine の拡張（`_authorize_research`、`WorkflowStage.RESEARCHING / PAUSED`、`ApprovalKind.RESEARCH_SCOPE`）、6B ParentRun を研究サイクルに再利用（`ParentRun.research_cycle_id`）、Discord Stop / Resume（`DiscordControlInput`）、Notion `Origin` / `Approval Status`、Linear blocked-by（`create_relation`）。
+- E2E で見つかり修正した不具合（commit `ac0af84`〜`a7e230f`）：strict JSON schema 非対応の出力型、範囲境界の未抽出、初期計画への結果依存タスク混入、max_count 条件の誤用、RA 既定予算の明示、自律上限の数値照合（日本語数字境界・「以上」は上限にしない）、Phase 4 validator のネスト／ワイルドカード対応、子タスク仕様へのスコープとサイクル全体パラメータの記載、進展なし判定の範囲（現承認かつ最後の Resume 以降）、Resume 時の再評価と HUMAN_RESUME の Evaluator への提示、通知整理（定型は logs、ボタンは results/errors のみ、Resume 左）。
+
 
 ### Phase 9 External Repository Onboarding（2026-10-11 / Claude Code）
 
@@ -94,6 +100,8 @@ Phase 9 を実装・検証済み。BOCS で E2E 工程 1〜10 を Mac の実サ�
 - 後続修正：子タスクも explicit request に変更、Completed task rerun、Prefect flow URL の `Last Run` 投影、Blocked request のDB履歴とacknowledgement、古いrunによるRequested上書き抑止、cancel DB/Notion projectionを追加。`INU-279` の人間参加E2Eは Button → Requested → Awaiting Approval → Discord approve → Implementing → Experimenting → Completed / Linear Done / Notion Completed まで実サービスで確認済み。修正後の Last Run URL は次回実行で確認が必要。
 
 ### Exact Next Actions
+
+0. Phase 10 E2E（INU-292）の続き：`docs/operations/phase10_research_orchestration.md`「引き継ぎ：E2E の続け方」に従い、ポーリングと Discord gateway が動いているか確認し、サイクル 4 以降を監視する。完了したら受け入れ条件（INU-292 の Acceptance 1〜6）を確認し、結果を同文書に記録してユーザーに報告。main merge / push はユーザー指示待ち。
 
 0. Phase 9 は `phase9/external-repositories` で実装済み。main への merge と push はユーザー指示待ち。
 0. Phase 9 未検証：Eagle（Linux）での Docker 隔離と wheel 取得、研究ジョブが外部コード保管場所を絶対パスで読む経路の技術的遮断（現状は Implementer 規則と Reviewer 依存）。

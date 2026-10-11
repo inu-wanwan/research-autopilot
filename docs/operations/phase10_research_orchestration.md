@@ -20,3 +20,64 @@
 | 通知 | 承認依頼・マイルストーン（計画承認・サイクル評価）・成果・異常のみ。研究の子タスクごとの通知は抑止 | notify_once / Discord ルーティング |
 
 テスト：10A（根拠付き計画・不足情報を確定しない・承認前実行拒否・stale 承認拒否）、10B（複数サイクル・範囲外／仕様変更／予算超過の拒否・停止／再開／再試行での整合性）、共通（Notion / Discord / PostgreSQL / Linear の整合性）。E2E：10A は Phase A の研究目的で計画のみ、10A＋10B は INU-292（H₂ RHF–FCI）。
+
+## 使い方（要約）
+
+1. 研究目的タスク（Notion Tasks）に `## Research Objective` / `## 研究目的` 見出しで問い・対象・主指標・許容条件・最大点数などを書き、`## Budget` / `## 予算`、`## Scientific invariants`、`## Acceptance criteria` を書く（任意：`## 自律実行の裁量`）。`Specification` 見出しは不要。
+2. Run Autopilot を押す → 10A：RA が計画 vN を作り、タスク内サブページ「RA Research Plan vN (hash)」に記録、`Approval Status`=Pending、Discord に Notion URL・版・hash 付き承認依頼。必須項目（目的・主指標・不変条件・予算・成功条件・条件範囲）が仕様から確認できない場合は承認依頼を出さず Blocked（`needs_input`）。
+3. Discord で承認 / 却下 / 修正依頼。承認＝`ResearchAuthorization`（version・content hash・scope）。仕様編集や新しい版で古いボタンは stale。修正依頼はコメント付きで v(N+1) を自動再提示。
+4. 10B：サイクルごとに子タスク（Origin=RA、親タスク relation、Linear blocked-by）を作り 6B DAG で実行 → Research Evaluator が次の行動を決定 → 決定論的ゲート（条件範囲・最大点数・予算・サイクル数・再試行・進展なし）。範囲外は scope change 版として Discord 承認待ち。完了時は Notes（分類 結果）・Catalog（`ra-research`）・Discord results に報告。
+5. Discord：Stop（サイクル評価メッセージ）＝新規投入停止、Resume（停止・異常メッセージ）＝停止解除／Blocked な研究の再開（最後のサイクルを HUMAN_RESUME 付きで再評価、進展なしカウントはリセット）。CLI 代替：`research-agent research stop|resume|status|plan|revoke|plan-dry-run`。
+
+## E2E 実施記録（INU-292、2026-10-11 / Mac 実サービス）
+
+| 項目 | 結果 |
+|---|---|
+| 10A dry-run（Phase A INU-274） | ✅ 予算・必須 baseline 手法・offline oracle 検証・実行前提を blocking として検出、タスクを作らず（$0.02） |
+| 10A INU-292 | 計画 v1（needs_input：LLM の blocking 誤判定）→ v2 / v3（invalid：範囲境界未抽出・結果依存タスク・max_count 誤用）→ v4 承認（**自律上限 1/0/0/0 が未照合のまま承認された不具合**、後に取り消し）→ v5 承認（「1回以上」を上限 1 と誤読、取り消し）→ **v6 承認（authorization v3、RA default 上限 5/3/2/2）**。いずれも原因は修正済み。旧版・取り消しは audit として保持 |
+| 承認の整合性 | ✅ Discord 本人（`discord:818844326578356275`）、版 hash、Notion Approval Status projection（Pending→Approved）、Linear Awaiting Approval→In Progress |
+| サイクル 1（承認 v1、INU-293〜295） | INU-293 の計算は成功（4 点）したが Phase 4 validator がネスト結果を読めず不合格 → 上限 1/0/0 により停止 |
+| サイクル 2（承認 v3、INU-296〜298） | INU-296 が Phase 2 で差し戻し（子仕様に距離なし：仕組みの不具合） |
+| サイクル 3（INU-299〜300） | INU-299 の 5 点計算は成功（PySCF 2.14、ΔE(0.5 Å)=0.01216 Eh、provenance 保存）したが experiment.json の units / metric 宣言誤りで不合格 → Implementer 規則を追加。Resume 後の再評価で continue |
+| サイクル 4（INU-301 計算再実行 → INU-302 解析） | **実行中**（13:3x UTC 時点） |
+| モデル比較（読み取り専用 A/B、各 2 回 $0.28） | 修正後は terra / sol とも合格・自律上限正常。sol は「おおむね5点」に対し 3 点（仕様からの逸脱）。モデル切替は不要と判断（ユーザーに報告済み） |
+
+未完了（INU-292 Acceptance）：検証済み結果での評価→追加サンプリング（Evaluate→Replan→Execute の観測）、Notes / Catalog 保存と Discord 完了通知、SSOT 整合性の最終確認。
+
+### 操作者による介入の記録
+
+`research_controls` / authorization に記録済み：`cli:claude-code` による resume（不具合修正後の再開、計 5 回）、stop（修正中の一時停止、2 回）、revoke（承認 v1：自律上限未照合、承認 v2：「1回以上」誤読）。いずれもユーザーの依頼または同意の範囲。
+
+## 引き継ぎ：E2E の続け方（Codex 向け）
+
+前提：`.env` は設定済み（`RA_APPROVAL_MODE=discord`、`RA_NOTIFICATION_BACKEND=discord`）。scheduled poll（Prefect）は無効なので、ポーリングは手元で回す。
+
+1. 状態確認：
+   - `uv run research-agent research status INU-292`（計画版・承認・サイクル・決定・controls）
+   - `uv run research-agent autopilot status`（WorkflowRun の stage / blocked 理由）
+2. Discord gateway（承認・Stop/Resume ボタンの受信）が動いていなければ起動：`uv run research-agent discord run`（常駐）。
+3. ポーリング（書き込みは `[TEST]` / `[E2E]` タイトルのみ）を回す。30 秒ごと・最長 4 時間の例：
+
+```zsh
+cd /Users/callduck/workspace_callduck/dev/ResearchAutopilot
+export RA_AUTOPILOT_WRITE=true RA_AUTOPILOT_TEST_ONLY=true
+end=$((SECONDS + 4*3600))
+while (( SECONDS < end )); do
+  uv run research-agent autopilot poll --local 2>&1 | tail -c 2000 | tr '\n' ' '; echo
+  st=$(uv run research-agent autopilot status | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((r['stage'] for r in d['runs'] if r['task']=='INU-292'),''))")
+  echo "STAGE INU-292: $st"; [[ "$st" == done || "$st" == cancelled ]] && break
+  sleep 30
+done
+```
+
+   `--task` は付けない（付けると子タスクが進まない）。他に active な run が無いことを `autopilot status` で事前確認する。
+4. Blocked で止まったら：`research status` の最後のサイクルの decision / gate_problems、子タスクは `autopilot status` の blocked 理由と実験 manifest（`store.get_experiment(<id>)` の validation checks）を確認。仕組みの不具合なら修正・テスト・commit してからユーザーに Discord の Resume を依頼（ユーザー不在時のみ `research-agent research resume INU-292 --actor "codex (<理由>)"`）。
+5. 完了したら INU-292 Acceptance 1〜6 を確認し、この節の表を更新、`docs/development_handoff.md` を更新してユーザーに報告。main merge / push はユーザー指示待ち。
+
+### 既知の課題（未解決）
+
+- 「おおむね5点」など曖昧な数量は機械検査していない（承認時に人が確認、修正依頼で直す）。
+- Codex の experiment.json 宣言と Phase 4 validator の取り決めは Implementer 規則で補強したが、実データでの再確認はサイクル 4 の結果待ち。
+- 子タスクが前サイクルの実装コミットを引き継がない（各子タスクが独立に実装する）。Phase 3 の branch が main に merge されないため。サイクル間でのコード再利用は未実装（現状は再実装で動作）。
+- 研究目的タスク自身の Notion `Execution Status` は Blocked→再開時に新しい ExecutionRun を作るため、過去の Blocked 記録が残る。
+- Eagle（Linux）・本番 PostgreSQL での運用は未検証。
