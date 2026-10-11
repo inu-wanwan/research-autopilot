@@ -14,7 +14,7 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 7A（Artifact Catalog Core / Repository Adapter）を実装済み。ユーザー指示により Phase 7B（Autonomous Adapter Generation）は未着手で停止中。Phase 6B は main に fast-forward merge 済み（`2f662bc`、origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針（ユーザー指示 2026-10-11）。
+Phase 7A（Artifact Catalog Core / Repository Adapter）と Phase 7B（Autonomous Adapter Generation）を実装済み。Phase 6B は main に fast-forward merge 済み（`2f662bc`、origin への push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行と実サービス E2E は全 Phase 実装完了後にまとめて行う方針（ユーザー指示 2026-10-11）。
 
 ## Current Task
 
@@ -22,7 +22,7 @@ Phase 7A（Artifact Catalog Core / Repository Adapter）を実装済み。ユー
 
 ## Status
 
-Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase 2/3/4 連携を実装・検証済み。実データ（active_space_research の Phase 4 orbital 81 条件）を作業用 SQLite で発見・検証・解決済み。本番 PostgreSQL への Adapter 登録・有効化は未実施（人間の有効化操作が必要）。Phase 7B は未着手。
+Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase 2/3/4 連携を実装・検証済み。Phase 7B の検出・survey・AI 生成・自動検証・有効化ポリシー・sandbox・trust policy を実装し、実モデルで合成 3 構造と実 repository の生成・導入を作業用 SQLite で確認済み。本番 PostgreSQL への Adapter 登録・有効化は未実施。
 
 ## Last Updated
 
@@ -31,6 +31,7 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 ## Git Branch / Commit
 
 - 作業ブランチ：`phase7/artifact-catalog`（main `2f662bc` から分岐）
+- Phase 7B commit：`546c9b8`（生成・検証・sandbox）→ `2c53c93`（feedback 改善・trust policy・粒度 gate）→ docs commit
 - Phase 7A commit：`b66fd2c`（仕様）→ `e1b5782`（core）→ `41bb60d`（連携）→ `a711a33`（CLI）→ docs commit
 - Phase 6B：`codex/phase6b-parent-dag` を main に fast-forward 済み
 - Discord 実装 commit：`d5e3138`
@@ -39,6 +40,13 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 7B Autonomous Adapter Generation（2026-10-11 / Claude Code）
+
+- `catalog/generation.py`（detect、OpenAI generator、autovalidate、有効化判断、`catalog_generations` 記録、通知）、`catalog/survey.py`、`catalog/sandbox.py`、CLI `catalog detect|generate|generations|adapter endorse`、`RA_ADAPTER_GENERATOR_MODEL` / `RA_ADAPTER_GENERATION_BUDGET_USD`。
+- ポリシー：generated declarative は全 gate 合格かつ人間作成 Adapter を置き換えず verified を減らさない場合のみ自動有効化。generated python は macOS `sandbox-exec`（Linux は bwrap、未検証）でのみ実行し、人間の有効化が必須。未レビュー generated Adapter のみで verified の artifact は既定で再利用しない（endorse / `trust=any`）。
+- 検証済み：`uv run pytest` 424 passed / 1 dependency warning（Phase 7B 24 件を含む）。sandbox の書き込み・外部読み取り・network・subprocess・fork 拒否を Mac で確認。実モデル（`gpt-5.6-sol`、計約 $2.13）：合成 3 構造で自動有効化、active_space_research でも自動有効化。初回は全提案が gate で拒否され、feedback 改善後に成功。生成 Adapter は手作りより弱い check で旧 run を verified にしたため trust policy を導入。詳細・未検証事項は `docs/operations/phase7b_adapter_generation.md`。
+- 実モデル試行の作業用 DB・合成 repository は scratchpad のみ（本番 DB・研究 repo は不変、研究 repo は clean）。
 
 ### Phase 7A Artifact Catalog（2026-10-11 / Claude Code）
 
@@ -72,7 +80,8 @@ Phase 7A の Catalog core、Adapter lifecycle、declarative engine、CLI、Phase
 
 ### Exact Next Actions
 
-0. **Phase 7B はユーザー指示まで着手しない。** 着手時は `docs/phase_specs/phase7b.md` と `docs/operations/phase7a_catalog.md`（`adapters.requires_human()`、`AdapterOrigin.GENERATED`、`generator` 欄が受け入れ口）を読む。
+0. Phase 7 は実装済み。次 Phase の仕様はユーザー提供待ち。ブランチ `phase7/artifact-catalog` は未 merge・未 push。
+0. 未検証：Eagle（Linux）での bwrap sandbox と catalog scan、本番 PostgreSQL での運用、autopilot poll からの生成自動起動（未実装・仕様外）。
 0. 本番 DB で使う場合は人間が `research-agent catalog adapter register/validate/activate/bind/scan` を実行（`RA_CATALOG_ENVIRONMENT=mac`）。Phase A の A2/A3 で cache を使うなら、人間が Input artifacts に `catalog: kind=orbital-casci-exhaustive-condition repository=active-space-research molecule=N2,BeO,NH3 k=2..10 git_commit=6c0d1dd expect=81` を追記するか判断する（科学仕様の変更にあたるため RA は書かない）。
 1. Phase A の本番投入はユーザー方針により**全 Phase 完了後**。それまで Phase A の実行・E2E はしない。
 2. 投入前に人間が INU-275〜278 の `Allowed files` を決めて Notion に `## Allowed files` 見出しで記入する（候補：`src/active_space_selection/`、`scripts/`、`tests/`。ページ上は未承認）。A1〜A4 の Linear blocked-by は任意（未設定なら Dependency Planner が提案し Discord 承認）。

@@ -46,7 +46,7 @@ PostgreSQL（既存 `research_autopilot` DB）に `catalog_adapters`、`catalog_
 
 解決（`service.resolve`）は fail-closed：該当なし、要求値の欠落、組み合わせ欠落、`expect` 件数不一致、同一 identity の複数 artifact（**ambiguous**、status に関係なく）、verified 以外、当該環境に location がない、当該環境で未検証の content、root にアクセス不能、使用直前の再ハッシュ不一致（→ stale に更新）をすべて problem として返し、problem があれば Planner / Executor は進まない。
 
-Adapter の有効化と Artifact の科学的妥当性は独立：active な Adapter が見つけた artifact でも check 不合格なら再利用しない。
+Adapter の有効化と Artifact の科学的妥当性は独立：active な Adapter が見つけた artifact でも check 不合格なら再利用しない。Phase 7B 以降、人間がレビューしていない generated Adapter だけが verified にした artifact も既定では再利用しない（`adapter endorse` または要求に `trust=any`。`docs/operations/phase7b_adapter_generation.md`）。
 
 ## 実行環境
 
