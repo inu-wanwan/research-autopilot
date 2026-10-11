@@ -60,6 +60,7 @@ class FakeLinearFull(FakeLinear):
         self.histories: dict[str, list[dict]] = {i.identifier: [] for i in issues}
         self.comments: list[tuple[str, str]] = []
         self.created: list[str] = []
+        self.relations: list[tuple[str, str]] = []
         self.fail_create = 0
         self.missing_states = set(missing_states)
         self.titles: dict[str, str] = {i.identifier: i.title for i in issues}
@@ -117,6 +118,17 @@ class FakeLinearFull(FakeLinear):
         return [{"id": i.id, "identifier": i.identifier, "url": i.url, "title": i.title}
                 for i in self.issues.values() if marker in i.title]
 
+    def create_relation(self, blocking_issue_id, blocked_issue_id):
+        from research_autopilot.models import IssueRef
+        blocking = next(i for i in self.issues.values() if i.id == blocking_issue_id)
+        key = next(k for k, i in self.issues.items() if i.id == blocked_issue_id)
+        blocked = self.issues[key]
+        ref = IssueRef(identifier=blocking.identifier, title=blocking.title, state_name=blocking.state_name,
+                       state_type=blocking.state_type)
+        if all(b.identifier != ref.identifier for b in blocked.blocked_by):
+            self.issues[key] = blocked.model_copy(update={"blocked_by": [*blocked.blocked_by, ref]})
+        self.relations.append((blocking.identifier, blocked.identifier))
+
     def history(self, identifier):
         return list(self.histories.get(identifier, []))
 
@@ -128,13 +140,16 @@ class FakeNotionWriter:
         self.notes: dict[str, dict] = {}
         self.fail_notes = 0
         self.created_tasks: list[str] = []
+        self.subpages: dict[str, dict] = {}
+        self.fail_projection = 0
+        self.approval_history: list[tuple[str, str]] = []
 
     def find_by_marker(self, ds, prop, marker):
         if ds == self.notes_ds:
             return [k for k, v in self.notes.items() if marker in v["title"]]
         return [p.page_id for p in self.notion.pages.values() if marker in p.title]
 
-    def create_task_page(self, title, blocks, *, pending, category, parent_page_id):
+    def create_task_page(self, title, blocks, *, pending, category, parent_page_id, origin=None, approval_status=None):
         pid = f"{len(self.notion.pages) + 1:08d}-0000-0000-0000-000000000000"
         lines = []
         for b in blocks:
@@ -145,7 +160,12 @@ class FakeNotionWriter:
         self.notion.pages[pid] = NotionTask(page_id=pid, url=f"https://www.notion.so/{pid.replace('-', '')}", title=title,
                                             status="To do", pending=pending, linear_issue_id=None, category=category,
                                             last_edited_time="2026-10-10T00:00:00.000Z", sections=sections,
-                                            other_sections=other, preamble=pre, fetched_at=utcnow())
+                                            other_sections=other, preamble=pre, fetched_at=utcnow(),
+                                            origin=origin, approval_status=approval_status,
+                                            parent_page_ids=[parent_page_id] if parent_page_id else [])
+        if parent_page_id and parent_page_id in self.notion.pages and origin == "RA":
+            par = self.notion.pages[parent_page_id]
+            self.notion.pages[parent_page_id] = par.model_copy(update={"child_page_ids": [*par.child_page_ids, pid]})
         self.created_tasks.append(pid)
         return pid, self.notion.pages[pid].url
 
@@ -173,6 +193,27 @@ class FakeNotionWriter:
 
     def page_url(self, page_id):
         return f"https://www.notion.so/{page_id.replace('-', '')}"
+
+    # Phase 10
+    def create_subpage(self, parent_page_id, title, blocks):
+        pid = f"sub-{len(self.subpages) + 1}"
+        self.subpages[pid] = {"parent": parent_page_id, "title": title, "blocks": blocks}
+        return pid, f"https://www.notion.so/{pid}"
+
+    def append_blocks(self, block_id, blocks):
+        self.subpages.setdefault(block_id, {"blocks": []})["blocks"] += blocks
+
+    def find_subpage(self, parent_page_id, title_prefix):
+        return next((k for k, v in self.subpages.items() if v.get("parent") == parent_page_id
+                     and v.get("title", "").startswith(title_prefix)), None)
+
+    def set_approval_status(self, page_id, status):
+        if self.fail_projection > 0:
+            self.fail_projection -= 1
+            raise RuntimeError("notion 502 (simulated)")
+        p = self.notion.pages[page_id]
+        self.notion.pages[page_id] = p.model_copy(update={"approval_status": status})
+        self.approval_history.append((page_id, status))
 
 
 class FakeChannel:
@@ -216,11 +257,12 @@ class FakeCompletionReviewer:
 
 
 def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benchmark task", settings=None,
-          completion=None, missing_states=(), test_only=True, sci_reviews=None, approval_mode="linear+form"):
+          completion=None, missing_states=(), test_only=True, sci_reviews=None, approval_mode="linear+form",
+          sections=None, impl=None):
     repo = make_repo(tmp)
     root_issue = make_issue("INU-900").model_copy(update={"title": root_title})
     linear = FakeLinearFull(root_issue, missing_states=missing_states)
-    notion = FakeNotion(make_page(sections=dict(SECTIONS)))
+    notion = FakeNotion(make_page(sections=dict(SECTIONS if sections is None else sections)))
     notion.pages[next(iter(notion.pages))] = next(iter(notion.pages.values())).model_copy(update={"title": root_title, "run_requested": True, "execution_status": "Requested"})
     notion.requested_task_ids = lambda: [p.page_id for p in notion.pages.values() if p.run_requested]
     from research_autopilot.config import ModelPrice
@@ -229,7 +271,7 @@ def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benc
                      model_pricing=prices)
     impl = ImplDeps(settings=Phase3Settings(worktrees_dir=tmp / "worktrees"), phase2=plan.settings,
                     registry={"h2-test": repo_config(repo)}, store=plan.store, manager=plan.manager,
-                    backends={"codex": FakeBackend("codex", [impl_files()] * n), "claude": FakeBackend("claude", [])},
+                    backends={"codex": FakeBackend("codex", [impl or impl_files()] * n), "claude": FakeBackend("claude", [])},
                     reviewers={"codex": FakeReviewer("codex", [code_review("pass")] * n), "claude": FakeReviewer("claude", [])})
     exp = ExpDeps(settings=Phase4Settings(artifact_root=tmp / "experiments", env_cache_dir=tmp / "envs", retry_backoff_seconds=0),
                   phase2=plan.settings, store=plan.store, manager=plan.manager, backend=compute or FakeComputeBackend([OK] * n),

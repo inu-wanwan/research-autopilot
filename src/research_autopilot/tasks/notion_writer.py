@@ -19,7 +19,7 @@ NOTES_STATUS = "ステータス"
 NOTES_CATEGORY = "分類"
 NOTES_ADOPTED = "採用"
 NOTES_RESULT = "結果"
-from research_autopilot.tasks.notion import PROP_PARENT
+from research_autopilot.tasks.notion import APPROVAL_STATUSES, PROP_APPROVAL_STATUS, PROP_ORIGIN, PROP_PARENT
 MAX_TEXT = 1900  # Notion rich_text limit is 2000 chars per element
 
 
@@ -80,15 +80,46 @@ class NotionWriter:
         return [r["id"] for r in res.get("results", [])]
 
     def create_task_page(self, title: str, blocks: list[dict], *, pending: bool, category: str | None,
-                         parent_page_id: str | None) -> tuple[str, str]:
+                         parent_page_id: str | None, origin: str | None = None,
+                         approval_status: str | None = None) -> tuple[str, str]:
         props: dict = {PROP_TITLE: {"title": _rt(title)}, PROP_PENDING: {"checkbox": pending}}
+        if origin:
+            props[PROP_ORIGIN] = {"select": {"name": origin}}
+        if approval_status:
+            props[PROP_APPROVAL_STATUS] = {"select": {"name": approval_status}}
         if category:
             props[PROP_CATEGORY] = {"select": {"name": category}}
         if parent_page_id:
             props[PROP_PARENT] = {"relation": [{"id": parent_page_id}]}
         page = self._call("POST", "/pages", json={"parent": {"type": "data_source_id", "data_source_id": self.tasks_ds},
                                                   "properties": props, "children": blocks[:100]})
+        self.append_blocks(page["id"], blocks[100:])
         return page["id"], page.get("url", "")
+
+    def append_blocks(self, block_id: str, blocks: list[dict]) -> None:
+        for i in range(0, len(blocks), 100):
+            self._call("PATCH", f"/blocks/{block_id}/children", json={"children": blocks[i:i + 100]})
+
+    def create_subpage(self, parent_page_id: str, title: str, blocks: list[dict]) -> tuple[str, str]:
+        """A plain page inside a task page (not a Tasks DB row): RA's versioned plan / change proposal record."""
+        page = self._call("POST", "/pages", json={"parent": {"type": "page_id", "page_id": parent_page_id},
+                                                  "properties": {"title": {"title": _rt(title)}},
+                                                  "children": blocks[:100]})
+        self.append_blocks(page["id"], blocks[100:])
+        return page["id"], page.get("url", "")
+
+    def find_subpage(self, parent_page_id: str, title_prefix: str) -> str | None:
+        res = self._call("GET", f"/blocks/{parent_page_id}/children", params={"page_size": 100})
+        for b in res.get("results", []):
+            if b.get("type") == "child_page" and b["child_page"].get("title", "").startswith(title_prefix):
+                return b["id"]
+        return None
+
+    def set_approval_status(self, page_id: str, status: str) -> None:
+        """Projection only: approvals are decided by verified backend events, never by this property."""
+        if status not in APPROVAL_STATUSES:
+            raise ValueError(f"unknown Approval Status {status!r}")
+        self._call("PATCH", f"/pages/{page_id}", json={"properties": {PROP_APPROVAL_STATUS: {"select": {"name": status}}}})
 
     def set_task_links(self, page_id: str, linear_identifier: str | None = None, pending: bool | None = None) -> None:
         props: dict = {}

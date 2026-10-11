@@ -68,9 +68,10 @@ class Outbox:
         title = f"{p['title']} {mk}"
         if item.state is OutboxState.PENDING:
             found = self.notion.find_by_marker(self.notion.tasks_ds, PROP_TITLE, mk)
+            extra = {k: p[k] for k in ("origin", "approval_status") if p.get(k)}  # Phase 10 RA-created tasks
             item.notion_page_id = found[0] if found else self.notion.create_task_page(
                 title, p["blocks"], pending=p["pending"], category=p.get("category"),
-                parent_page_id=p.get("parent_page_id"))[0]
+                parent_page_id=p.get("parent_page_id"), **extra)[0]
             item.state = OutboxState.NOTION_CREATED
             self._save(item)
         if item.state is OutboxState.NOTION_CREATED:

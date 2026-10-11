@@ -157,6 +157,13 @@ class LinearWriter(LinearClient):
         i = data["issueCreate"]["issue"]
         return i["id"], i["identifier"], i["url"]
 
+    def create_relation(self, blocking_issue_id: str, blocked_issue_id: str) -> None:
+        """``blocking`` blocks ``blocked`` (Linear blocked-by, the Phase 6B DAG edge source)."""
+        data = self._gql("mutation($in: IssueRelationCreateInput!) { issueRelationCreate(input: $in) { success } }",
+                         {"in": {"issueId": blocking_issue_id, "relatedIssueId": blocked_issue_id, "type": "blocks"}})
+        if not data["issueRelationCreate"]["success"]:
+            raise ConnectorResponseError("linear", "issueRelationCreate returned success=false")
+
     def update_description(self, issue_id: str, description: str) -> None:
         self._gql("mutation($id: String!, $d: String!) { issueUpdate(id: $id, input: {description: $d}) { success } }",
                   {"id": issue_id, "d": description})

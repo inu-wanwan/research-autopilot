@@ -97,6 +97,7 @@ class ParentRun(BaseModel):
     waiting_for: str | None = None
     completion_approved: bool = False
     notes_page_id: str | None = None
+    research_cycle_id: str | None = None  # Phase 10B: this DAG is one cycle of a research objective
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)

@@ -72,6 +72,13 @@ class ResearchAuthorization(BaseModel):
     policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
     expires_at: datetime = Field(default_factory=lambda: utcnow() + timedelta(days=30))
     revoked: bool = False
+    # Phase 10: research-scope authorization (immutable version bound to the approved plan's content hash)
+    version: int = 1
+    kind: Literal["delegation", "research_scope"] = "delegation"
+    plan_id: str | None = None
+    content_hash: str | None = None   # ResearchPlan.content_hash that was approved
+    scope: dict | None = None         # ResearchScope snapshot (objective, metric, conditions, budget, autonomy, ...)
+    superseded_by: str | None = None
 
 
 # ---------------------------------------------------------------- approvals
@@ -86,6 +93,7 @@ class ApprovalKind(StrEnum):
     DAG = "dag"  # inferred parent/child dependencies; execution requires a human-approved fixed hash
     EXTERNAL_CODE = "external_code"  # Phase 9: first execution grant (or scope change) for external code
     EXTERNAL_LICENSE = "external_license"  # Phase 9: unclear / conflicting license terms need a human
+    RESEARCH_SCOPE = "research_scope"  # Phase 10: versioned research plan / scope (initial or change)
 
 
 class ApprovalStatus(StrEnum):
@@ -217,6 +225,8 @@ class WorkflowStage(StrEnum):
     PROPOSING = "proposing"
     COMPLETING = "completing"
     AWAITING_APPROVAL = "awaiting_approval"
+    RESEARCHING = "researching"  # Phase 10B: approved research scope executing in cycles
+    PAUSED = "paused"  # Phase 10B: stopped by the user (no new work is started)
     DONE = "done"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
@@ -245,6 +255,8 @@ class WorkflowRun(BaseModel):
     blocked_reason: str | None = None
     waiting_for: str | None = None  # approval request id
     resume_stage: str | None = None  # stage to continue with after an approval
+    research_cost_usd: float = 0.0  # Phase 10 planning / evaluation LLM cost (counted in the chain budget)
+    research_cycle_id: str | None = None  # Phase 10B: this run is a task of a research cycle
     chain_depth: int = 0  # 0 = user-created root task
     parent_task_id: str | None = None
     attempts: int = 0

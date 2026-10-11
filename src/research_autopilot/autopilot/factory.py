@@ -42,7 +42,8 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
                                    mode=s5.approval_mode, approver_ids=set(s5.approver_linear_user_ids))
     dependency_inferer = OpenAIDependencyInferer(s5.dag_inference_model or p2.reviewer_model, p2.model_pricing,
                                                  lambda: s5.budget_api_usd, p2.agents_tracing)
-    return AutopilotDeps(external=exp.external, settings=AutopilotSettings(default_budget=s5.budget, prefect_ui_url=s5.prefect_ui_url,
+    from research_autopilot.research.workflow import ResearchDeps, llm_factory_from_env
+    return AutopilotDeps(external=exp.external, research=ResearchDeps(llm_factory=llm_factory_from_env(p2)), settings=AutopilotSettings(default_budget=s5.budget, prefect_ui_url=s5.prefect_ui_url,
                                                     max_concurrent_tasks=s5.max_concurrent_tasks, dry_run=dry_run),
                          plan=plan, impl=impl, exp=exp, linear=linear, notion_writer=writer, ops=ops, approvals=approvals,
                          outbox=Outbox(plan.store, writer, linear, ops),

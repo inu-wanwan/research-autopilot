@@ -75,6 +75,7 @@ class AutopilotDeps:
     notifier: object | None = None  # Notifier; None -> notifications module default
     dependency_inferer: object | None = None
     external: object | None = None  # Phase 9 external.service.ExternalDeps
+    research: object | None = None  # Phase 10 research.workflow.ResearchDeps (None: research objectives block)
 
     @property
     def store(self):
@@ -96,6 +97,9 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 summary["outbox"].append((item.key, deps.outbox.process(item).state.value))
         if deps.external is not None and not deps.settings.dry_run:
             summary["external"] = _external_tick(deps)
+        if deps.research is not None and not deps.settings.dry_run:
+            from research_autopilot.research import orchestration
+            summary["research"] = orchestration.tick(deps)
         for req in deps.approvals.pending():
             if req.kind in (ApprovalKind.EXTERNAL_CODE, ApprovalKind.EXTERNAL_LICENSE):
                 continue  # Phase 9 requests are decided by external.grants (not tied to a Linear state)
@@ -104,7 +108,7 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
         # when no fresh Notion checkbox is present after a process restart.
         advance_parents(deps)
         active = [r for r in _runs(deps) if r.stage not in TERMINAL and r.stage not in WAITING
-                  and r.stage is not WorkflowStage.BLOCKED]
+                  and r.stage not in (WorkflowStage.BLOCKED, WorkflowStage.PAUSED)]
         if only_task:
             active = [r for r in active if r.task_id == only_task]
         if not active:
@@ -162,7 +166,10 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
                 active.append(_new_run(deps, bundle.issue.identifier, execution, prefect_flow_run_id))
                 break
-        for run in active[: deps.settings.max_concurrent_tasks]:
+        # Phase 10: a research objective waiting on its cycle only coordinates; it does not take a task slot.
+        coordinating = [r for r in active if r.stage is WorkflowStage.RESEARCHING]
+        working = [r for r in active if r.stage is not WorkflowStage.RESEARCHING]
+        for run in working[: deps.settings.max_concurrent_tasks] + coordinating:
             if deps.settings.dry_run:
                 continue
             if input_error := validate_child_inputs(deps, run):
@@ -214,7 +221,8 @@ def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None =
                       execution_request_id=execution.request_id if execution else None, execution_run_id=execution.execution_run_id if execution else None,
                       authorization_id=origin.get("authorization_id") if origin else None,
                       chain_depth=origin.get("chain_depth", 0) if origin else 0,
-                      parent_task_id=origin.get("parent_task_id") if origin else None)
+                      parent_task_id=origin.get("parent_task_id") if origin else None,
+                      research_cycle_id=origin.get("research_cycle_id") if origin else None)
     run.event("discovered", f"{task_id} (root {run.root_task_id}, depth {run.chain_depth})")
     _save(deps, run)
     if execution:
@@ -246,6 +254,7 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
         WorkflowStage.EXPERIMENTING: _experiment,
         WorkflowStage.PROPOSING: _propose,
         WorkflowStage.COMPLETING: _complete,
+        WorkflowStage.RESEARCHING: _research_step,
     }
     for _ in range(max_steps):
         fn = steps.get(run.stage)
@@ -313,6 +322,10 @@ def _authorize(deps: AutopilotDeps, run: WorkflowRun) -> None:
     if bundle.spec is None:
         _block(deps, run, "no usable Notion spec: " + "; ".join(r.message for r in bundle.reasons))
         return
+    from research_autopilot.research import scope as research_scope
+    if research_scope.is_research_objective(bundle.spec) and run.chain_depth == 0 and not run.parent_task_id:
+        _authorize_research(deps, run, bundle)
+        return
     auth = _authorization(deps, run)
     if auth is not None and not policy.check_authorization(auth):
         if run.chain_depth > 0:  # follow-up task: must stay within the root authorization
@@ -343,6 +356,28 @@ def _authorize(deps: AutopilotDeps, run: WorkflowRun) -> None:
         diff=[], budget_summary=f"API ${draft.budget.api_usd:.2f}, compute {draft.budget.compute_cpu_hours:g} CPU-h (cumulative)",
         payload={"authorization_draft": draft.model_dump(mode="json")})
     _wait(deps, run, req, WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.PLANNING)
+
+
+def _authorize_research(deps: AutopilotDeps, run: WorkflowRun, bundle) -> None:
+    """Phase 10A: a research objective is planned and approved per research scope before anything runs."""
+    from research_autopilot.research import workflow as rw
+    if deps.research is None:
+        _block(deps, run, "research objective found but Phase 10 research planning is not configured")
+        return
+    auth = rw.research_authorization(deps.store, run.task_id)
+    if auth is not None and not rw.authorization_problems(deps.store, auth, bundle.spec):
+        run.authorization_id = auth.authorization_id
+        run.stage = WorkflowStage.RESEARCHING
+        run.event("authorized", f"research scope authorization v{auth.version}")
+        return
+    latest = rw.latest_plan(deps.store, run.task_id)
+    comment = latest.revision_comment if latest is not None and latest.status.value == "revision_requested" else ""
+    rw.plan_research(deps, run, bundle, revision_comment=comment)
+
+
+def _research_step(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    from research_autopilot.research import orchestration
+    orchestration.step(deps, run)
 
 
 def _wait(deps: AutopilotDeps, run: WorkflowRun, req: ApprovalRequest, stage: WorkflowStage, resume: WorkflowStage) -> None:
@@ -439,6 +474,9 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
 
 
 def _propose(deps: AutopilotDeps, run: WorkflowRun) -> None:
+    if run.research_cycle_id:  # Phase 10B: the Research Evaluator decides follow-ups for the whole cycle
+        run.stage = WorkflowStage.COMPLETING
+        return
     auth = _authorization(deps, run)
     exp = deps.store.get_experiment(run.experiment_run_ids[-1])
     bundle = _load_spec(deps, run.task_id)
@@ -592,6 +630,9 @@ def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
     if req.kind is ApprovalKind.DAG:
         from research_autopilot.autopilot.dag_runtime import current_dag_approval_hash
         current = current_dag_approval_hash(deps, req)
+    elif req.kind is ApprovalKind.RESEARCH_SCOPE:
+        from research_autopilot.research.workflow import current_approval_hash
+        current = current_approval_hash(deps, req)
     else:
         current = _spec_hash_of(bundle.spec) if bundle.spec else "unavailable"
     result = deps.approvals.check(req, issue, history, current)
@@ -610,6 +651,12 @@ def _apply_decision(deps: AutopilotDeps, req: ApprovalRequest, approval: Approva
         return
     decision, actor = approval.decision, approval.actor
     run = next((r for r in _runs(deps) if r.waiting_for == req.request_id), None)
+    if req.kind is ApprovalKind.RESEARCH_SCOPE:
+        from research_autopilot.research.workflow import apply_decision as apply_research
+        apply_research(deps, req, approval, issue, run)
+        if run is not None:
+            _save(deps, run)
+        return
     if req.kind is ApprovalKind.PROPOSAL:
         if decision == "approve":
             page = req.payload.get("notion_page_id")
@@ -695,7 +742,13 @@ def _external_tick(deps: AutopilotDeps) -> dict:
     return out
 
 
+_ROUTINE = {EventKind.TASK_STARTED, EventKind.EXPERIMENT_COMPLETED, EventKind.ANALYSIS_COMPLETED,
+            EventKind.TASK_COMPLETED, EventKind.PROPOSAL_GENERATED, EventKind.PHASE_TRANSITION}
+
+
 def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str, details: list[str]) -> None:
+    if run.research_cycle_id and kind in _ROUTINE:
+        return  # Phase 10: per-task notifications of research cycles are replaced by research milestones
     notify_once(deps.store,
                 NotificationEvent(kind=kind, flow_name="autopilot", flow_run_name=run.task_id,
                                   state_name=run.stage.value, details=details, dedupe_key=dedupe),

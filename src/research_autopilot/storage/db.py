@@ -187,6 +187,18 @@ external_executions = _record_table("external_executions", "execution_id",
                                     sa.Column("grant_id", sa.String(64), index=True, nullable=False),
                                     sa.Column("entry_id", sa.String(200), index=True, nullable=False),
                                     sa.Column("job_key", sa.String(200), index=True, nullable=False))
+# Phase 10 research planning / orchestration
+research_plans = _record_table("research_plans", "plan_id",
+                               sa.Column("task_id", sa.String(64), index=True, nullable=False),
+                               sa.Column("version", sa.Integer, nullable=False),
+                               sa.Column("status", sa.String(24), index=True, nullable=False),
+                               sa.UniqueConstraint("task_id", "version", name="uq_research_plan_version"))
+research_cycles = _record_table("research_cycles", "cycle_id",
+                                sa.Column("task_id", sa.String(64), index=True, nullable=False),
+                                sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False),
+                                sa.Column("status", sa.String(24), index=True, nullable=False))
+research_controls = _record_table("research_controls", "control_id",
+                                  sa.Column("task_id", sa.String(64), index=True, nullable=False))
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

@@ -30,6 +30,9 @@ PROP_LAST_RUN = "Last Run"
 PROP_EXECUTION_ERROR = "Execution Error"
 PROP_PARENT = "親タスク"
 PROP_CHILDREN = "サブタスク"
+PROP_ORIGIN = "Origin"  # Human / RA
+PROP_APPROVAL_STATUS = "Approval Status"  # projection of backend approval events (never a source of approval)
+APPROVAL_STATUSES = ("Not Required", "Pending", "Approved", "Revision Requested", "Rejected")
 
 MAX_BLOCKS = 2000
 MAX_DEPTH = 4
@@ -105,6 +108,8 @@ class NotionClient:
             execution_error=_plain(props.get(PROP_EXECUTION_ERROR)) or None,
             parent_page_ids=_relation_ids(props.get(PROP_PARENT)),
             child_page_ids=_relation_ids(props.get(PROP_CHILDREN)),
+            origin=_select(props.get(PROP_ORIGIN)),
+            approval_status=_select(props.get(PROP_APPROVAL_STATUS)),
         )
 
     def find_page_ids_by_linear_id(self, identifier: str) -> list[str]:

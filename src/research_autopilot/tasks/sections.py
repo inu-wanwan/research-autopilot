@@ -53,6 +53,13 @@ CANONICAL_SECTIONS: dict[str, tuple[set[str], tuple[str, ...]]] = {
     "input_artifacts": ({"inputs", "input", "input artifacts", "入力", "入力データ"}, ()),
     # Phase 8: literature research to run before planning (question; DOIs / arXiv ids / GitHub URLs as seeds)
     "literature": ({"literature", "literature research", "literature survey", "文献調査"}, ()),
+    # Phase 10: a research objective (scope-level task planned by the Research Planner)
+    "research_objective": ({"research objective", "research objectives", "research question", "研究目的", "研究課題",
+                            "研究スコープ", "research scope"}, ("research objective", "研究目的", "research scope")),
+    "budget": ({"budget", "予算", "計算予算", "budget / authorization"}, ("budget", "予算")),
+    "success_criteria": ({"success criteria", "成功条件", "成功判定条件", "成功判定"}, ()),
+    "stop_conditions": ({"stop conditions", "stopping conditions", "停止条件"}, ()),
+    "autonomy": ({"autonomy", "自律実行の裁量", "自律実行", "裁量"}, ()),
 }
 
 _NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*[.)]?|[-*・])\s*")

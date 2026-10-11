@@ -20,6 +20,7 @@ class Usage:
 def chain_usage(store: Store, runs: list[dict]) -> Usage:
     u = Usage()
     for run in runs:
+        u.api_usd += run.get("research_cost_usd") or 0.0  # Phase 10 planning / evaluation
         if run.get("plan_run_id"):
             rec = store.get_run(run["plan_run_id"])
             if rec and rec.cost:

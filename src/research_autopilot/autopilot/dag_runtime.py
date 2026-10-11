@@ -110,6 +110,11 @@ def advance_parents(deps) -> list[WorkflowRun]:
             continue
         statuses = _child_statuses(deps, parent)
         _capture_artifacts(deps, parent, dag, statuses)
+        if parent.research_cycle_id and dag.nodes and all(statuses.get(n.task_id) is ExecutionStatus.COMPLETED
+                                                          for n in dag.nodes if n.mandatory):
+            # A research cycle ends here; the Research Evaluator (not the parent completion gate) decides what next.
+            _sync_parent_status(deps, parent, ExecutionStatus.COMPLETED, None, terminal=True)
+            continue
         gate_passed = parent.completion_approved
         if dag.nodes and all(statuses.get(n.task_id) is ExecutionStatus.COMPLETED for n in dag.nodes if n.mandatory):
             if not gate_passed and not parent.waiting_for:
@@ -191,8 +196,17 @@ def validate_child_inputs(deps, run: WorkflowRun) -> str | None:
     return f"validated dependency artifact is missing or stale for {sorted(missing)}" if missing else None
 
 
+def _is_research_parent(deps, parent_run_id: str) -> bool:
+    raw = deps.store.get(db.parent_runs, parent_run_id)
+    return bool(raw and raw.get("research_cycle_id"))
+
+
 def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
     from research_autopilot.autopilot.engine import _new_run
+    if parent.research_cycle_id:
+        from research_autopilot.research.orchestration import paused
+        if paused(deps.store, parent.parent_task_id):
+            return []  # stopped by the user: nothing new starts, running children finish
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
     statuses = _child_statuses(deps, parent)
     active = sum(s in _ACTIVE for s in statuses.values())
@@ -492,6 +506,8 @@ def _save_parent(deps, parent: ParentRun) -> None:
 
 
 def _project_parent(deps, parent: ParentRun, error: str | None) -> None:
+    if parent.research_cycle_id:
+        return  # the research objective's own status is projected by the research orchestration
     page = deps.plan.manager.notion.get_task(parent.parent_notion_page_id)
     if not page.run_requested:
         deps.notion_writer.project_execution(parent.parent_notion_page_id, status=parent.status.value, error=error)
@@ -538,5 +554,7 @@ def _prefect_url(deps, flow_id: str | None) -> str | None:
 
 
 def _event(deps, task_id: str, kind: EventKind, key: str, status: ExecutionStatus, details: list[str]) -> None:
+    if key.startswith("parent-started:") and _is_research_parent(deps, key.split(":", 1)[1]):
+        return  # research cycles report milestones themselves
     notify_once(deps.store, NotificationEvent(kind=kind, flow_name="autopilot-parent", flow_run_name=task_id,
                                               state_name=status.value, details=details, dedupe_key=key), deps.notifier)

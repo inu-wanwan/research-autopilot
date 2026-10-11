@@ -92,6 +92,8 @@ class NotionTask(BaseModel):
     # them as separate properties even though they target the same data source.
     parent_page_ids: list[str] = Field(default_factory=list)
     child_page_ids: list[str] = Field(default_factory=list)
+    origin: str | None = None            # Phase 10: Human / RA
+    approval_status: str | None = None   # Phase 10: projection of backend approval events (read-only meaning)
 
     def source_ref(self) -> SourceRef:
         return SourceRef(
@@ -124,6 +126,12 @@ class TaskSpec(BaseModel):
     non_goals: str | None = None
     input_artifacts: str | None = None
     literature: str | None = None  # Phase 8
+    # Phase 10 research objective (scope-level) sections
+    research_objective: str | None = None
+    budget: str | None = None
+    success_criteria: str | None = None
+    stop_conditions: str | None = None
+    autonomy: str | None = None
 
     @classmethod
     def from_sources(cls, issue: LinearIssue, page: NotionTask) -> "TaskSpec":
@@ -148,6 +156,11 @@ class TaskSpec(BaseModel):
             non_goals=s.get("non_goals"),
             input_artifacts=s.get("input_artifacts"),
             literature=s.get("literature"),
+            research_objective=s.get("research_objective"),
+            budget=s.get("budget"),
+            success_criteria=s.get("success_criteria"),
+            stop_conditions=s.get("stop_conditions"),
+            autonomy=s.get("autonomy"),
         )
 
     def section(self, name: str) -> str | None:

@@ -328,6 +328,61 @@ class ApprovalView(discord.ui.View):
             self.add_item(ApprovalButton(service, request_id, action, disabled=disabled))
 
 
+class DiscordControlInput:
+    """Phase 10 Stop / Resume of a research run: authorized user in the configured guild, any RA channel."""
+
+    def __init__(self, store: Store, settings: DiscordSettings) -> None:
+        self.store = store
+        self.settings = settings
+
+    def submit(self, *, interaction_id: str, task_id: str, action: Literal["stop", "resume"], user_id: int,
+               guild_id: int | None, channel_id: int, user_is_bot: bool = False) -> InteractionResult:
+        if user_is_bot or user_id not in self.settings.authorized_user_ids:
+            return InteractionResult.UNAUTHORIZED
+        if guild_id != self.settings.guild_id:
+            return InteractionResult.WRONG_GUILD
+        if channel_id not in {self.settings.channel_id(r) for r in DiscordRoute}:
+            return InteractionResult.WRONG_CHANNEL
+        if self.store.get(db.research_controls, interaction_id):
+            return InteractionResult.DUPLICATE
+        from research_autopilot.research.models import ResearchControl
+        c = ResearchControl(control_id=interaction_id, task_id=task_id, action=action, actor=f"discord:{user_id}",
+                            channel="discord")
+        if not self.store.insert_new(db.research_controls, c.control_id, c.model_dump(mode="json"), task_id=task_id):
+            return InteractionResult.DUPLICATE
+        return InteractionResult.ACCEPTED
+
+
+_CONTROL_TEXT = {
+    InteractionResult.ACCEPTED: "受け付けました。次のポーリングで反映します（停止中も実行中のジョブは完了まで続きます）。",
+    InteractionResult.DUPLICATE: "この操作はすでに受理済みです。",
+    InteractionResult.UNAUTHORIZED: "この操作を行う権限がありません。",
+    InteractionResult.WRONG_GUILD: "許可されたサーバーではありません。",
+    InteractionResult.WRONG_CHANNEL: "このチャンネルでは操作できません。",
+}
+
+
+class ControlButton(discord.ui.Button):
+    def __init__(self, service: DiscordControlInput, task_id: str, action: Literal["stop", "resume"]) -> None:
+        super().__init__(label={"stop": "Stop", "resume": "Resume"}[action],
+                         style=discord.ButtonStyle.danger if action == "stop" else discord.ButtonStyle.primary,
+                         custom_id=f"ra:{action}:{task_id}")
+        self.service, self.task_id, self.action = service, task_id, action
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        result = self.service.submit(interaction_id=str(interaction.id), task_id=self.task_id, action=self.action,
+                                     user_id=interaction.user.id, guild_id=interaction.guild_id,
+                                     channel_id=interaction.channel_id, user_is_bot=interaction.user.bot)
+        await interaction.response.send_message(_CONTROL_TEXT.get(result, "受け付けられませんでした。"), ephemeral=True)
+
+
+class ControlView(discord.ui.View):
+    def __init__(self, service: DiscordControlInput, task_id: str) -> None:
+        super().__init__(timeout=None)
+        for action in ("stop", "resume"):
+            self.add_item(ControlButton(service, task_id, action))
+
+
 class DiscordGatewayClient(discord.Client):
     def __init__(self, notifier: DiscordNotifier) -> None:
         intents = discord.Intents.none()
@@ -336,6 +391,7 @@ class DiscordGatewayClient(discord.Client):
         self.notifier = notifier
         self.settings = notifier.settings
         self.approvals = DiscordApprovalInput(notifier.store, notifier.settings)
+        self.controls = DiscordControlInput(notifier.store, notifier.settings)
         self._views_restored = False
         self._lease_owner = f"discord:{id(self)}"
         self.startup_error: Exception | None = None
@@ -359,6 +415,9 @@ class DiscordGatewayClient(discord.Client):
                 req_id = delivery.event.approval_request_id
                 if delivery.state is DeliveryState.SENT and delivery.message_id and req_id:
                     self.add_view(ApprovalView(self.approvals, req_id), message_id=int(delivery.message_id))
+                elif delivery.state is DeliveryState.SENT and delivery.message_id and delivery.event.control_task_id:
+                    self.add_view(ControlView(self.controls, delivery.event.control_task_id),
+                                  message_id=int(delivery.message_id))
             self._views_restored = True
         if not self.deliver_pending.is_running():
             self.deliver_pending.start()
@@ -406,6 +465,8 @@ class DiscordGatewayClient(discord.Client):
                     raw = self.notifier.store.get(db.approval_requests, delivery.event.approval_request_id)
                     if raw and raw.get("status") == ApprovalStatus.PENDING.value:
                         view = ApprovalView(self.approvals, delivery.event.approval_request_id)
+                elif delivery.event.control_task_id:
+                    view = ControlView(self.controls, delivery.event.control_task_id)
                 message = await channel.send(embed=_embed(delivery.event, marker), view=view)
             except Exception as exc:  # discord.py handles 429; keep other failures retryable
                 attempts = delivery.attempts + 1

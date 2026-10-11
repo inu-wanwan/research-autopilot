@@ -47,6 +47,9 @@ app.add_typer(literature_app, name="literature")
 from research_autopilot.external.cli import app as external_app  # noqa: E402
 
 app.add_typer(external_app, name="external")
+from research_autopilot.research.cli import app as research_app  # noqa: E402
+
+app.add_typer(research_app, name="research")
 
 EXIT = {"ready": 0, "blocked": 2, "insufficient_spec": 3, "transient_failure": 4}
 

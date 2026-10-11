@@ -93,8 +93,12 @@ def is_placeholder(text: str) -> bool:
 
 
 def spec_gates(spec: TaskSpec, settings: Settings) -> list[BlockedReason]:
-    missing = [s for s in settings.required_sections if spec.section(s) is None]
-    unfilled = [s for s in settings.required_sections if s not in missing and is_placeholder(spec.section(s))]
+    required = list(settings.required_sections)
+    if spec.research_objective and spec.research_objective.strip() and "specification" in required:
+        # Phase 10: a research objective is specified by its scope; the Research Planner derives the tasks
+        required.remove("specification")
+    missing = [s for s in required if spec.section(s) is None]
+    unfilled = [s for s in required if s not in missing and is_placeholder(spec.section(s))]
     if not missing and not unfilled:
         return []
     parts = []
