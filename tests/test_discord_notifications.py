@@ -61,6 +61,14 @@ def test_typed_event_routing(kind, route):
     assert route_event(NotificationEvent(kind=kind, flow_name="x")) is route
 
 
+def test_resume_controls_are_routed_to_approvals():
+    stopped = NotificationEvent(kind=EventKind.UNRECOVERABLE_ERROR, flow_name="research", control_task_id="INU-1",
+                                control_actions=["resume"])
+    assert route_event(stopped) is DiscordRoute.APPROVALS
+    evaluated = stopped.model_copy(update={"kind": EventKind.ANALYSIS_COMPLETED, "control_actions": ["stop"]})
+    assert route_event(evaluated) is DiscordRoute.RESULTS
+
+
 def test_legacy_completion_routing_and_embed_shape():
     experiment = NotificationEvent(kind=EventKind.COMPLETED, flow_name="run-experiment", flow_run_name="INU-1",
                                    state_name="Completed", details=["metric: 0.1"])

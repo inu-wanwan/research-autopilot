@@ -113,6 +113,8 @@ _LOG_KINDS = {
 def route_event(event: NotificationEvent) -> DiscordRoute:
     if event.kind is EventKind.APPROVAL_REQUIRED:
         return DiscordRoute.APPROVALS
+    if "resume" in event.control_actions:  # a stopped research waits for a human Resume decision
+        return DiscordRoute.APPROVALS
     if event.kind in _RESULT_KINDS:
         return DiscordRoute.RESULTS
     if event.kind in _ERROR_KINDS:

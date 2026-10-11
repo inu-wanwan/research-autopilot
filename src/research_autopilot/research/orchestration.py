@@ -193,7 +193,8 @@ def tick(deps) -> dict:
             run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
             run.event("paused", "stopped by the user: no new work starts; running jobs finish")
             _save(deps, run)
-            _milestone(deps, run.task_id, "paused", ["Research paused by the user (running jobs finish)."],
+            # one message per Stop (a constant key would swallow every later pause of the same task)
+            _milestone(deps, run.task_id, f"paused:{controls(deps.store, run.task_id)[-1].control_id}", ["Research paused by the user (running jobs finish)."],
                        kind=_ev().UNRECOVERABLE_ERROR, buttons="resume")
             out["controls"].append(f"{run.task_id}: paused")
         elif not stop and run.stage is WorkflowStage.PAUSED:
@@ -631,7 +632,9 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         run.stage = WorkflowStage.BLOCKED
         run.blocked_reason = f"research stopped: {reason}"[:900]
         run.event("research_stopped", reason[:300])
-        _milestone(deps, run.task_id, f"stopped:{run.run_id}",
+        # a Resume restarts the same WorkflowRun under a new execution run: key on that, or every later stop is
+        # deduplicated away and the human never gets a Resume button again
+        _milestone(deps, run.task_id, f"stopped:{run.run_id}:{run.execution_run_id}",
                    [f"Research stopped after {len(cs)} cycle(s): {reason[:500]}", f"Notes: {note_url}",
                     f"Task: {bundle.page.url if bundle.page else ''}"],
                    kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR, buttons="resume")
@@ -742,7 +745,7 @@ def _ev():
 
 def _milestone(deps, task_id: str, key: str, details: list[str], *, kind=None, buttons: str | None = "stop") -> None:
     """Research milestones. ``buttons``: "stop" on cycle evaluations (results), "resume" on stops / anomalies
-    (errors), None elsewhere -- the logs channel never carries controls."""
+    (routed to approvals: they wait for a human decision), None elsewhere -- the logs channel never carries controls."""
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
     try:

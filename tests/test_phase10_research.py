@@ -527,6 +527,17 @@ def test_resume_after_a_stop_re_evaluates_the_last_cycle(tmp_path):
     assert "HUMAN_RESUME" not in evals[0] and evals[-1]["HUMAN_RESUME"]["actor"] == "discord:1001"
 
 
+def test_every_stop_after_a_resume_sends_a_new_resume_message(tmp_path):
+    stop = EvaluationDecision(action="stop", rationale="needs a human look")
+    deps, linear, notion, writer, llm, _ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, stop]))
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    resumes = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r
+               and r["event"]["flow_name"] == "research" and "resume" in r["event"]["control_actions"]]
+    assert len(resumes) == 2  # the second stop is not swallowed by the first one's dedupe key
+
+
 def test_resume_retries_a_blocked_child_dag_inside_the_same_cycle(tmp_path):
     from research_autopilot.autopilot.dag import ParentRun
     from research_autopilot.autopilot.execution import ExecutionRun, ExecutionStatus
