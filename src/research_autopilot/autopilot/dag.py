@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +23,7 @@ from research_autopilot.models import BlockedCode, TaskSpec, new_id, utcnow
 
 class DAGStatus(StrEnum):
     VALID = "valid"
+    PENDING_APPROVAL = "pending_approval"
     BLOCKED = "blocked"
 
 
@@ -31,6 +31,21 @@ class DAGProblem(BaseModel):
     code: str
     message: str
     task_id: str | None = None
+
+
+class InferredDependency(BaseModel):
+    producer_task_id: str
+    consumer_task_id: str
+    required_artifacts: list[str] = Field(default_factory=list)
+    rationale: str
+    evidence: list[str]
+
+
+class DependencyProposal(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    edges: list[InferredDependency]
+    summary: str
+    unresolved: list[str] = Field(default_factory=list)
 
 
 class TaskDAGNode(BaseModel):
@@ -41,7 +56,8 @@ class TaskDAGNode(BaseModel):
     repository: str | None
     specification_hash: str
     dependencies: list[str] = Field(default_factory=list)
-    dependency_source: Literal["linear", "none"] = "none"
+    dependency_source: Literal["linear", "inferred", "mixed", "none"] = "none"
+    artifact_dependencies: dict[str, list[str]] = Field(default_factory=dict)
     mandatory: bool = True
 
 
@@ -57,6 +73,11 @@ class TaskDAG(BaseModel):
     nodes: list[TaskDAGNode]
     status: DAGStatus
     problems: list[DAGProblem] = Field(default_factory=list)
+    dependency_proposal: DependencyProposal | None = None
+    inference_model: str | None = None
+    inference_cost_usd: float | None = None
+    inference_approved: bool = False
+    approval_request_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -165,9 +186,6 @@ def discover_and_build(manager, parent_bundle, parent_execution_run_id: str) -> 
         if not spec.repository:
             problems.append(DAGProblem(code="invalid_repository_mapping", task_id=bundle.issue.identifier,
                                        message="canonical Repository section is required"))
-        if spec.dependencies_note and re.search(r"\b[A-Z]+-\d+\b", spec.dependencies_note):
-            problems.append(DAGProblem(code="ambiguous_dependency", task_id=bundle.issue.identifier,
-                                       message="prose dependency cannot become an executable edge without approval"))
         nodes.append(TaskDAGNode(task_id=bundle.issue.identifier, notion_page_id=page.page_id,
                                  parent_task_id=parent_bundle.issue.identifier,
                                  project_id=bundle.issue.project_id, repository=spec.repository,
@@ -176,17 +194,107 @@ def discover_and_build(manager, parent_bundle, parent_execution_run_id: str) -> 
                                  dependency_source="linear" if bundle.issue.blocked_by else "none"))
     _validate_graph(nodes, parent_bundle.issue.identifier, problems)
     parent_hash = specification_hash(parent_bundle.spec) if parent_bundle.spec else "unavailable"
-    canonical = {"parent": {"task_id": parent_bundle.issue.identifier, "page": parent.page_id if parent else "",
-                            "spec": parent_hash},
-                 "nodes": [{"task_id": n.task_id, "page": n.notion_page_id, "spec": n.specification_hash,
-                            "dependencies": n.dependencies, "repository": n.repository}
-                           for n in sorted(nodes, key=lambda x: x.task_id)]}
-    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
-    return TaskDAG(parent_task_id=parent_bundle.issue.identifier,
-                   parent_notion_page_id=parent.page_id if parent else "",
-                   parent_execution_run_id=parent_execution_run_id, parent_specification_hash=parent_hash,
-                   dag_hash=digest, nodes=nodes,
-                   status=DAGStatus.BLOCKED if problems else DAGStatus.VALID, problems=problems)
+    dag = TaskDAG(parent_task_id=parent_bundle.issue.identifier,
+                  parent_notion_page_id=parent.page_id if parent else "",
+                  parent_execution_run_id=parent_execution_run_id, parent_specification_hash=parent_hash,
+                  dag_hash="", nodes=nodes,
+                  status=DAGStatus.BLOCKED if problems else DAGStatus.VALID, problems=problems)
+    dag.dag_hash = dag_hash(dag)
+    return dag
+
+
+def needs_dependency_inference(dag: TaskDAG) -> bool:
+    """Infer only when no structured/Linear edge exists; never overwrite it."""
+    return dag.status is DAGStatus.VALID and len(dag.nodes) > 1 and not any(n.dependencies for n in dag.nodes)
+
+
+def inference_payload(manager, parent_bundle, dag: TaskDAG) -> dict:
+    children = []
+    for node in dag.nodes:
+        spec = manager.load(node.task_id).spec
+        children.append({
+            "task_id": node.task_id,
+            "title": spec.title,
+            "purpose": spec.purpose,
+            "specification": spec.specification,
+            "acceptance_criteria": spec.acceptance_criteria,
+            "dependencies": spec.dependencies_note,
+            "input_artifacts": spec.input_artifacts,
+            "artifact_requirements": spec.artifact_requirements,
+            "repository": spec.repository,
+            "other_sections": spec.other_sections,
+        })
+    return {
+        "parent": {"task_id": parent_bundle.issue.identifier, "title": parent_bundle.spec.title,
+                   "purpose": parent_bundle.spec.purpose, "acceptance_criteria": parent_bundle.spec.acceptance_criteria,
+                   "other_sections": parent_bundle.spec.other_sections},
+        "children": children,
+        "rules": {"allowed_task_ids": [n.task_id for n in dag.nodes],
+                  "direction": "producer_task_id must complete before consumer_task_id",
+                  "do_not_infer_from_title_numbering_alone": True},
+    }
+
+
+def apply_dependency_proposal(dag: TaskDAG, proposal: DependencyProposal, *,
+                              model: str | None = None, cost_usd: float | None = None,
+                              evidence_corpus: str | None = None) -> TaskDAG:
+    """Validate an LLM proposal and freeze it into a pending-approval DAG."""
+    known = {n.task_id for n in dag.nodes}
+    seen: set[tuple[str, str]] = set()
+    problems = list(dag.problems)
+    by_id = {n.task_id: n for n in dag.nodes}
+    for edge in proposal.edges:
+        pair = (edge.producer_task_id, edge.consumer_task_id)
+        if edge.producer_task_id not in known or edge.consumer_task_id not in known:
+            problems.append(DAGProblem(code="inferred_unknown_task", task_id=edge.consumer_task_id,
+                                       message=f"inferred edge references a task outside the parent: {pair}"))
+            continue
+        if edge.producer_task_id == edge.consumer_task_id:
+            problems.append(DAGProblem(code="inferred_self_dependency", task_id=edge.consumer_task_id,
+                                       message="inferred edge is self-referential"))
+            continue
+        if pair in seen:
+            problems.append(DAGProblem(code="inferred_duplicate_edge", task_id=edge.consumer_task_id,
+                                       message=f"duplicate inferred edge: {pair}"))
+            continue
+        seen.add(pair)
+        if not edge.rationale.strip() or not edge.evidence:
+            problems.append(DAGProblem(code="inferred_edge_without_evidence", task_id=edge.consumer_task_id,
+                                       message=f"inferred edge has no auditable rationale/evidence: {pair}"))
+            continue
+        if evidence_corpus is not None:
+            corpus = " ".join(evidence_corpus.lower().split())
+            unsupported = [quote for quote in edge.evidence
+                           if " ".join(quote.lower().split()) not in corpus]
+            if unsupported:
+                problems.append(DAGProblem(code="inferred_evidence_not_in_spec", task_id=edge.consumer_task_id,
+                                           message=f"inferred evidence is not present in the source specification: {pair}"))
+                continue
+        consumer = by_id[edge.consumer_task_id]
+        had_linear = bool(consumer.dependencies)
+        consumer.dependencies = sorted(set(consumer.dependencies) | {edge.producer_task_id})
+        consumer.artifact_dependencies[edge.producer_task_id] = sorted(set(edge.required_artifacts))
+        consumer.dependency_source = "mixed" if had_linear else "inferred"
+    _validate_graph(dag.nodes, dag.parent_task_id, problems)
+    dag.problems = problems
+    dag.dependency_proposal = proposal
+    dag.inference_model = model
+    dag.inference_cost_usd = cost_usd
+    dag.status = DAGStatus.BLOCKED if problems else DAGStatus.PENDING_APPROVAL
+    dag.dag_hash = dag_hash(dag)
+    dag.updated_at = utcnow()
+    return dag
+
+
+def dag_hash(dag: TaskDAG) -> str:
+    canonical = {
+        "parent": {"task_id": dag.parent_task_id, "page": dag.parent_notion_page_id,
+                   "spec": dag.parent_specification_hash},
+        "nodes": [{"task_id": n.task_id, "page": n.notion_page_id, "spec": n.specification_hash,
+                   "dependencies": sorted(n.dependencies), "artifacts": n.artifact_dependencies,
+                   "repository": n.repository} for n in sorted(dag.nodes, key=lambda x: x.task_id)],
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def _validate_graph(nodes: list[TaskDAGNode], parent_task_id: str, problems: list[DAGProblem]) -> None:

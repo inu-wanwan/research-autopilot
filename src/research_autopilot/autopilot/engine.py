@@ -73,6 +73,7 @@ class AutopilotDeps:
     outbox: Outbox
     completion_reviewer: object | None
     notifier: object | None = None  # Notifier; None -> notifications module default
+    dependency_inferer: object | None = None
 
     @property
     def store(self):
@@ -574,9 +575,16 @@ def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
     issue = deps.linear.get_issue(req.task_id)
     history = deps.linear.history(req.task_id)
     bundle = _load_spec(deps, req.task_id)  # the task's *current* Notion spec (edits make the approval stale)
-    current = _spec_hash_of(bundle.spec) if bundle.spec else "unavailable"
+    if req.kind is ApprovalKind.DAG:
+        from research_autopilot.autopilot.dag_runtime import current_dag_approval_hash
+        current = current_dag_approval_hash(deps, req)
+    else:
+        current = _spec_hash_of(bundle.spec) if bundle.spec else "unavailable"
     result = deps.approvals.check(req, issue, history, current)
     if result.decision is None:
+        if req.kind is ApprovalKind.DAG and result.status in {ApprovalStatus.STALE, ApprovalStatus.EXPIRED}:
+            from research_autopilot.autopilot.dag_runtime import close_parent_dag_approval
+            close_parent_dag_approval(deps, req, result.note)
         return (req.request_id[:8], result.status.value, result.note)
     _apply_decision(deps, req, result.decision, issue)
     return (req.request_id[:8], result.status.value, result.note)

@@ -1,8 +1,9 @@
 from pathlib import Path
 
 from phase2_fakes import PAGE, make_issue, make_page
-from phase5_fakes import ACC, INV, SECTIONS, FakeCompletionReviewer, build
-from research_autopilot.autopilot.dag import (DAGStatus, TaskDAG, TaskDAGNode, aggregate_parent_status,
+from phase5_fakes import ACC, INV, SECTIONS, FakeCompletionReviewer, approve, build
+from research_autopilot.autopilot.dag import (DAGStatus, DependencyProposal, InferredDependency, TaskDAG,
+                                              TaskDAGNode, aggregate_parent_status, apply_dependency_proposal,
                                               discover_and_build, ready_nodes)
 from research_autopilot.autopilot.engine import poll
 from research_autopilot.autopilot.execution import ExecutionStatus
@@ -84,6 +85,19 @@ class ParentAwareReviewer:
         return LlmRun(output=out, usage=Usage(input_tokens=1, output_tokens=1), model=self.model, cost_usd=0.0)
 
 
+class FakeDependencyInferer:
+    model = "fake-dependency-planner"
+
+    def __init__(self, proposal):
+        self.proposal = proposal
+        self.payloads = []
+
+    def infer(self, payload):
+        self.payloads.append(payload)
+        return LlmRun(output=self.proposal, usage=Usage(input_tokens=10, output_tokens=5),
+                      model=self.model, cost_usd=0.0001)
+
+
 def _parent_fixture(tmp_path: Path, count: int = 4):
     deps, linear, notion, writer, channel = build(tmp_path, drafts=[], n=20, completion=ParentAwareReviewer())
     deps.settings.prefect_ui_url = "http://prefect"
@@ -159,3 +173,72 @@ def test_stale_artifact_blocks_consumer(tmp_path):
     poll(deps)
     runs = deps.store.find(db.execution_runs, task_id="INU-902")
     assert runs and runs[0]["status"] == "Blocked"
+
+
+def test_inferred_dag_requires_approval_before_any_child_starts(tmp_path):
+    deps, linear, notion, _, _ = _parent_fixture(tmp_path, count=2)
+    # No Linear dependency: the planner must derive an auditable candidate.
+    linear.issues["INU-902"].blocked_by = []
+    proposal = DependencyProposal(
+        edges=[InferredDependency(producer_task_id="INU-901", consumer_task_id="INU-902",
+                                  required_artifacts=["manifest"], rationale="A2 consumes A1 output",
+                                  evidence=["Compute a small benchmark value and store it for later comparison."])],
+        summary="A1 produces the shared benchmark definition before A2", unresolved=[])
+    deps.dependency_inferer = FakeDependencyInferer(proposal)
+    poll(deps, prefect_flow_run_id="parent-flow")
+    parent = deps.store.find(db.parent_runs)[0]
+    dag = deps.store.find(db.task_dags)[0]
+    assert parent["status"] == "Awaiting Approval"
+    assert dag["status"] == "pending_approval" and dag["inference_approved"] is False
+    assert dag["nodes"][1]["dependencies"] == ["INU-901"]
+    assert deps.store.find(db.execution_runs, task_id="INU-901") == []
+    req = next(r for r in deps.approvals.pending() if r.kind.value == "dag")
+    approve(deps, linear, req.request_id, spec_hash=req.spec_hash)
+    for _ in range(5):
+        poll(deps)
+    assert deps.store.find(db.task_dags)[0]["inference_approved"] is True
+    assert len(deps.store.find(db.execution_runs, task_id="INU-901")) == 1
+    assert len(deps.store.find(db.execution_runs, task_id="INU-902")) == 1
+    assert deps.store.find(db.parent_runs)[0]["status"] == "Completed"
+
+
+def test_inferred_dag_approval_becomes_stale_when_child_spec_changes(tmp_path):
+    deps, linear, notion, _, _ = _parent_fixture(tmp_path, count=2)
+    linear.issues["INU-902"].blocked_by = []
+    proposal = DependencyProposal(edges=[
+        InferredDependency(producer_task_id="INU-901", consumer_task_id="INU-902",
+                           required_artifacts=[], rationale="consumer needs producer",
+                           evidence=["Compute a small benchmark value and store it for later comparison."])
+    ], summary="one edge", unresolved=[])
+    deps.dependency_inferer = FakeDependencyInferer(proposal)
+    poll(deps)
+    req = next(r for r in deps.approvals.pending() if r.kind.value == "dag")
+    child_page = notion.pages["00000003-2222-3333-4444-555555555555"]
+    notion.pages[child_page.page_id] = child_page.model_copy(
+        update={"sections": {**child_page.sections, "purpose": "changed after proposal"}})
+    approve(deps, linear, req.request_id, spec_hash=req.spec_hash)
+    poll(deps)
+    assert deps.store.find(db.parent_runs)[0]["status"] == "Blocked"
+    assert deps.store.find(db.execution_runs, task_id="INU-901") == []
+
+
+def test_inferred_unknown_task_and_cycle_fail_closed():
+    dag = _dag([_node("A1"), _node("A2")])
+    proposal = DependencyProposal(edges=[
+        InferredDependency(producer_task_id="A1", consumer_task_id="A2", rationale="x", evidence=["spec"]),
+        InferredDependency(producer_task_id="A2", consumer_task_id="A1", rationale="y", evidence=["spec"]),
+        InferredDependency(producer_task_id="OUT", consumer_task_id="A1", rationale="z", evidence=["spec"]),
+    ], summary="bad", unresolved=[])
+    result = apply_dependency_proposal(dag, proposal)
+    assert result.status is DAGStatus.BLOCKED
+    assert {p.code for p in result.problems} >= {"cycle", "inferred_unknown_task"}
+
+
+def test_inferred_edge_without_evidence_fails_closed():
+    dag = _dag([_node("A1"), _node("A2")])
+    proposal = DependencyProposal(edges=[
+        InferredDependency(producer_task_id="A1", consumer_task_id="A2", rationale="", evidence=[]),
+    ], summary="unsupported", unresolved=[])
+    result = apply_dependency_proposal(dag, proposal)
+    assert result.status is DAGStatus.BLOCKED
+    assert any(p.code == "inferred_edge_without_evidence" for p in result.problems)

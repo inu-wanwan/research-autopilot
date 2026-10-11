@@ -16,6 +16,7 @@ class Phase5Settings(BaseModel):
     poll_seconds: int = 60
     approval_poll_seconds: int = 60
     max_concurrent_tasks: int = Field(default=1, ge=1, le=16)
+    dag_inference_model: str | None = None  # defaults to the Phase 2 reviewer model
     prefect_ui_url: str | None = None
     confirm_deployment: str = "approval-confirm/manual"
     approval_mode: str = "discord"  # Discord interaction is authoritative; legacy modes remain supported.
@@ -38,6 +39,7 @@ def load_phase5_settings(env: dict[str, str] | None = None) -> Phase5Settings:
             "RA_AUTOPILOT_BUDGET_USD": ("budget_api_usd", float), "RA_AUTOPILOT_BUDGET_CPU_HOURS": ("budget_cpu_hours", float),
             "RA_AUTOPILOT_POLL_SECONDS": ("poll_seconds", int), "PREFECT_UI_URL": ("prefect_ui_url", str),
             "RA_AUTOPILOT_MAX_CONCURRENT_TASKS": ("max_concurrent_tasks", int),
+            "RA_DAG_INFERENCE_MODEL": ("dag_inference_model", str),
             "RA_APPROVAL_MODE": ("approval_mode", str),
             "RA_APPROVER_LINEAR_USER_IDS": ("approver_linear_user_ids", lambda v: [x.strip() for x in v.split(",") if x.strip()])}
     for var, (field, f) in conv.items():

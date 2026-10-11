@@ -83,6 +83,7 @@ class ApprovalKind(StrEnum):
     BUDGET = "budget"
     PLAN = "plan"  # plan needs a new scientific decision
     COMPLETION_REVIEW = "completion_review"  # cannot decide Done automatically
+    DAG = "dag"  # inferred parent/child dependencies; execution requires a human-approved fixed hash
 
 
 class ApprovalStatus(StrEnum):

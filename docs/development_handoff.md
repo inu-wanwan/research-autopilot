@@ -47,6 +47,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 - 親 status を child から導出し、Notion/ExecutionRun に同期。全 mandatory child 完了後に deterministic artifact evidence 付き Parent Completion Reviewer を実行し、不成立なら既存 Discord Completion Review、成立後は Notes / Linear Done / Notion Completed を行う。
 - 実 Notion / Linear read-only dry-run：INU-274 の4子 relation、identity、同一 project は正常。A1〜A4 の Linear blocked-by は0件。親 Acceptance Criteria、各子 `autopilot` label / canonical Specification / Repository が不足し、4-node DAG hash `bbfd39b...237a` は Blocked。本番 task は実行・変更していない。詳細は `docs/operations/phase6b_parent_dag.md`。
 - 着手前 baseline：`uv run pytest` は 355 passed。実装後の全回帰は 362 passed / 1 dependency warning。子 Prefect URL の最終追加後に Phase 6A/6B 13 tests と `git diff --check` が成功。ruff は dev dependency に存在せず未実行（`python -m compileall -q src tests` は成功）。
+- Phase 6B follow-up：Linear blocked-by 未設定時の Dependency Planner を追加。仕様中の evidence と artifact contract を持つ候補 DAG を生成し、unknown/self/duplicate/cycle/根拠不在を決定論的に拒否する。DAG hash の Discord 承認前は子を開始せず、承認待ちの source spec/relation 変更は stale → Blocked。`RA_DAG_INFERENCE_MODEL` は未設定時 reviewer model。新規 Phase 6B tests 11件が成功し、ユーザー指示により全回帰は受け入れ時まで未実行。
 
 ### Phase 6A Explicit Execution Control（2026-10-11 / Codex）
 
@@ -58,8 +59,8 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ### Exact Next Actions
 
-1. Phase A を実行可能にする場合は、人間が不足仕様、`autopilot` label、Linear blocked-by を承認・設定する。
-2. 設定後に INU-274 で human E2E を行う。本番/Eagle には deploy せず、まず test-only / dry-run で DAG hash と edge を再確認する。
+1. Phase A を実行可能にする場合は、人間が不足仕様と `autopilot` label を承認・設定する。Linear blocked-by は任意で、未設定なら RA が候補 DAG を提示する。
+2. 設定後に INU-274 で DAG proposal / Discord approval の human E2E を行う。本番/Eagle には deploy せず、まず test-only / dry-run で DAG hash と edge を確認する。
 
 ### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
 
@@ -249,7 +250,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ## Remaining Work
 
-- **Phase A source-data blocker**：INU-274 に canonical Acceptance Criteria、INU-275〜278 に `autopilot` label / canonical Specification / Repository、A1〜A4 の Linear blocked-by がない。科学仕様と依存関係は人間承認なしに補完しない。
+- **Phase A source-data blocker**：INU-274 に canonical Acceptance Criteria、INU-275〜278 に `autopilot` label / canonical Specification / Repository がない。Linear blocked-by は必須ではなくなったが、科学仕様不足は人間承認なしに補完しない。
 - **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker / discord-bot image、DB の新規 Interaction table、Bot token と4チャンネル、Codex / Claude CLI の認証、volume、上限と予約を確認する。
 - 実 Discord でユーザーが承認ボタン / revision modal を操作し、polling が再開して Linear と元メッセージを更新する一連の確認（Fake E2E では確認済み）。本番タスクを作成・変更せずに止めている。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。

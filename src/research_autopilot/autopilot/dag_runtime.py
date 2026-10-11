@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from research_autopilot.autopilot import policy
-from research_autopilot.autopilot.dag import (ArtifactHandoff, DAGStatus, ParentRun, TaskDAG,
-                                              aggregate_parent_status, discover_and_build, ready_nodes, sha256_file)
+from research_autopilot.autopilot.dag import (ArtifactHandoff, DAGProblem, DAGStatus, ParentRun, TaskDAG,
+                                              aggregate_parent_status, apply_dependency_proposal,
+                                              discover_and_build, inference_payload, needs_dependency_inference,
+                                              ready_nodes, sha256_file, specification_hash)
 from research_autopilot.autopilot.execution import (ExecutionRequest, ExecutionRun, ExecutionStatus,
                                                     accept, record_blocked, request_key, transition)
 from research_autopilot.autopilot.models import ApprovalKind, OutboxItem, OutboxState, WorkflowRun
@@ -27,6 +30,24 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     provisional = discover_and_build(deps.plan.manager, bundle, "")
     history = deps.store.find(db.task_dags, parent_task_id=bundle.issue.identifier)
     provisional.version = max((int(item.get("version", 0)) for item in history), default=0) + 1
+    if needs_dependency_inference(provisional):
+        if deps.dependency_inferer is None:
+            provisional.problems.append(DAGProblem(code="dependency_inference_unavailable",
+                                                   message="no dependency inferer is configured"))
+            provisional.status = DAGStatus.BLOCKED
+        else:
+            try:
+                payload = inference_payload(deps.plan.manager, bundle, provisional)
+                inferred = deps.dependency_inferer.infer(payload)
+                provisional = apply_dependency_proposal(
+                    provisional, inferred.output, model=getattr(inferred, "model", None),
+                    cost_usd=getattr(inferred, "cost_usd", None),
+                    evidence_corpus=json.dumps(payload, ensure_ascii=False))
+            except Exception as exc:  # fail closed; no execution from an incomplete proposal
+                provisional.problems.append(DAGProblem(
+                    code="dependency_inference_failed",
+                    message=f"dependency inference failed: {type(exc).__name__}"))
+                provisional.status = DAGStatus.BLOCKED
     if provisional.status is DAGStatus.BLOCKED:
         reason = "; ".join(f"{p.code}: {p.message}" for p in provisional.problems)
         req = record_blocked(deps.store, page=page, issue=bundle.issue,
@@ -41,12 +62,35 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     if execution is None:
         return None, []
     provisional.parent_execution_run_id = execution.execution_run_id
+    execution.prefect_flow_run_id = prefect_flow_run_id
+    deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"),
+                   request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
     _save_dag(deps, provisional)
     parent = ParentRun(parent_task_id=bundle.issue.identifier, parent_notion_page_id=page.page_id,
                        parent_execution_run_id=execution.execution_run_id, dag_id=provisional.dag_id,
                        dag_hash=provisional.dag_hash)
     _save_parent(deps, parent)
     deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
+    if provisional.status is DAGStatus.PENDING_APPROVAL:
+        edges = provisional.dependency_proposal.edges
+        edge_lines = [f"{e.producer_task_id} -> {e.consumer_task_id}: {e.rationale}"
+                      for e in edges] or ["No edges: all child tasks are proposed as independent"]
+        req = deps.approvals.request(
+            kind=ApprovalKind.DAG, issue=bundle.issue, root_task_id=bundle.issue.identifier,
+            spec_hash=provisional.dag_hash, title=f"Approve inferred DAG for {bundle.issue.identifier}",
+            what_changes=[f"Freeze DAG version {provisional.version} / {provisional.dag_hash}", *edge_lines],
+            diff=[*(f"evidence: {'; '.join(e.evidence)}" for e in edges),
+                  *(f"unresolved: {x}" for x in provisional.dependency_proposal.unresolved)],
+            budget_summary=f"dependency inference model={provisional.inference_model or 'unknown'} "
+                           f"cost=${provisional.inference_cost_usd or 0:.6f}",
+            dedupe=provisional.dag_hash,
+            payload={"parent_run_id": parent.parent_run_id, "dag_id": provisional.dag_id,
+                     "dag_hash": provisional.dag_hash, "approval_purpose": "dag"})
+        provisional.approval_request_id = req.request_id
+        parent.waiting_for = req.request_id
+        _save_dag(deps, provisional); _save_parent(deps, parent)
+        _sync_parent_status(deps, parent, ExecutionStatus.AWAITING_APPROVAL, None)
+        return parent, []
     _start_parent(deps, parent, execution, prefect_flow_run_id)
     return parent, schedule_ready(deps, parent)
 
@@ -58,6 +102,9 @@ def advance_parents(deps) -> list[WorkflowRun]:
                                                        ExecutionStatus.AWAITING_APPROVAL.value]):
         parent = ParentRun.model_validate(raw)
         dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
+        if dag.status is DAGStatus.PENDING_APPROVAL:
+            _sync_parent_status(deps, parent, ExecutionStatus.AWAITING_APPROVAL, None)
+            continue
         statuses = _child_statuses(deps, parent)
         _capture_artifacts(deps, parent, dag, statuses)
         gate_passed = parent.completion_approved
@@ -123,7 +170,11 @@ def validate_child_inputs(deps, run: WorkflowRun) -> str | None:
                            consumer_task_id=row["consumer_task_id"], dedupe_key=(
                                f"{row['parent_run_id']}:{row['producer_execution_run_id']}:{row['consumer_task_id']}:"
                                f"{row['artifact_id']}:{row['content_hash']}"))
-    missing = (set(node.dependencies) - valid) | stale
+    by_producer = {p: [r for r in rows if r["producer_task_id"] == p and r.get("validation_status") == "validated"]
+                   for p in node.dependencies}
+    required_missing = {p for p, required in node.artifact_dependencies.items()
+                        if required and not set(required) <= {r["artifact_id"] for r in by_producer.get(p, [])}}
+    missing = (set(node.dependencies) - valid) | stale | required_missing
     return f"validated dependency artifact is missing or stale for {sorted(missing)}" if missing else None
 
 
@@ -145,7 +196,7 @@ def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
         # Same-repository mutation is serialized even if global concurrency is raised.
         if node.repository and node.repository in running_repos:
             continue
-        if node.dependencies and not _validated_inputs(deps, parent, node.task_id, node.dependencies):
+        if node.dependencies and not _validated_inputs(deps, parent, node):
             _block_unsatisfied_child(deps, parent, node, "validated dependency artifact is missing or stale")
             continue
         issue = deps.linear.get_issue(node.task_id)
@@ -238,15 +289,20 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
                                       consumer_task_id=consumer, dedupe_key=handoff.dedupe_key)
 
 
-def _validated_inputs(deps, parent: ParentRun, consumer: str, producers: list[str]) -> bool:
-    rows = deps.store.find(db.artifact_handoffs, parent_run_id=parent.parent_run_id, consumer_task_id=consumer)
-    by_producer = {p: [] for p in producers}
+def _validated_inputs(deps, parent: ParentRun, node) -> bool:
+    rows = deps.store.find(db.artifact_handoffs, parent_run_id=parent.parent_run_id, consumer_task_id=node.task_id)
+    by_producer = {p: [] for p in node.dependencies}
     for row in rows:
         if row["producer_task_id"] in by_producer:
             by_producer[row["producer_task_id"]].append(row)
-    return all(items and all(r.get("validation_status") == "validated" and Path(r["path"]).is_file() and
-                             sha256_file(Path(r["path"])) == r["content_hash"] for r in items)
-               for items in by_producer.values())
+    for producer, items in by_producer.items():
+        if not items or not all(r.get("validation_status") == "validated" and Path(r["path"]).is_file() and
+                                sha256_file(Path(r["path"])) == r["content_hash"] for r in items):
+            return False
+        required = set(node.artifact_dependencies.get(producer, []))
+        if required and not required <= {r["artifact_id"] for r in items}:
+            return False
+    return True
 
 
 def _block_unsatisfied_child(deps, parent: ParentRun, node, reason: str) -> None:
@@ -298,7 +354,8 @@ def _request_parent_completion_approval(deps, parent: ParentRun) -> None:
                                  what_changes=["mark the parent Done after all mandatory children completed"],
                                  diff=parent.completion_reasons, budget_summary="-",
                                  dedupe=f"parent:{parent.parent_run_id}",
-                                 payload={"parent_run_id": parent.parent_run_id})
+                                 payload={"parent_run_id": parent.parent_run_id,
+                                          "approval_purpose": "completion"})
     parent.waiting_for = req.request_id
     _save_parent(deps, parent)
 
@@ -313,17 +370,68 @@ def apply_parent_approval(deps, request, approval) -> bool:
         return True
     parent = ParentRun.model_validate(raw)
     parent.waiting_for = None
+    purpose = request.payload.get("approval_purpose", "completion")
+    if purpose == "dag" and approval.decision == "approve":
+        dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
+        if current_dag_approval_hash(deps, request) != request.spec_hash:
+            parent.completion_reasons.append("DAG approval is stale because a parent/child specification changed")
+            _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED, parent.completion_reasons[-1], terminal=True)
+            return True
+        dag.inference_approved = True
+        dag.status = DAGStatus.VALID
+        _save_dag(deps, dag)
+        execution = ExecutionRun.model_validate(deps.store.get(db.execution_runs, parent.parent_execution_run_id))
+        _start_parent(deps, parent, execution, execution.prefect_flow_run_id)
+        return True
     if approval.decision == "approve":
         parent.completion_approved = True
         _sync_parent_status(deps, parent, ExecutionStatus.RUNNING, None)
     elif approval.decision == "reject":
+        if approval.channel == "discord":
+            deps.ops.reflect_verified_decision(deps.linear.get_issue(parent.parent_task_id), "Canceled",
+                                                f"verified Discord reject ({request.request_id[:8]}) by {approval.actor}")
         _sync_parent_status(deps, parent, ExecutionStatus.CANCELED,
-                            f"parent completion rejected by {approval.actor}", terminal=True)
+                            f"parent {purpose} rejected by {approval.actor}", terminal=True)
     else:
+        if approval.channel == "discord":
+            deps.ops.reflect_verified_decision(deps.linear.get_issue(parent.parent_task_id), "Revision Requested",
+                                                f"verified Discord revise ({request.request_id[:8]}) by {approval.actor}")
         parent.completion_reasons.append(f"revision requested by {approval.actor}")
         _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED,
                             parent.completion_reasons[-1], terminal=True)
     return True
+
+
+def current_dag_approval_hash(deps, request) -> str:
+    """Return the approved hash only while every source snapshot is current."""
+    dag_id = request.payload.get("dag_id")
+    raw = deps.store.get(db.task_dags, dag_id) if dag_id else None
+    if not raw:
+        return "missing"
+    dag = TaskDAG.model_validate(raw)
+    parent = deps.plan.manager.load(dag.parent_task_id)
+    if parent.spec is None or specification_hash(parent.spec) != dag.parent_specification_hash:
+        return "stale"
+    if parent.page is None or set(parent.page.child_page_ids) != {n.notion_page_id for n in dag.nodes}:
+        return "stale"
+    for node in dag.nodes:
+        bundle = deps.plan.manager.load(node.task_id)
+        if bundle.spec is None or specification_hash(bundle.spec) != node.specification_hash:
+            return "stale"
+    return dag.dag_hash
+
+
+def close_parent_dag_approval(deps, request, note: str) -> None:
+    """Stop a parent whose inferred DAG approval expired or became stale."""
+    if request.payload.get("approval_purpose") != "dag":
+        return
+    raw = deps.store.get(db.parent_runs, request.payload.get("parent_run_id", ""))
+    if not raw:
+        return
+    parent = ParentRun.model_validate(raw)
+    parent.waiting_for = None
+    parent.completion_reasons.append(note)
+    _sync_parent_status(deps, parent, ExecutionStatus.BLOCKED, note, terminal=True)
 
 
 def _complete_parent(deps, parent: ParentRun, dag: TaskDAG) -> None:

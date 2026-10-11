@@ -13,7 +13,7 @@ from research_autopilot.storage import db
 class ExecutionStatus(StrEnum):
     IDLE="Idle"; REQUESTED="Requested"; ACCEPTED="Accepted"; RUNNING="Running"; AWAITING_APPROVAL="Awaiting Approval"; BLOCKED="Blocked"; COMPLETED="Completed"; FAILED="Failed"; CANCELED="Canceled"
 
-ALLOWED = {ExecutionStatus.IDLE:{ExecutionStatus.REQUESTED}, ExecutionStatus.REQUESTED:{ExecutionStatus.ACCEPTED,ExecutionStatus.BLOCKED}, ExecutionStatus.ACCEPTED:{ExecutionStatus.RUNNING,ExecutionStatus.BLOCKED}, ExecutionStatus.RUNNING:{ExecutionStatus.AWAITING_APPROVAL,ExecutionStatus.COMPLETED,ExecutionStatus.FAILED,ExecutionStatus.BLOCKED,ExecutionStatus.CANCELED}, ExecutionStatus.AWAITING_APPROVAL:{ExecutionStatus.RUNNING,ExecutionStatus.CANCELED,ExecutionStatus.BLOCKED}}
+ALLOWED = {ExecutionStatus.IDLE:{ExecutionStatus.REQUESTED}, ExecutionStatus.REQUESTED:{ExecutionStatus.ACCEPTED,ExecutionStatus.BLOCKED}, ExecutionStatus.ACCEPTED:{ExecutionStatus.RUNNING,ExecutionStatus.AWAITING_APPROVAL,ExecutionStatus.BLOCKED}, ExecutionStatus.RUNNING:{ExecutionStatus.AWAITING_APPROVAL,ExecutionStatus.COMPLETED,ExecutionStatus.FAILED,ExecutionStatus.BLOCKED,ExecutionStatus.CANCELED}, ExecutionStatus.AWAITING_APPROVAL:{ExecutionStatus.RUNNING,ExecutionStatus.CANCELED,ExecutionStatus.BLOCKED}}
 
 def transition(current: ExecutionStatus, target: ExecutionStatus) -> ExecutionStatus:
     """Reject invalid state changes instead of silently rewriting history."""
