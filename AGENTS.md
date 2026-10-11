@@ -71,7 +71,8 @@ User
 │       ├── implementation/    # Phase 3（Implementer / Reviewer / ExperimentSpec / FailureReport）
 │       ├── experiments/       # Phase 4（Runner / Resources / Validator / Triage / Analyst / Scope）
 │       ├── autopilot/         # Phase 5（Policy gate / Approvals / Outbox / Engine / Completion）
-│       ├── catalog/           # Phase 7A（Artifact Catalog / Adapter lifecycle / declarative engine）
+│       ├── catalog/           # Phase 7（Artifact Catalog / Adapter lifecycle / declarative engine / generation）
+│       ├── literature/        # Phase 8（Researcher Agent / search / Zotero Connector / evidence）
 │       ├── notifications/     # HTTP 通知 adapter と state hook
 │       └── idempotency.py     # 冪等な副作用
 ├── infra/                     # compose.yaml / Dockerfile / automations/
@@ -81,7 +82,7 @@ User
     ├── development_handoff.md # 引き継ぎ記録
     ├── phase1_technical_design.md
     ├── operations/            # deployment / monitoring / recovery
-    └── phase_specs/           # Phase 別仕様書（phase1.md〜phase5.md、phase6b.md、phase7*.md）
+    └── phase_specs/           # Phase 別仕様書（phase1.md〜phase5.md、phase6b.md、phase7*.md、phase8.md）
 ```
 
 規則：

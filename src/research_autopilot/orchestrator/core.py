@@ -202,8 +202,9 @@ def _research(deps: Deps, record: PlanRunRecord, questions: list[tuple[str, bool
             record.events.append(RunEvent(kind="literature", message=f"research failed: {type(exc).__name__}: {exc}"[:300]))
             continue
         record.events.append(RunEvent(kind="literature", message=(
-            f"report {report.report_id}: {len(report.sources)} source(s), {len(report.verified_claims)} verified "
-            f"claim(s), {len(report.failures)} failure(s), ${report.total_cost_usd:.4f}")))
+            f"report {report.report_id} ({'reused, no new cost' if report.reused else f'${report.total_cost_usd:.4f}'}): "
+            f"{len(report.sources)} source(s), {len(report.verified_claims)} verified claim(s), "
+            f"{len(report.failures)} failure(s)")))
         out.append(report)
     return out
 

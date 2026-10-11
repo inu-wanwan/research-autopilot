@@ -57,6 +57,7 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
     if reuse:
         old = lit_store.reusable_report(deps.catalog, key, deps.reuse_days)
         if old is not None:
+            old.reused = True
             return old
     report = LiteratureReport(question=question, task_id=task_id, topic_key=key, models=[deps.llm.model])
 

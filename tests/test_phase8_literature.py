@@ -206,6 +206,7 @@ def test_past_reports_and_sources_are_reused_without_new_calls(tmp_path):
     n_llm, n_http = len(deps.llm.calls), len(calls)
     again = research(deps, "BOCS surrogate and acquisition", seeds=["baptistar/BOCS"], write_note=False)
     assert again.report_id == first.report_id and len(deps.llm.calls) == n_llm and len(calls) == n_http
+    assert again.reused and not first.reused
     # a different question reuses the stored originals (no PDF / repository download)
     third = research(deps, "BOCS acquisition optimizer details", seeds=["baptistar/BOCS"], write_note=False)
     assert third.report_id != first.report_id

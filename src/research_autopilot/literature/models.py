@@ -141,6 +141,7 @@ class LiteratureReport(BaseModel):
     summary: str = ""
     models: list[str] = Field(default_factory=list)
     total_cost_usd: float = 0.0
+    reused: bool = Field(default=False, exclude=True)  # set when returned from the store instead of researched
 
     @property
     def verified_claims(self) -> list[Claim]:
