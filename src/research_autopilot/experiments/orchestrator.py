@@ -59,7 +59,13 @@ from research_autopilot.storage.artifacts import write_json
 from research_autopilot.storage.db import Store
 from research_autopilot.tasks.manager import TaskManager
 
-ENVIRONMENT_FAILURE = "environment preparation failed"  # setup, not the experiment: a retry re-runs Phase 4 only
+ENVIRONMENT_FAILURE = "environment preparation failed"  # transient (network / index / interpreter download /
+# timeout): a retry re-runs Phase 4 only
+SETUP_DEFECT = "experiment setup is broken at the commit"  # deterministic: a Phase-4-only rerun fails the same way
+_DETERMINISTIC_ENV = re.compile(
+    r"unsupported launcher|unsupported dependency files|\bnot found at [0-9a-f]|setup step .* failed \(exit|"
+    r"no solution found|unsatisfiable|not found in the package registry|no matching distribution|"
+    r"failed to parse|failed to build|no version of|was not found in", re.I)
 
 
 @dataclass
@@ -327,13 +333,19 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
             for step in spec.execution.setup:
                 import subprocess
 
-                p = subprocess.run(resolve_argv(step, prov["python"]), cwd=checkout / spec.execution.working_directory,
-                                   capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
+                try:
+                    p = subprocess.run(resolve_argv(step, prov["python"]),
+                                       cwd=checkout / spec.execution.working_directory,
+                                       capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
+                except subprocess.TimeoutExpired as exc:
+                    raise EnvironmentError_(f"setup step {step[:3]} timed out") from exc
                 if p.returncode != 0:
-                    raise EnvironmentError_(f"setup step {step[:3]} failed: {p.stderr[-300:]}")
+                    raise EnvironmentError_(f"setup step {step[:3]} failed (exit {p.returncode}): "
+                                            f"{(p.stderr or p.stdout)[-300:]}")
             m.environment[spec.experiment_id] = prov
     except EnvironmentError_ as exc:
-        raise _Block(f"{spec.experiment_id}: {ENVIRONMENT_FAILURE}: {exc}") from exc
+        kind = SETUP_DEFECT if _DETERMINISTIC_ENV.search(str(exc)) else ENVIRONMENT_FAILURE
+        raise _Block(f"{spec.experiment_id}: {kind}: {exc}") from exc
     for inp in spec.inputs:
         f = checkout / inp.path
         input_hashes[inp.path] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else ""
