@@ -169,7 +169,6 @@ def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None =
         execution.status, execution.started_at, execution.updated_at = ExecutionStatus.RUNNING, utcnow(), utcnow()
         deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"), request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
         deps.notion_writer.project_execution(execution.notion_task_id, status="Running")
-        deps.ops.set_state(deps.plan.manager.load(task_id).issue, "In Progress", "explicit execution started")
     _notify(deps, run, EventKind.TASK_STARTED, f"started:{run.run_id}",
             [f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
     return run

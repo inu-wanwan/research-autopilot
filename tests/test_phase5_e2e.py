@@ -23,6 +23,13 @@ def onboard(deps, linear):
     return req
 
 
+def request_child(notion, child_id):
+    """Phase 6A: proposals are registered only; a human must request execution."""
+    page_id = next(p.page_id for p in notion.pages.values() if p.linear_issue_id == child_id)
+    page = notion.pages[page_id]
+    notion.pages[page_id] = page.model_copy(update={"run_requested": True, "execution_status": "Requested"})
+
+
 def test_full_e2e_with_zero_mid_run_approvals_and_auto_followup(tmp_path):
     deps, linear, notion, writer, channel = build(tmp_path)
     onboard(deps, linear)
@@ -43,7 +50,8 @@ def test_full_e2e_with_zero_mid_run_approvals_and_auto_followup(tmp_path):
     assert child.state_name == "Todo" and "autopilot" in child.labels and child.title.startswith("[TEST]")
     page = next(p for p in notion.pages.values() if p.linear_issue_id == child_id)
     assert page.pending is False and page.sections["scientific_invariants"].strip("- ") == INV[0]
-    # Next poll picks up the follow-up automatically (inherited authorization) and completes it
+    # Labels do not start children: a new explicit request is required.
+    request_child(notion, child_id)
     poll(deps)
     rc = runs(deps)[child_id]
     assert rc.stage is WorkflowStage.DONE, (rc.blocked_reason, rc.events[-3:])
@@ -89,6 +97,7 @@ def test_out_of_scope_proposal_waits_for_approval_and_resumes_only_on_valid_huma
     approve(deps, linear, req.request_id)
     poll(deps)
     assert linear.issues[child_id].state_name in ("Todo", "Done")
+    request_child(notion, child_id)
     poll(deps)
     assert runs(deps)[child_id].stage is WorkflowStage.DONE
 
@@ -161,10 +170,10 @@ def test_missing_linear_states_block_with_clear_reason(tmp_path):
 
 
 def test_test_only_mode_refuses_production_issue(tmp_path):
-    deps, linear, *_ = build(tmp_path, root_title="Real research task")
+    deps, linear, notion, *_ = build(tmp_path, root_title="Real research task")
     poll(deps)
-    r = runs(deps)["INU-900"]
-    assert r.stage is WorkflowStage.BLOCKED and "test-only" in r.blocked_reason
+    assert runs(deps) == {}
+    assert next(iter(notion.pages.values())).execution_status == "Blocked"
     assert linear.issues["INU-900"].state_name == "Todo" and linear.histories["INU-900"] == []
 
 
