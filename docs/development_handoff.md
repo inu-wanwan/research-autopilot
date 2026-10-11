@@ -49,6 +49,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 - 着手前 baseline：`uv run pytest` は 355 passed。実装後の全回帰は 362 passed / 1 dependency warning。子 Prefect URL の最終追加後に Phase 6A/6B 13 tests と `git diff --check` が成功。ruff は dev dependency に存在せず未実行（`python -m compileall -q src tests` は成功）。
 - Phase 6B follow-up：Linear blocked-by 未設定時の Dependency Planner を追加。仕様中の evidence と artifact contract を持つ候補 DAG を生成し、unknown/self/duplicate/cycle/根拠不在を決定論的に拒否する。DAG hash の Discord 承認前は子を開始せず、承認待ちの source spec/relation 変更は stale → Blocked。`RA_DAG_INFERENCE_MODEL` は未設定時 reviewer model。新規 Phase 6B tests 11件が成功し、ユーザー指示により全回帰は受け入れ時まで未実行。
 - Phase 6B 追加（2026-10-11 / Claude Code）：Dependency Planner を commit `7042f76`。§12 の不足テスト（global slot 並列、同一 repository 直列化、child approval 待ち中の sibling 継続、child Failed / scientific invariant Blocked、partial DAG recovery）を `58f29e2` で追加。失敗隔離を実装：child が Failed/Blocked でも独立 sibling の管理と ready node の schedule を続け、進行可能 node がなくなってから親を終端化し、child の原因を親 `Execution Error` に集約する。あわせて「親 Awaiting Approval 中に child が Failed → `ValueError` で poll が落ちる」既存バグを Running 経由の遷移で修正。検証済み：`uv run pytest tests/test_phase6b_dag.py` 18 passed、`uv run pytest` 373 passed / 1 dependency warning、`git diff --check` 成功。child の Failed/Blocked は store 上の状態操作で再現しており、実際の scientific invariant 違反から Phase 4 経由で Blocked になる E2E は未確認。`OpenAIDependencyInferer` の実モデル呼び出しは未検証（課金 API のため未実行）。
+- Phase 6B 追加2（2026-10-11 / Claude Code）：DAG intake に親 `autopilot` scope、Repository の registry 登録、非 canonical Repository 見出しのヒント、`Allowed files` 必須を追加（`36684a5`、`363984f`）。検証済み：`uv run pytest` 377 passed / 1 dependency warning。Phase A の Notion / Linear / registry 反映内容は `docs/operations/phase6b_parent_dag.md`「Phase A 準備状況」。
 
 ### Phase 6A Explicit Execution Control（2026-10-11 / Codex）
 
@@ -60,8 +61,9 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ### Exact Next Actions
 
-1. Phase A を実行可能にする場合は、人間が不足仕様と `autopilot` label を承認・設定する。Linear blocked-by は任意で、未設定なら RA が候補 DAG を提示する。
-2. 設定後に INU-274 で DAG proposal / Discord approval の human E2E を行う。本番/Eagle には deploy せず、まず test-only / dry-run で DAG hash と edge を確認する。
+1. Phase A の本番投入はユーザー方針により**全 Phase 完了後**。それまで Phase A の実行・E2E はしない。
+2. 投入前に人間が INU-275〜278 の `Allowed files` を決めて Notion に `## Allowed files` 見出しで記入する（候補：`src/active_space_selection/`、`scripts/`、`tests/`。ページ上は未承認）。A1〜A4 の Linear blocked-by は任意（未設定なら Dependency Planner が提案し Discord 承認）。
+3. 記入後に read-only dry-run（`discover_and_build(..., registered_repositories=set(deps.impl.registry))`）で DAG が valid / problems 0 を確認してから Run Autopilot を押す。詳細は `docs/operations/phase6b_parent_dag.md`「Phase A 準備状況」。
 
 ### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
 
@@ -251,7 +253,7 @@ Phase 6B の DAG model / persistence / scheduling / recovery / artifact handoff 
 
 ## Remaining Work
 
-- **Phase A source-data blocker**：INU-274 に canonical Acceptance Criteria、INU-275〜278 に `autopilot` label / canonical Specification / Repository がない。Linear blocked-by は必須ではなくなったが、科学仕様不足は人間承認なしに補完しない。
+- **Phase A source-data blocker**（2026-10-11 更新）：Acceptance Criteria / label / Specification / Repository / Registry は解消済み。残りは INU-275〜278 の `Allowed files`（人間の判断待ち）のみ。Linear blocked-by は任意。
 - **Eagle への一括反映と TSUBAME**（Phase 5 の後にまとめて行う方針）：`phase5_autopilot.md` §7 の手順。worker / discord-bot image、DB の新規 Interaction table、Bot token と4チャンネル、Codex / Claude CLI の認証、volume、上限と予約を確認する。
 - 実 Discord でユーザーが承認ボタン / revision modal を操作し、polling が再開して Linear と元メッセージを更新する一連の確認（Fake E2E では確認済み）。本番タスクを作成・変更せずに止めている。
 - 実データでは確認できていないこと：依存関係のある複数タスク、追加の提案が自動で登録されて実行される流れ（実際の Analyst が提案を0件にしたため）。どちらも Fake の E2E では確認済み。

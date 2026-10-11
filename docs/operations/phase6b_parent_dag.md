@@ -54,6 +54,13 @@ Dependency Planner は `RA_DAG_INFERENCE_MODEL` を使用し、未設定時は `
 
 従って現状の Phase A button を押しても安全に Blocked となる。本番 A1〜A4 は実行していない。実行可能にするには、人間が科学仕様を変更・承認したうえで、不足 section と Linear `blocked-by` を設定する必要がある。これは本実装では自動補完しない。
 
+## Phase A 準備状況（2026-10-11 / Claude Code、ユーザー許可済み）
+
+- 書き直された Phase A を read-only dry-run：親 Acceptance Criteria、子の `autopilot` label / Specification は充足。残りは Repository 見出し（子は `Repository / execution environment` という非 canonical 見出しのみ）、Registry 未登録、親 `autopilot` label 欠落だった。
+- ユーザー許可のもと反映：INU-275〜278 の Notion ページ末尾に `## Repository` / `active-space-research` を追記。INU-274（Linear）に `autopilot` label を追加。`config/research_repos.toml`（Git 管理外）に `active-space-research` を登録（path `~/workspace_callduck/sekijima_lab_callduck/active_space_research`、base `main`、protected `data/**` `outputs/**` `notebooks/**`、test は研究 repo の AGENTS.md に従い `docker compose -p active-space-ra run --rm -T research pytest -q -p no:cacheprovider`、timeout 900s）。test command は研究 repo main `b53f807` で 280 passed を確認。`ruff check .` は既存 72 errors のため lint_command は未登録。
+- 再 dry-run（registry 検証込み）：DAG `valid`、hash `30722d5c…3364`、4 node とも repo `active-space-research`、blocked-by 0 件のため Dependency Planner 対象。その後 intake に Allowed files 必須チェックを追加したため、Allowed files 設定までは `missing_allowed_files` で Blocked になる。
+- 未設定（人間の判断待ち）：各子の `Allowed files`（ページ上も「未確定・未承認」）と、A1〜A4 の Linear blocked-by（任意。未設定なら LLM 提案 + Discord 承認）。本番投入は全 Phase 完了後にユーザーが行う方針。
+
 ## 検証
 
 Fake integration は親 request、DAG intake、4 child の既存 Phase 2〜5、順次 dependency release、artifact handoff、parent Completion Gate、Research Notes、Linear Done、Notion Completed を通す。追加単体テストでは inference proposal、Discord 承認前の実行禁止、承認後の開始、source spec 変更による stale rejection、unknown task、cycle、根拠なし edge を検証する。
