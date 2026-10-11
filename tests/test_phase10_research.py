@@ -206,7 +206,8 @@ def test_multiple_cycles_inside_the_approved_scope_then_completion(tmp_path):
     # notifications: milestones with Stop / Resume controls, no per-task notifications of research children
     sent = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r]
     child_ids = {c.linear_issue_id for c in children}
-    assert not [e for e in sent if e["flow_run_name"] in child_ids and e["kind"] in ("task_started", "task_completed")]
+    assert not [e for e in sent if e["flow_run_name"] in child_ids and e["kind"] in ("task_completed", "experiment_completed")]
+    assert any(e["flow_run_name"] in child_ids and e["kind"] == "task_started" for e in sent)  # logs channel only
     assert any(e.get("control_task_id") == "INU-900" for e in sent)
     assert any(e["kind"] == "task_completed" and e["flow_name"] == "research" for e in sent)
 

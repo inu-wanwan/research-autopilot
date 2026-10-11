@@ -554,7 +554,5 @@ def _prefect_url(deps, flow_id: str | None) -> str | None:
 
 
 def _event(deps, task_id: str, kind: EventKind, key: str, status: ExecutionStatus, details: list[str]) -> None:
-    if key.startswith("parent-started:") and _is_research_parent(deps, key.split(":", 1)[1]):
-        return  # research cycles report milestones themselves
     notify_once(deps.store, NotificationEvent(kind=kind, flow_name="autopilot-parent", flow_run_name=task_id,
                                               state_name=status.value, details=details, dedupe_key=key), deps.notifier)

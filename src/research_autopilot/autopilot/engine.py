@@ -742,13 +742,14 @@ def _external_tick(deps: AutopilotDeps) -> dict:
     return out
 
 
-_ROUTINE = {EventKind.TASK_STARTED, EventKind.EXPERIMENT_COMPLETED, EventKind.ANALYSIS_COMPLETED,
-            EventKind.TASK_COMPLETED, EventKind.PROPOSAL_GENERATED, EventKind.PHASE_TRANSITION}
+# Per-task results of research cycles are replaced by research milestones; routine progress still goes to the
+# (muted) logs channel so the run can be followed there (user decision 2026-10-11).
+_ROUTINE = {EventKind.EXPERIMENT_COMPLETED, EventKind.ANALYSIS_COMPLETED, EventKind.TASK_COMPLETED}
 
 
 def _notify(deps: AutopilotDeps, run: WorkflowRun, kind: EventKind, dedupe: str, details: list[str]) -> None:
     if kind in _ROUTINE and (run.research_cycle_id or deps.store.find(db.research_plans, task_id=run.task_id)):
-        return  # Phase 10: research objectives and their cycle tasks report through research milestones only
+        return  # Phase 10: research objectives and their cycle tasks report results through research milestones
     notify_once(deps.store,
                 NotificationEvent(kind=kind, flow_name="autopilot", flow_run_name=run.task_id,
                                   state_name=run.stage.value, details=details, dedupe_key=dedupe),
