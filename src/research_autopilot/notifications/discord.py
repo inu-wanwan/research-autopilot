@@ -379,7 +379,7 @@ class ControlButton(discord.ui.Button):
 class ControlView(discord.ui.View):
     def __init__(self, service: DiscordControlInput, task_id: str, actions: list[str] | None = None) -> None:
         super().__init__(timeout=None)
-        for action in actions or ("stop", "resume"):
+        for action in sorted(actions or ("resume", "stop"), key=("resume", "stop").index):  # Resume left, Stop right
             self.add_item(ControlButton(service, task_id, action))
 
 
