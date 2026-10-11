@@ -65,6 +65,22 @@ def _finite_number(raw) -> bool:
     return not isinstance(raw, bool) and isinstance(raw, (int, float)) and math.isfinite(float(raw))
 
 
+def _quantity(raw) -> bool:
+    """A value a unit can be declared for: a finite number, a non-empty list of such values (e.g. the scanned
+    distances), an object whose numeric leaves are all finite (e.g. coordinates with an atom label), or a
+    boolean (a flag: the unit is meaningless and ignored, it is not a reason to reject the result)."""
+    if isinstance(raw, bool):
+        return True
+    if isinstance(raw, (int, float)):
+        return math.isfinite(float(raw))
+    if isinstance(raw, list):
+        return bool(raw) and all(_quantity(v) for v in raw)
+    if isinstance(raw, dict):
+        leaves = [v for v in raw.values() if not isinstance(v, str)]
+        return bool(leaves) and all(_quantity(v) for v in leaves)
+    return False
+
+
 def _nonfinite(obj, path="") -> list[str]:
     bad = []
     if isinstance(obj, float) and not math.isfinite(obj):
@@ -140,17 +156,19 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
                 ptr = field if field.startswith("/") else "/" + field.replace("~", "~0").replace("/", "~1")
                 try:
                     raw = _pointer(doc, ptr)
-                    numeric = not isinstance(raw, bool) and isinstance(raw, (int, float)) and math.isfinite(float(raw))
+                    numeric = _finite_number(raw)
+                    ok = _quantity(raw)
                     checks.append(ValidationCheck(
-                        name=f"units:{out.path}:{field}", kind="units", status="pass" if numeric else "fail",
+                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
                         detail=(f"numeric finite field; declared unit {unit}" if numeric else
+                                f"finite numeric values ({type(raw).__name__}); declared unit {unit}" if ok else
                                 f"field is not a finite number; declared unit {unit}"),
                         value=float(raw) if numeric else None,
                     ))
                 except (KeyError, IndexError, ValueError, TypeError):
                     # not at the top level: the field may be declared per record (e.g. results[*].delta_e_hartree)
                     hits = _find_key(doc, field) if not field.startswith("/") else []
-                    ok = bool(hits) and all(_finite_number(v) for _, v in hits)
+                    ok = bool(hits) and all(_quantity(v) for _, v in hits)
                     checks.append(ValidationCheck(
                         name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
                         detail=(f"{len(hits)} nested numeric finite occurrence(s); declared unit {unit}" if ok else
