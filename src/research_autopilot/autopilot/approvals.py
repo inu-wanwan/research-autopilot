@@ -187,11 +187,20 @@ class ApprovalController:
     def pending(self) -> list[ApprovalRequest]:
         return [ApprovalRequest.model_validate(r) for r in self.store.find(db.approval_requests, status="pending")]
 
+    def withdraw(self, req: ApprovalRequest, note: str) -> None:
+        """Close a pending request for good (e.g. its research was cancelled): a late Approve then creates nothing,
+        and no replacement follows (``_final``), so the gateway edits the message without promising a new one."""
+        if req.status is not ApprovalStatus.PENDING:
+            return
+        req.status = ApprovalStatus.STALE
+        req.payload.update({"withdrawn": note[:300], "_final": True})
+        self._save(req)
+
     def _link_superseded(self, new: ApprovalRequest) -> None:
         for r in self.store.find(db.approval_requests, task_id=new.task_id):
             if (r["request_id"] != new.request_id and r.get("kind") == new.kind.value
                     and r["status"] in (ApprovalStatus.STALE.value, ApprovalStatus.EXPIRED.value)
-                    and not r.get("payload", {}).get("_superseded_by")):
+                    and not r.get("payload", {}).get("_superseded_by") and not r.get("payload", {}).get("_final")):
                 old = ApprovalRequest.model_validate(r)
                 old.payload["_superseded_by"] = new.request_id
                 self._save(old)

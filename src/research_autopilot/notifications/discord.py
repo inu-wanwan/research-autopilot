@@ -502,7 +502,9 @@ def approval_closure(store: Store, settings: DiscordSettings, raw: dict) -> tupl
     if status not in _CLOSED_LABEL:
         return None
     payload = raw.get("payload") or {}
-    reason = _CLOSED_REASON[status] + (f"（{payload['withdrawn']}）" if payload.get("withdrawn") else "")
+    if payload.get("_final"):  # withdrawn for good (e.g. research cancelled): no replacement follows
+        return f"無効: {payload.get('withdrawn') or '依頼は取り下げられました'}。この依頼への操作は反映されません。", True
+    reason =_CLOSED_REASON[status] + (f"（{payload['withdrawn']}）" if payload.get("withdrawn") else "")
     new_id = payload.get("_superseded_by")
     if not new_id:
         return f"{_CLOSED_LABEL[status]}: {reason}。新しい依頼が届きます（このメッセージのボタンは無効です）。", False

@@ -444,3 +444,39 @@ def test_approval_event_marks_replacement_version():
                           payload={"_supersedes": "abcdef0123", "_version": 2, "plan_url": "https://www.notion.so/p"})
     event = approval_event(req, links=["Notion: https://www.notion.so/p"])
     assert any("abcdef01" in d and "v2" in d for d in event.details)
+
+
+def test_confirmed_cancel_records_a_research_control_and_research_buttons_render(tmp_path):
+    from research_autopilot.notifications.discord import ControlView
+    store = _store(tmp_path)
+    service = DiscordControlInput(store, settings())
+    args = dict(task_id="INU-900", user_id=200, guild_id=100)
+    assert service.submit(interaction_id="c0", action="cancel", channel_id=302, **args) is InteractionResult.WRONG_CHANNEL
+    assert service.submit(interaction_id="c1", action="cancel", channel_id=301, **args) is InteractionResult.ACCEPTED
+    (control,) = store.find(db.research_controls)
+    assert control["action"] == "cancel" and control["actor"] == "discord:200"
+    stopped = NotificationEvent(kind=EventKind.UNRECOVERABLE_ERROR, flow_name="research", control_task_id="INU-900",
+                                control_actions=["resume", "cancel"])
+    assert route_event(stopped) is DiscordRoute.APPROVALS
+
+    async def labels():
+        return [b.label for b in ControlView(service, "INU-900", ["resume", "cancel"]).children]
+
+    assert asyncio.run(labels()) == ["Resume", "Cancel"]
+
+
+def test_pending_requests_of_a_cancelled_task_are_withdrawn(tmp_path):
+    deps, linear, *_ = build(tmp_path, approval_mode="discord")
+    poll(deps)
+    (req,) = deps.approvals.pending()
+    run = _run(deps)
+    run.stage = WorkflowStage.CANCELLED
+    deps.store.put(db.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id,
+                   stage=run.stage.value)
+    _submit(deps, req, "approve")  # a late Approve
+    poll(deps)
+    closed = _req(deps, req.request_id)
+    assert closed.status is ApprovalStatus.STALE and closed.payload["_final"]
+    assert deps.store.get(db.approval_decisions, req.request_id) is None
+    text, linked = approval_closure(deps.store, settings(), closed.model_dump(mode="json"))
+    assert text.startswith("無効") and linked

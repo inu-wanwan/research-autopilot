@@ -788,6 +788,11 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
 
 
 def _check_approval(deps: AutopilotDeps, req: ApprovalRequest) -> tuple:
+    task_runs = [r for r in _runs(deps) if r.task_id == req.task_id]
+    if task_runs and all(r.stage is WorkflowStage.CANCELLED for r in task_runs):
+        # cancelled (research Cancel / reject): a late Approve must create nothing
+        deps.approvals.withdraw(req, "タスクの実行は打ち切られました")
+        return (req.request_id[:8], ApprovalStatus.STALE.value, "withdrawn: task cancelled")
     issue = deps.linear.get_issue(req.task_id)
     history = deps.linear.history(req.task_id)
     bundle = _load_spec(deps, req.task_id)  # the task's *current* Notion spec (edits make the approval stale)
