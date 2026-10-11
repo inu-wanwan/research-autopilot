@@ -148,8 +148,16 @@ def upstream_artifacts(store, task_id: str) -> list[dict]:
     still match), in the catalog manifest's artifact shape so one RA_CATALOG_INPUTS manifest carries both."""
     from research_autopilot.storage import db
     from research_autopilot.autopilot.dag import sha256_file
+    rows = list(store.find(db.artifact_handoffs, consumer_task_id=task_id))
+    # a research task also sees what earlier cycles of the same research produced (cycles are separate DAGs)
+    run = next(iter(store.find(db.workflow_runs, task_id=task_id)), None)
+    if run and run.get("research_cycle_id") and run.get("root_task_id"):
+        parents = {p["parent_run_id"] for p in store.find(db.parent_runs, parent_task_id=run["root_task_id"])}
+        rows += [r for r in store.find(db.artifact_handoffs) if r.get("parent_run_id") in parents]
     latest: dict[tuple[str, str], dict] = {}
-    for row in store.find(db.artifact_handoffs, consumer_task_id=task_id):
+    for row in rows:
+        if row["producer_task_id"] == task_id:
+            continue
         key = (row["producer_task_id"], row["artifact_id"])
         if row.get("validation_status") == "validated" and str(row.get("created_at", "")) >= str(
                 latest.get(key, {}).get("created_at", "")):

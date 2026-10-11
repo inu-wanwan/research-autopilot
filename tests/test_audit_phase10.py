@@ -544,3 +544,22 @@ def test_a_research_child_is_not_sent_to_a_human_completion_review(tmp_path):
 
 def _runs_all(deps):
     return [WorkflowRun.model_validate(r) for r in deps.store.find(db.workflow_runs)]
+
+
+def test_a_research_task_sees_validated_outputs_of_earlier_cycles(tmp_path):
+    from research_autopilot.catalog.integration import upstream_artifacts
+    deps, *_ = _build(tmp_path, llm=ScriptedResearchLlm(decisions=[more(), complete]))
+    from test_phase10_research import _discord
+    poll(deps)
+    (req,) = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    _discord(deps, req)
+    for _ in range(40):
+        poll(deps)
+        cs = orchestration.cycles(deps.store, "INU-900")
+        if len(cs) >= 2 and cs[1].child_task_ids:
+            break
+    first, second = orchestration.cycles(deps.store, "INU-900")[:2]
+    producers = set(first.child_task_ids.values())
+    later = next(iter(second.child_task_ids.values()))
+    seen = {a["identity"]["producer_task_id"] for a in upstream_artifacts(deps.store, later)}
+    assert seen & producers  # cycle-2 work can read what cycle 1 validated
