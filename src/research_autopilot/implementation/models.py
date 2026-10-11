@@ -33,6 +33,9 @@ class RepoConfig(BaseModel):
     check_timeout_seconds: int = 600
     # Phase 7A: where this repository lives on other environments (e.g. {"eagle": "~/..."}); ``path`` is this host.
     locations: dict[str, str] = Field(default_factory=dict)
+    # Phase 4 runs experiments inside the repository's own container image instead of a uv venv, e.g.
+    # {"compose_project": "active-space-ra", "service": "research", "workdir": "/workspace"} (docker compose)
+    container: dict[str, str] | None = None
 
 
 class ComplexityAssessment(BaseModel):

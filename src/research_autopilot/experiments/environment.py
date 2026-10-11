@@ -114,3 +114,44 @@ def resolve_argv(argv: list[str], python: str) -> list[str]:
     if argv[:3] == ["uv", "run", "python"] or argv[:3] == ["uv", "run", "python3"]:
         return [python, *argv[3:]]
     raise EnvironmentError_(f"unsupported launcher for execution: {argv[:3]}")
+
+
+# ---------------------------------------------------------------- container mode (RepoConfig.container)
+
+
+def container_argv(container: dict, checkout: Path, argv: list[str], working_directory: str, env: dict[str, str],
+                   mounts: list[Path]) -> list[str]:
+    """``docker compose run`` of the repository's service with the job checkout as its project directory (the
+    compose file's ``.`` volume therefore mounts this checkout, never the live repository). ``mounts`` are host
+    directories the job reads (inputs, the job directory) and are mounted at the same path."""
+    if argv[:1] in (["python"], ["python3"]):
+        inner = ["python", *argv[1:]]
+    elif argv[:3] in (["uv", "run", "python"], ["uv", "run", "python3"]):
+        inner = ["python", *argv[3:]]
+    else:
+        raise EnvironmentError_(f"unsupported launcher for execution: {argv[:3]}")
+    workdir = (Path(container.get("workdir", "/workspace")) / working_directory).as_posix().rstrip("/.") or "/"
+    cmd = ["docker", "compose", "-f", str(checkout / container.get("compose_file", "compose.yaml")),
+           "--project-directory", str(checkout), "-p", container["compose_project"], "run", "--rm", "-T",
+           "--no-deps", "-w", workdir]
+    for m in sorted({str(Path(x).resolve()) for x in mounts}):
+        cmd += ["-v", f"{m}:{m}"]
+    for k, v in sorted(env.items()):
+        cmd += ["-e", f"{k}={v}"]
+    return cmd + [container["service"], *inner]
+
+
+def container_provenance(container: dict, checkout: Path) -> dict[str, str]:
+    """Image identity of the service (the environment is the image, not a dependency file)."""
+    base = ["docker", "compose", "-f", str(checkout / container.get("compose_file", "compose.yaml")),
+            "--project-directory", str(checkout), "-p", container["compose_project"]]
+    try:
+        image = _run(base + ["config", "--images"], checkout, 120).split()
+        image = image[0] if image else ""
+        image_id = _run(["docker", "image", "inspect", "-f", "{{.Id}}", image], checkout, 60).strip() if image else ""
+    except EnvironmentError_ as exc:
+        raise EnvironmentError_(f"container image not available: {exc}") from exc
+    if not image_id:
+        raise EnvironmentError_(f"container image for service {container['service']} is not built on this host")
+    return {"env_key": f"container:{image_id[:19]}", "container_image": image, "container_image_id": image_id,
+            "python": "python (container)", "locked": "image"}

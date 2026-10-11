@@ -26,6 +26,17 @@ PHASE4_ENVIRONMENT_CONTRACT = (
     "with a src/ layout put src/ on sys.path explicitly (or set the working directory to src/). The repository's "
     "tests (Phase 3) run with the test command below, in the test environment."
 )
+def container_contract(repo: RepoConfig) -> str:
+    c = repo.container or {}
+    return (f"This repository runs in its own container image: Phase 4 exports the commit (`git archive`) and runs "
+            f"experiment.json execution.setup steps and execution.argv with `docker compose run {c.get('service')}` "
+            f"(project {c.get('compose_project')}), the exported commit mounted at {c.get('workdir', '/workspace')} "
+            "and used as the working directory root. The image (built from the repository's Dockerfile / "
+            "environment.yml) is the environment: do not add dependency declarations; environment.python_version "
+            "must match the image's Python; launcher `python`. Input manifests (RA_CATALOG_INPUTS) and their files "
+            "are mounted read-only at their host paths. Repository tests (Phase 3) run with the test command below.")
+
+
 DEPENDENCY_FILES = ("pyproject.toml", "requirements.txt", "uv.lock")
 CACHE_TTL_SECONDS = 300  # the test environment can change (packages installed) while the service runs
 _cache: dict[str, tuple[float, list[str] | str]] = {}
@@ -42,6 +53,8 @@ def environment_facts(registry: dict[str, RepoConfig]) -> Callable[[TaskSpec], d
         out: dict = {"phase4_environment": PHASE4_ENVIRONMENT_CONTRACT}
         if repo is None:
             return out
+        if repo.container:
+            out["phase4_environment"] = container_contract(repo)
         path = Path(repo.path).expanduser()
         out["repository"] = repo.id
         out["test_command"] = " ".join(repo.test_command or [])
@@ -63,6 +76,22 @@ def _git_show(path: Path, branch: str, name: str) -> str:
 
 def _test_packages(repo: RepoConfig) -> list[str] | str:
     cmd = list(repo.test_command or [])
+    if repo.container:  # the repository's image is the environment of tests and experiments alike
+        c = repo.container
+        key = f"container:{repo.id}"
+        if (hit := _cache.get(key)) and time.monotonic() - hit[0] < CACHE_TTL_SECONDS:
+            return hit[1]
+        try:
+            p = subprocess.run(["docker", "compose", "-p", c["compose_project"], "run", "--rm", "-T", "--no-deps",
+                                c["service"], "python", "-m", "pip", "list", "--format=freeze"],
+                               cwd=Path(repo.path).expanduser(), capture_output=True, text=True, timeout=600,
+                               stdin=subprocess.DEVNULL)
+            result: list[str] | str = sorted(ln.strip() for ln in p.stdout.splitlines() if "==" in ln) \
+                if p.returncode == 0 else "unknown (package listing in the container failed)"
+        except (OSError, subprocess.TimeoutExpired):
+            result = "unknown (package listing in the container failed)"
+        _cache[key] = (time.monotonic(), result)
+        return result
     if not cmd or not Path(cmd[0]).name.startswith("python"):
         return "unknown (the test command does not run a local Python interpreter: " + " ".join(cmd[:3]) + ")"
     if (hit := _cache.get(cmd[0])) and time.monotonic() - hit[0] < CACHE_TTL_SECONDS:

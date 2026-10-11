@@ -12,6 +12,7 @@ Phase 4 never approves proposals and never writes to Notion / Linear.
 
 import hashlib
 import json
+import subprocess
 import re
 import time
 from collections.abc import Callable
@@ -24,7 +25,8 @@ from research_autopilot.experiments import resources as res
 from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, ScientificReviewer
 from research_autopilot.experiments.backends.base import BackendNotConfigured, ComputeBackend
 from research_autopilot.experiments.config import Phase4Settings
-from research_autopilot.experiments.environment import EnvironmentError_, ensure_venv, export_commit, resolve_argv
+from research_autopilot.experiments.environment import (EnvironmentError_, container_argv, container_provenance,
+                                                       ensure_venv, export_commit, resolve_argv)
 from research_autopilot.experiments.models import (
     AnalysisResult,
     ExperimentManifest,
@@ -333,10 +335,14 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     argv = spec.execution.argv
     input_hashes: dict[str, str] = {}
     impl = deps.store.get_implementation(spec.identification.phase3_run_id)
-    repo = Path(_repo(deps, impl).path).expanduser()
+    repo_cfg = _repo(deps, impl)
+    repo = Path(repo_cfg.path).expanduser()
     try:
         export_commit(repo, spec.identification.commit, checkout)  # immutable per-job checkout of the fixed commit
-        if deps.prepare_env and not spec.external_code:
+        if deps.prepare_env and not spec.external_code and repo_cfg.container:
+            # the repository's own image is the environment (e.g. conda + compiled solvers): no venv is built
+            m.environment[spec.experiment_id] = container_provenance(repo_cfg.container, checkout)
+        elif deps.prepare_env and not spec.external_code:
             prov = ensure_venv(repo, spec, checkout, deps.settings.env_cache_dir)
             argv = resolve_argv(argv, prov["python"])
             for step in spec.execution.setup:
@@ -368,6 +374,22 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     (jdir / "tmp").mkdir(parents=True, exist_ok=True)
     if spec.external_code:  # Phase 9: only inside the approved container, after the grant check
         argv = _external_argv(deps, m, spec, alloc, checkout, env, key)
+    elif deps.prepare_env and repo_cfg.container:
+        mounts = [jdir.resolve()]
+        if manifest_path is not None:
+            mounts += [Path(f).resolve().parent for a in json.loads(Path(manifest_path).read_text()).get("artifacts", [])
+                       for f in a.get("files", [])]
+        setup_env = dict(env)
+        for step in spec.execution.setup:
+            p = subprocess.run(container_argv(repo_cfg.container, checkout.resolve(), step,
+                                              spec.execution.working_directory, setup_env, mounts),
+                               cwd=checkout, capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL)
+            if p.returncode != 0:
+                raise _Block(f"{spec.experiment_id}: {SETUP_DEFECT}: setup step {step[:3]} failed (exit "
+                             f"{p.returncode}) in the container: {(p.stderr or p.stdout)[-300:]}")
+        argv = container_argv(repo_cfg.container, checkout.resolve(), argv, spec.execution.working_directory, env,
+                              mounts)
+        env = {}  # passed into the container with -e; the docker CLI itself keeps the host HOME / context
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
                   commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,
                   env=env, secret_env_names=[n for n in spec.execution.env_var_names if n not in env],

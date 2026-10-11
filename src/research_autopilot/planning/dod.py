@@ -25,7 +25,8 @@ BASELINE: list[DoneCriterion] = [
     DoneCriterion(id="B3", statement="Every declared output names the units of its real JSON fields.",
                   source=PHASE4_CONTRACT, check="deterministic", how="experiment definition validation"),
     DoneCriterion(id="B4", statement="Every runtime dependency the code imports is declared in a dependency file "
-                                     "listed in experiment.json (Phase 4 installs only those).",
+                                     "listed in experiment.json (Phase 4 installs only those), unless the "
+                                     "repository runs in its own container image, which provides them.",
                   source=PHASE4_CONTRACT, check="review", how="imports vs. declared dependency files"),
     DoneCriterion(id="B5", statement="Only files in the allowed file scope changed; protected paths untouched.",
                   source=PHASE4_CONTRACT, check="deterministic", how="Phase 3 deterministic check: scope"),

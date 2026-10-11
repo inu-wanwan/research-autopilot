@@ -26,6 +26,10 @@ Hard rules (violations are detected automatically and stop the run):
   required setting -- do what you can, then end your final message with one line
   `DOD_INFEASIBLE: {"criteria": ["D3"], "evidence": "<what you checked and what it showed>"}`. The plan is then
   revised. Difficulty, effort or time are not infeasibility.
+- Container repositories: when the repository's README / AGENTS.md / compose file define the run environment
+  as its own Docker image (e.g. `docker compose run research ...`), Phase 4 runs your experiment inside that
+  image instead of a uv venv: use launcher `python`, set environment.python_version to the image's Python, and do
+  not add dependency declarations -- the image provides them.
 - BASED_ON (if present): the worktree already contains this research's last approved implementation (task,
   commit, changed files). Build on it -- fix or extend that code and its tests -- instead of re-implementing.
 - Write or update automated tests that check the acceptance criteria where they are testable.
@@ -131,7 +135,9 @@ Role boundary:
   <checkout>/<working_directory>, so imports must work from the checkout as it is (a src/ layout package imported
   without being on sys.path fails in Phase 4 even if the tests pass). Require only that every runtime dependency is declared there with
   the version constraints the task demands. Do not require a lock file, transitive pins, an offline/wheelhouse
-  install or a container image unless the task specification explicitly asks for one.
+  install or a container image unless the task specification explicitly asks for one. For a repository that runs
+  in its own container image (README / AGENTS.md / compose file), the image provides the dependencies: do not
+  require dependency declarations.
 - Judge the submitted task specification, not an assumed predecessor implementation. If the base repository is empty
   and the task explicitly asks for a self-contained implementation, creating the runner and validation contract is
   expected rather than evidence that the task is infeasible.

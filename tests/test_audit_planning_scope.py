@@ -231,3 +231,17 @@ def test_units_may_be_declared_for_numeric_lists_objects_and_flags():
     assert _quantity([{"atom": "H", "x": 0.0}, {"atom": "H", "x": 0.74}])
     assert not _quantity("Angstrom") and not _quantity([]) and not _quantity(float("nan"))
     assert not _quantity([1.0, float("inf")]) and not _quantity({"atom": "H"})
+
+
+def test_container_repositories_run_experiments_in_their_own_image(tmp_path):
+    from research_autopilot.experiments.environment import container_argv
+    from research_autopilot.implementation.facts import container_contract
+    from research_autopilot.implementation.models import RepoConfig
+    c = {"compose_project": "proj", "service": "research", "workdir": "/workspace"}
+    argv = container_argv(c, tmp_path / "src", ["uv", "run", "python", "run.py", "--n", "3"], "exp",
+                          {"RA_CATALOG_INPUTS": "/jobs/1/inputs.json"}, [tmp_path / "job", tmp_path / "job"])
+    assert argv[:2] == ["docker", "compose"] and "--project-directory" in argv and str(tmp_path / "src") in argv
+    assert argv[argv.index("-w") + 1] == "/workspace/exp" and argv[-5:] == ["research", "python", "run.py", "--n", "3"]
+    assert argv.count("-v") == 1 and "RA_CATALOG_INPUTS=/jobs/1/inputs.json" in argv  # mounts deduplicated
+    repo = RepoConfig(id="r", path=str(tmp_path), container=c)
+    assert "docker compose run research" in container_contract(repo)
