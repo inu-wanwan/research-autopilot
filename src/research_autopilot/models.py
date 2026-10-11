@@ -82,6 +82,12 @@ class NotionTask(BaseModel):
     other_sections: dict[str, str]
     preamble: str
     fetched_at: datetime
+    # Phase 6A execution-control properties.  ``status`` above remains the
+    # Linear mirror and is deliberately never used for this state machine.
+    run_requested: bool = False
+    execution_status: str | None = None
+    last_run_url: str | None = None
+    execution_error: str | None = None
 
     def source_ref(self) -> SourceRef:
         return SourceRef(

@@ -30,6 +30,7 @@ from research_autopilot.autopilot.models import (
 )
 from research_autopilot.autopilot.notes import notes_blocks, proposal_blocks
 from research_autopilot.autopilot.outbox import Outbox
+from research_autopilot.autopilot.execution import ExecutionStatus, ExecutionRun, accept
 from research_autopilot.experiments.models import ExperimentState, ReviewedExperimentProposal
 from research_autopilot.experiments.orchestrator import ExpDeps, run_experiment
 from research_autopilot.experiments.scope import dedupe_key
@@ -97,17 +98,35 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None) -> dict:
         if only_task:
             active = [r for r in active if r.task_id == only_task]
         if not active:
-            candidates = deps.plan.manager.next_candidates()
-            if only_task:
-                candidates = [c for c in candidates if c == only_task]
-            known = {r.task_id for r in _runs(deps) if r.stage not in TERMINAL}
-            for tid in candidates:
-                if tid in known:
+            # Phase 6A: an autopilot label is only a scope gate, never a start signal.
+            for page_id in deps.plan.manager.notion.requested_task_ids():
+                page = deps.plan.manager.notion.get_task(page_id)
+                if not page.run_requested or not page.linear_issue_id or (only_task and page.linear_issue_id != only_task):
                     continue
-                summary["discovered"].append(tid)
+                bundle = deps.plan.manager.load(page.linear_issue_id)
+                if bundle.spec is None or bundle.reasons:
+                    if not deps.settings.dry_run:
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error="; ".join(r.message for r in bundle.reasons) or "missing scientific specification")
+                    continue
+                try:
+                    # Refuse before durable acceptance when the configured write
+                    # policy cannot legally start this task (notably test-only).
+                    deps.ops._guard(bundle.issue)
+                except WriteRefused as exc:
+                    if not deps.settings.dry_run:
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=str(exc))
+                    continue
+                execution, reason = accept(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec))
+                if execution is None:
+                    if reason != "request already accepted or requires reconciliation" and not deps.settings.dry_run:
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason)
+                    continue
+                summary["discovered"].append(bundle.issue.identifier)
                 if deps.settings.dry_run:
                     continue
-                active.append(_new_run(deps, tid))
+                # Durable acceptance precedes checkbox acknowledgement.
+                deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
+                active.append(_new_run(deps, bundle.issue.identifier, execution))
                 break
         for run in active[: deps.settings.max_concurrent_tasks]:
             if deps.settings.dry_run:
@@ -126,16 +145,31 @@ def _runs(deps: AutopilotDeps) -> list[WorkflowRun]:
 def _save(deps: AutopilotDeps, run: WorkflowRun) -> None:
     run.updated_at = utcnow()
     deps.store.put(db.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage=run.stage.value)
+    if run.execution_run_id:
+        rec = deps.store.get(db.execution_runs, run.execution_run_id)
+        if rec:
+            er = ExecutionRun.model_validate(rec)
+            states = {WorkflowStage.AWAITING_AUTHORIZATION: "Awaiting Approval", WorkflowStage.AWAITING_APPROVAL: "Awaiting Approval", WorkflowStage.DONE: "Completed", WorkflowStage.BLOCKED: "Blocked", WorkflowStage.CANCELLED: "Canceled", WorkflowStage.DEAD_LETTER: "Failed"}
+            er.status = ExecutionStatus(states.get(run.stage, "Running")); er.error_summary = run.blocked_reason; er.updated_at = utcnow()
+            if er.status in {ExecutionStatus.COMPLETED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED, ExecutionStatus.FAILED}: er.finished_at = utcnow()
+            deps.store.put(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=er.request_id, task_id=er.task_id, status=er.status.value)
+            deps.notion_writer.project_execution(er.notion_task_id, status=er.status.value, error=er.error_summary)
 
 
-def _new_run(deps: AutopilotDeps, task_id: str) -> WorkflowRun:
+def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None = None) -> WorkflowRun:
     origin = _proposal_origin(deps, task_id)
     run = WorkflowRun(task_id=task_id, root_task_id=origin["root_task_id"] if origin else task_id,
+                      execution_request_id=execution.request_id if execution else None, execution_run_id=execution.execution_run_id if execution else None,
                       authorization_id=origin.get("authorization_id") if origin else None,
                       chain_depth=origin.get("chain_depth", 0) if origin else 0,
                       parent_task_id=origin.get("parent_task_id") if origin else None)
     run.event("discovered", f"{task_id} (root {run.root_task_id}, depth {run.chain_depth})")
     _save(deps, run)
+    if execution:
+        execution.status, execution.started_at, execution.updated_at = ExecutionStatus.RUNNING, utcnow(), utcnow()
+        deps.store.put(db.execution_runs, execution.execution_run_id, execution.model_dump(mode="json"), request_id=execution.request_id, task_id=execution.task_id, status=execution.status.value)
+        deps.notion_writer.project_execution(execution.notion_task_id, status="Running")
+        deps.ops.set_state(deps.plan.manager.load(task_id).issue, "In Progress", "explicit execution started")
     _notify(deps, run, EventKind.TASK_STARTED, f"started:{run.run_id}",
             [f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
     return run

@@ -223,6 +223,8 @@ class WorkflowStage(StrEnum):
 class WorkflowRun(BaseModel):
     schema_version: Literal["1.0"] = SCHEMA
     run_id: str = Field(default_factory=new_id)
+    execution_request_id: str | None = None
+    execution_run_id: str | None = None
     task_id: str
     root_task_id: str
     authorization_id: str | None = None

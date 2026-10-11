@@ -14,29 +14,42 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 5（Approval-Gated Autonomous Research Workflow）を実装完了。Mac のローカル環境で、実際の Notion / Linear / LLM / Codex / LocalBackend / Prefect を使い、テスト用タスク INU-279 を E2E で完走した（Done）。Eagle と TSUBAME は未実施（Phase 5 の後にまとめて行う方針）。
+Phase 6A（Explicit Execution Control）を実装中。Eagle と TSUBAME は未実施。
 
 ## Current Task
 
-Phase 5 の通知・承認 UI を ntfy / Linear Status から Discord Bot Gateway へ移行
+Notion の明示的な開始要求を ExecutionRequest / ExecutionRun として永続化し、Phase 5 自動候補起動を無効化する。
 
 ## Status
 
-ローカル実装・関連テスト・実 Discord 接続確認まで完了（2026-10-10）。Eagle への deploy、既存の本番タスクを使った承認、main への merge は未実施。ユーザーのレビュー待ち。
+Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBのプロパティ読み取りを実施したが、`Run Autopilot` Button は integration に見えていないため、手動設定が必要。Eagle deploy、main merge、実タスク起動は未実施。
 
 ## Last Updated
 
-2026-10-10 / Codex
+2026-10-11 / Codex
 
 ## Git Branch / Commit
 
-- 作業ブランチ：`codex/phase5-discord-ui`（結果 UX 改善ブランチから継続）
+- 作業ブランチ：`codex/phase6a-explicit-execution-control`
 - Discord 実装 commit：`d5e3138`
 - Gateway fail-closed 修正 commit：`a294624`
 - 結果 UX 改善 commit：`800ac7f`、`fa19f3a`
 - Phase 5 の既存 commit：`d52c5fe` → `9c41066` → `acb0bcf` → `2953d60` → `6959575` → `f8dd138` → `51d493e`
 
 ## Completed Work
+
+### Phase 6A Explicit Execution Control（2026-10-11 / Codex）
+
+- `autopilot_execution_requests` と `autopilot_execution_runs` を追加。Notion の `Run Requested=true` を poller が検出し、spec / Notion-Linear 対応 / write safety gate を通過した後だけ DB に request と run を保存する。`TaskManager.next_candidates()` による label-only 起動は poller から除去した。
+- DB 保存後にだけ `Run Requested` を clear し、Notion への status projection は Linear の既存 `Status` mirror と別プロパティだけを PATCH する。checkbox には event ID / CAS がないため、page id + `last_edited_time` の一意性、global poll lease、active-run guard で安全側に倒す。
+- 実 Notion data source を read-only で確認：`Run Requested` checkbox、`Execution Status` status、`Last Run` url、`Execution Error` rich_text、既存 `Status` status は存在。`Run Autopilot` Button は integration から未検出。Notion API は Button を create/configure/press できないため、手動 UI 設定手順を `docs/operations/phase6a_execution_control.md` に記録。
+- 検証済み：`uv run pytest tests/test_phase6_execution.py tests/test_connectors.py` は 23 passed。Phase 5 regression 41 tests は 38 passed / 3 failed。2件は Phase 5 の「follow-up child を label だけで自動起動」期待で、Phase 6A の明示起動不変条件と意図的に非互換。1件は test-only 期待が旧 WorkflowRun の Blocked 作成を期待するため（現実装は DB acceptance 前に Notion Blocked を投影）。
+
+### Exact Next Actions
+
+1. Notion UI で `Run Autopilot` Button を作成し、`Run Requested=true` と `Execution Status=Requested` を設定。integration に Update content capability を付与。
+2. テスト fixture を Phase 6A contract に合わせ、子タスクの再実行も明示 checkbox 要求を立てる形へ更新して全 suite を再実行。
+3. 実サービス E2E は test-only の `[TEST]` task に限定し、Button の人間操作後に poller を1回だけ起動して Requested → Accepted → Running を確認する。本番/Eagle には deploy しない。
 
 ### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
 

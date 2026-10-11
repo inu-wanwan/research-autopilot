@@ -133,6 +133,15 @@ outbox = _record_table("autopilot_outbox", "key", sa.Column("state", sa.String(2
 workflow_runs = _record_table("autopilot_workflow_runs", "run_id",
                               sa.Column("task_id", sa.String(64), index=True, nullable=False),
                               sa.Column("stage", sa.String(32), index=True, nullable=False))
+execution_requests = _record_table("autopilot_execution_requests", "request_id",
+                                   sa.Column("notion_task_id", sa.String(64), index=True, nullable=False),
+                                   sa.Column("linear_issue_id", sa.String(64), index=True, nullable=False),
+                                   sa.Column("status", sa.String(24), index=True, nullable=False),
+                                   sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False))
+execution_runs = _record_table("autopilot_execution_runs", "execution_run_id",
+                               sa.Column("request_id", sa.String(64), index=True, nullable=False),
+                               sa.Column("task_id", sa.String(64), index=True, nullable=False),
+                               sa.Column("status", sa.String(24), index=True, nullable=False))
 notifications_sent = _record_table("autopilot_notifications", "dedupe_key")
 linear_writes = sa.Table(  # audit of every status change made by Autopilot (to reject self-made "approvals")
     "autopilot_linear_writes", metadata,

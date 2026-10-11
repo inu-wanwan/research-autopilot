@@ -152,6 +152,11 @@ class FakeNotionWriter:
             upd["pending"] = pending
         self.notion.pages[page_id] = p.model_copy(update=upd)
 
+    def project_execution(self, page_id, *, status, run_url=None, error=None, acknowledge=False):
+        p = self.notion.pages[page_id]
+        self.notion.pages[page_id] = p.model_copy(update={"execution_status": status, "last_run_url": run_url or p.last_run_url,
+                                                           "execution_error": error, "run_requested": False if acknowledge else p.run_requested})
+
     def create_note(self, title, blocks):
         if self.fail_notes > 0:
             self.fail_notes -= 1
@@ -210,7 +215,8 @@ def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benc
     root_issue = make_issue("INU-900").model_copy(update={"title": root_title})
     linear = FakeLinearFull(root_issue, missing_states=missing_states)
     notion = FakeNotion(make_page(sections=dict(SECTIONS)))
-    notion.pages[next(iter(notion.pages))] = next(iter(notion.pages.values())).model_copy(update={"title": root_title})
+    notion.pages[next(iter(notion.pages))] = next(iter(notion.pages.values())).model_copy(update={"title": root_title, "run_requested": True, "execution_status": "Requested"})
+    notion.requested_task_ids = lambda: [p.page_id for p in notion.pages.values() if p.run_requested]
     from research_autopilot.config import ModelPrice
     prices = {m: ModelPrice(input_per_1m=1.0, output_per_1m=4.0) for m in ("gpt-5.6-terra", "gpt-5.6-sol")}
     plan = make_deps(tmp, notion, linear, [make_plan()] * n, [review("approved")] * n, linear_write_enabled=True,

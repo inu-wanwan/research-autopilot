@@ -13,7 +13,7 @@ class Phase5Settings(BaseModel):
     notes_data_source_id: str = "31769893-cf8f-80d7-8217-000b83f7f15f"
     budget_api_usd: float = 5.0
     budget_cpu_hours: float = 4.0
-    poll_seconds: int = 300
+    poll_seconds: int = 60
     approval_poll_seconds: int = 60
     prefect_ui_url: str | None = None
     confirm_deployment: str = "approval-confirm/manual"

@@ -10,7 +10,8 @@ from datetime import date
 import httpx
 
 from research_autopilot.tasks.http import RetryPolicy, request
-from research_autopilot.tasks.notion import API, NOTION_VERSION, PROP_CATEGORY, PROP_LINEAR_ID, PROP_PENDING, PROP_TITLE
+from research_autopilot.tasks.notion import (API, NOTION_VERSION, PROP_CATEGORY, PROP_LINEAR_ID, PROP_PENDING, PROP_TITLE,
+                                             PROP_RUN_REQUESTED, PROP_EXECUTION_STATUS, PROP_LAST_RUN, PROP_EXECUTION_ERROR)
 
 NOTES_TITLE = "名前"
 NOTES_CREATED = "作成日"
@@ -97,6 +98,17 @@ class NotionWriter:
             props[PROP_PENDING] = {"checkbox": pending}
         if props:
             self._call("PATCH", f"/pages/{page_id}", json={"properties": props})
+
+    def project_execution(self, page_id: str, *, status: str, run_url: str | None = None,
+                          error: str | None = None, acknowledge: bool = False) -> None:
+        """Independent of the Linear Status mirror; only execution properties are patched."""
+        props = {PROP_EXECUTION_STATUS: {"status": {"name": status}},
+                 PROP_EXECUTION_ERROR: {"rich_text": _rt(error) if error else []}}
+        if run_url is not None:
+            props[PROP_LAST_RUN] = {"url": run_url}
+        if acknowledge:
+            props[PROP_RUN_REQUESTED] = {"checkbox": False}
+        self._call("PATCH", f"/pages/{page_id}", json={"properties": props})
 
     def create_note(self, title: str, blocks: list[dict]) -> tuple[str, str]:
         props = {

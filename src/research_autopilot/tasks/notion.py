@@ -24,6 +24,10 @@ PROP_STATUS = "Status"
 PROP_PENDING = "Pending"
 PROP_LINEAR_ID = "Linear Issue ID"
 PROP_CATEGORY = "分類"
+PROP_RUN_REQUESTED = "Run Requested"
+PROP_EXECUTION_STATUS = "Execution Status"
+PROP_LAST_RUN = "Last Run"
+PROP_EXECUTION_ERROR = "Execution Error"
 
 MAX_BLOCKS = 2000
 MAX_DEPTH = 4
@@ -93,10 +97,20 @@ class NotionClient:
             other_sections=other,
             preamble=preamble,
             fetched_at=utcnow(),
+            run_requested=bool((props.get(PROP_RUN_REQUESTED) or {}).get("checkbox", False)),
+            execution_status=_select(props.get(PROP_EXECUTION_STATUS)),
+            last_run_url=(props.get(PROP_LAST_RUN) or {}).get("url"),
+            execution_error=_plain(props.get(PROP_EXECUTION_ERROR)) or None,
         )
 
     def find_page_ids_by_linear_id(self, identifier: str) -> list[str]:
         body = {"filter": {"property": PROP_LINEAR_ID, "rich_text": {"equals": identifier}}, "page_size": 10}
+        res = self._call("POST", f"/data_sources/{self.data_source_id}/query", json=body)
+        return [r["id"] for r in res.get("results", [])]
+
+    def requested_task_ids(self) -> list[str]:
+        """Return pages with the Boolean request signal set; Button itself is not an API event."""
+        body = {"filter": {"property": PROP_RUN_REQUESTED, "checkbox": {"equals": True}}, "page_size": 100}
         res = self._call("POST", f"/data_sources/{self.data_source_id}/query", json=body)
         return [r["id"] for r in res.get("results", [])]
 
