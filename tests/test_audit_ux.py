@@ -427,6 +427,8 @@ def test_parent_failure_and_invalid_dag_send_steps(tmp_path):
     from test_phase6b_dag import _seed_parent, _set_child
     steps = _dag_problem_steps([DAGProblem(code="missing_dependency", task_id="INU-902", message="INU-999 unknown")])
     assert steps[0].startswith("INU-902 の Notion ページを直す") and "Run Autopilot" in steps[-1]
+    inferred = _dag_problem_steps([DAGProblem(code="inferred_evidence_not_in_spec", task_id="INU-903", message="x")])
+    assert not any("Notion ページを直す" in s for s in inferred) and "仕様の誤りではありません" in inferred[0]
     deps, linear, _, parent = _seed_parent(tmp_path, {}, {"INU-901": "repo-a"})
     rec = RecordingNotifier()
     deps.notifier = rec

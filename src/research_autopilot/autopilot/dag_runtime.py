@@ -609,9 +609,15 @@ _DAG_RESTART_STEPS = [
 
 def _dag_problem_steps(problems: list[DAGProblem]) -> list[str]:
     """One step per problem, naming the child task (or the parent) whose Notion page must change."""
-    steps = [f"{p.task_id or '親タスク'} の Notion ページを直す: {p.message}（{p.code}）" for p in problems[:6]]
-    if len(problems) > 6:
-        steps.append(f"ほか {len(problems) - 6} 件（下の理由を参照）")
+    spec = [p for p in problems if not p.code.startswith(("inferred_", "dependency_inference_"))]
+    steps = [f"{p.task_id or '親タスク'} の Notion ページを直す: {p.message}（{p.code}）" for p in spec[:6]]
+    if len(spec) > 6:
+        steps.append(f"ほか {len(spec) - 6} 件（下の理由を参照）")
+    if len(spec) < len(problems):
+        # the dependency planner's proposal failed validation: a model output problem, not a spec problem
+        steps.append("依存関係の自動推定が検証を通りませんでした（仕様の誤りではありません）。"
+                     "そのまま Run Autopilot を押せば推定をやり直します。"
+                     "繰り返す場合は Linear で子タスクの blocked-by を明示してください")
     steps.append("親タスクで Run Autopilot を押す（DAG を作り直す）")
     return steps
 
