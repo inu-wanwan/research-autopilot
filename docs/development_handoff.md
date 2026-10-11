@@ -45,7 +45,7 @@ Phase 9 を実装・検証済み。BOCS で E2E 工程 1〜10 を Mac の実サ�
 
 - `src/research_autopilot/external/`：識別（official / author / third_party / unknown と根拠・不確実性）、commit 固定の tar.gz 取得と Git blob 照合、決定論的ライセンス判定、静的依存調査、静的安全性スキャン、Docker サンドボックス（binary wheel のハッシュ固定・オフラインビルド・ネットワークなし検証）、LLM テスト計画（失敗を最大 3 試行まで差し戻し）、Registry（DB 正＋Catalog `ra-external`）、Discord 実行承認と実行時ゲート、研究パッチ（hash 単位承認・サンドボックス再検証）、実行記録。
 - 連携：Phase 2（参照実装の登録・Planner 文脈・handoff `external_implementations`・費用計上）、Phase 3（`external_code` 宣言の規則と検証）、Phase 4（承認済みコンテナでのみ実行、未承認は Blocked＋承認依頼、結果に provenance）、Phase 5（poller が判断を適用し run 再開、24h ごとの更新再検証）。
-- 検証：`uv run pytest tests/test_phase9_external.py` 38 passed、全体 `uv run pytest` 488 passed（追加修正前）。E2E は docs 参照。
+- 検証：`uv run pytest` 489 passed（Phase 9 は 39 件）。BOCS の E2E 工程 1〜10 を実サービスで実施（docs 参照）。
 
 
 ### Phase 8 Literature Research（2026-10-11 / Claude Code）
