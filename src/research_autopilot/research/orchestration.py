@@ -1023,8 +1023,10 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         deps.ops.set_state(issue, "Done", f"research completed ({len(cs)} cycle(s))")
         run.stage = WorkflowStage.DONE
         run.event("research_completed", reason[:300])
+        closed = _close_unused_children(deps, run, cs)
         _milestone(deps, run.task_id, f"done:{run.run_id}",
                    [f"Research completed after {len(cs)} cycle(s)", reason[:600], f"Notes: {note_url}",
+                    *([f"使われなかったタスク（Canceled）: {', '.join(closed)}"] if closed else []),
                     f"Task: {bundle.page.url if bundle.page else ''}"], kind=EventKind.TASK_COMPLETED, buttons=None)
     else:
         run.stage = WorkflowStage.BLOCKED
@@ -1099,6 +1101,30 @@ def _budget_line(deps, run: WorkflowRun, auth: ResearchAuthorization | None) -> 
         return f"Budget used: {u.cpu_hours:.3f} / {cpu} CPU-h, ${u.api_usd:.2f} / {api}"
     except Exception:  # noqa: BLE001 - informational
         return ""
+
+
+def _close_unused_children(deps, run: WorkflowRun, cs: list[ResearchCycle]) -> list[str]:
+    """A completed research leaves no unfinished child behind: tasks that never ran or stopped are closed as
+    superseded (Linear Canceled with the reason, their runs cancelled). Done children stay Done."""
+    from research_autopilot.autopilot.engine import TERMINAL, _runs
+    closed = []
+    child_runs = {r.task_id: r for r in _runs(deps) if r.root_task_id == run.task_id and r.task_id != run.task_id}
+    for task_id in dict.fromkeys(t for c in cs for t in c.child_task_ids.values()):
+        child = child_runs.get(task_id)
+        if child is not None and child.stage is WorkflowStage.DONE:
+            continue
+        try:
+            if deps.ops.close_superseded(deps.linear.get_issue(task_id), run.task_id):
+                closed.append(task_id)
+        except Exception as exc:  # noqa: BLE001 - recorded; completion is not undone for a leftover issue
+            run.event("cleanup", f"{task_id} not closed: {type(exc).__name__}: {str(exc)[:120]}")
+        if child is not None and child.stage not in TERMINAL:
+            child.stage, child.waiting_for = WorkflowStage.CANCELLED, None
+            child.event("superseded", f"research {run.task_id} completed without this task")
+            _save_cancelled(deps, child)
+    if closed:
+        run.event("cleanup", f"unused child tasks closed as superseded: {', '.join(closed)}")
+    return closed
 
 
 def report_record(deps, run, bundle, auth, cs: list[ResearchCycle], outcome: str, reason: str,

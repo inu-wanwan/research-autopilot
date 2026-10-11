@@ -584,3 +584,29 @@ def test_later_cycles_build_on_the_last_validated_implementation_of_the_research
     assert based and all(m.task.base_commit in earlier | {x.implementation_commit for x in manifests if x}
                          for m in based)
     assert any('"based_on"' in c.prompt for c in deps.impl.backends["codex"].calls)
+
+
+def test_a_completed_research_closes_its_unused_child_tasks_as_superseded(tmp_path):
+    deps, linear, *_ = _build(tmp_path, llm=ScriptedResearchLlm(decisions=[more(), complete]))
+    from test_phase10_research import _discord
+    poll(deps)
+    (req,) = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    _discord(deps, req)
+    poll(deps)
+    first = orchestration.cycles(deps.store, "INU-900")[0]
+    unused = linear.issues[next(iter(first.child_task_ids.values()))].model_copy(
+        update={"identifier": "INU-950", "id": "issue-950", "title": "[TEST] never run"})
+    linear.issues["INU-950"], linear.histories["INU-950"] = unused, []
+    first.child_task_ids["TX"] = "INU-950"
+    orchestration.save_cycle(deps.store, first)
+    for _ in range(40):
+        poll(deps)
+        if _runs(deps)[-1].stage is WorkflowStage.DONE:
+            break
+    assert _runs(deps)[-1].stage is WorkflowStage.DONE
+    assert linear.issues["INU-950"].state_name == "Canceled"
+    used = [t for c in orchestration.cycles(deps.store, "INU-900") for k, t in c.child_task_ids.items() if k != "TX"]
+    assert all(linear.issues[t].state_name == "Done" for t in used)
+    done = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r
+            and r["event"].get("dedupe_key", "").startswith("research:INU-900:done")]
+    assert done and any("INU-950" in d for d in done[0]["details"])

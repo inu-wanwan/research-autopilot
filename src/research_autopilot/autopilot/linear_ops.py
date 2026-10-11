@@ -94,6 +94,22 @@ class LinearOps:
         self.linear.set_state(issue.id, state_id)
         issue.state_name, issue.state_type = REJECTED, state_type
 
+    def close_superseded(self, issue, research_task_id: str) -> bool:
+        """Canceled for a child task a COMPLETED research never used (user decision 2026-10-12: no leftover Todo).
+        The only automatic Canceled; callers must have verified that the research objective is Done."""
+        self._guard(issue)
+        if issue.state_name == REJECTED or issue.state_type in ("completed", "canceled"):
+            return False
+        states = self.linear.team_states(issue.team_id)
+        if REJECTED not in states:
+            raise WriteRefused(f"Linear workflow state {REJECTED!r} does not exist")
+        state_id, state_type = states[REJECTED]
+        self.store.record_linear_write(issue.identifier, REJECTED,
+                                       f"superseded: research {research_task_id} completed without this task")
+        self.linear.set_state(issue.id, state_id)
+        issue.state_name, issue.state_type = REJECTED, state_type
+        return True
+
     def comment(self, issue, body: str) -> str:
         self._guard(issue)
         return self.linear.create_comment(issue.id, body)
