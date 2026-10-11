@@ -240,7 +240,9 @@ class ExecutionScope(BaseModel):
     max_memory_gb: float = 8.0
     max_walltime_minutes: int = 120
     max_total_cpu_hours: float = 20.0
-    allow_research_patches: bool = True   # patch files committed in the research repository (reviewed in Phase 3)
+    # sha256 of the exact research modifications (patch files) the human approved; any other patch changes the
+    # executed code and needs re-verification and re-approval
+    approved_patches: list[str] = Field(default_factory=list)
 
 
 class GrantDraft(BaseModel):

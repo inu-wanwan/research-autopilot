@@ -89,7 +89,12 @@ def entries(store, name: str | None = None) -> list[RegistryEntry]:
 def current_entry(store, name: str) -> RegistryEntry | None:
     """Latest *registered* commit of a repository; failed or unverified updates never become current."""
     reg = [e for e in entries(store, name) if e.state is EntryState.REGISTERED]
-    return max(reg, key=lambda e: e.registered_at or e.retrieved_at) if reg else None
+    return max(reg, key=_age) if reg else None
+
+
+def _age(e: RegistryEntry) -> tuple:
+    """Newest commit wins (an older commit verified later never becomes current)."""
+    return (e.identification.commit_date or "", e.registered_at or e.retrieved_at)
 
 
 def find_entry(store, name: str, commit: str | None) -> RegistryEntry | None:
@@ -111,7 +116,10 @@ def register(store, entry: RegistryEntry, catalog=None) -> RegistryEntry:
     entry.registered_at = utcnow()
     entry.event("autopilot", "registered", "verified automatically; execution in the research environment still "
                                            "requires a human-approved grant")
-    if prev is not None and prev.entry_id != entry.entry_id:
+    if prev is not None and prev.entry_id != entry.entry_id and _age(prev) > _age(entry):
+        entry.state = EntryState.SUPERSEDED  # an older commit: registered for pinned use, never current
+        entry.event("autopilot", "registered_as_older", f"current commit stays {prev.commit[:12]}")
+    elif prev is not None and prev.entry_id != entry.entry_id:
         entry.previous_entry_id = prev.entry_id
         prev.state = EntryState.SUPERSEDED
         prev.event("autopilot", "superseded", f"newer verified commit {entry.commit[:12]} registered; existing grants "

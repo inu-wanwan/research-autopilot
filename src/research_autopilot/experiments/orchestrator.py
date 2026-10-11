@@ -371,15 +371,17 @@ def _external_argv(deps: ExpDeps, m: ExperimentManifest, spec: ExperimentSpec, a
         raise _Block(f"{spec.experiment_id}: uses external code {spec.external_code[0].name} but Phase 9 is not "
                      "configured; it is never run outside the approved container")
     try:
-        argv, execution_id = prepare_job(deps.external, spec, alloc, checkout=checkout, env=env, job_key=key,
-                                         experiment_run_id=m.experiment_run_id)
+        argv, provenance = prepare_job(deps.external, spec, alloc, checkout=checkout, env=env, job_key=key,
+                                       experiment_run_id=m.experiment_run_id)
     except NeedsApproval as exc:
         m.external_approvals.append(exc.request.request_id)
         raise _Block(f"{spec.experiment_id}: external code {spec.external_code[0].name} needs a human execution "
                      f"approval ({exc.request.request_id[:8]}): {'; '.join(exc.reasons)[:300]}") from exc
     except Denied as exc:
         raise _Block(f"{spec.experiment_id}: {exc}") from exc
-    m.event("external_code", f"{key}: {spec.external_code[0].name} under execution record {execution_id}")
+    m.environment[spec.experiment_id] = provenance  # which external code version produced these results
+    m.event("external_code", f"{key}: {spec.external_code[0].name} under execution record "
+                             f"{provenance['external_execution_id']}")
     return argv
 
 

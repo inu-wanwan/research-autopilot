@@ -113,8 +113,9 @@ def implementer_view(store, names: list[str]) -> list[dict]:
 
 
 def prepare_job(deps: service.ExternalDeps, spec, alloc, *, checkout: Path, env: dict[str, str], job_key: str,
-                experiment_run_id: str, onboard_missing: bool = True) -> tuple[list[str], str]:
-    """Container argv for an approved execution (and its execution record id), or NeedsApproval / Denied."""
+                experiment_run_id: str, onboard_missing: bool = True) -> tuple[list[str], dict]:
+    """Container argv for an approved execution plus the provenance to keep with the experiment's results, or
+    NeedsApproval / Denied."""
     use = spec.external_code[0]
     req = ExecutionRequest(name=use.name, commit=use.commit, purpose=use.purpose, purpose_detail=use.purpose_detail,
                            research_repository=spec.identification.repository_id, task_id=spec.identification.task_id,
@@ -128,7 +129,14 @@ def prepare_job(deps: service.ExternalDeps, spec, alloc, *, checkout: Path, env:
         gate = grants.authorize(deps.store, req, docker=deps.docker)
     if not gate.allowed:
         if gate.draft is not None:
-            ar = grants.request_grant(deps.store, gate.entry, gate.draft, notifier=deps.notifier, diff=gate.reasons)
+            try:
+                checks = service.verify_patched(deps, gate.entry, req.patches)
+            except ValueError as exc:  # a patch that does not apply never reaches the human
+                raise Denied(str(exc)) from exc
+            if any("FAILED" in c for c in checks):
+                raise Denied("research-patched external code fails its import checks: " + "; ".join(checks)[:300])
+            ar = grants.request_grant(deps.store, gate.entry, gate.draft, notifier=deps.notifier,
+                                      diff=gate.reasons + checks)
             if ar.status.value in ("rejected", "revision_requested"):
                 raise Denied(f"execution of {use.name} was {ar.status.value} by a human (request {ar.request_id[:8]}); "
                              "a changed request is needed")
@@ -149,7 +157,11 @@ def prepare_job(deps: service.ExternalDeps, spec, alloc, *, checkout: Path, env:
     rec = grants.record_start(deps.store, gate, req, argv=argv, code_sha256=code_sha, patches=patches, job_key=job_key,
                               experiment_run_id=experiment_run_id, experiment_id=spec.experiment_id,
                               catalog=deps.catalog)
-    return argv, rec.execution_id
+    return argv, {"external_execution_id": rec.execution_id, "external_entry": gate.entry.entry_id,
+                  "external_url": gate.entry.identification.url, "external_commit": gate.entry.commit,
+                  "external_code_sha256": code_sha, "external_image": v.environment.image_id,
+                  "external_lock_sha256": v.environment.lock_sha256, "external_grant": gate.grant.grant_id,
+                  "external_patches": ",".join(p["sha256"][:12] for p in patches)}
 
 
 def finish_job(deps: service.ExternalDeps, job_key: str, status) -> None:

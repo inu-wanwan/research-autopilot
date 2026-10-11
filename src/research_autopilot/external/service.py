@@ -114,10 +114,26 @@ def verify_and_register(deps: ExternalDeps, entry: RegistryEntry, actor: str = "
     if v.status == "passed":
         entry.state = EntryState.VERIFIED
         registry.register(deps.store, entry, deps.catalog)
+        grants.withdraw_undelivered(deps.store, lambda ev: ev.get("dedupe_key") == f"external:{entry.entry_id}:failed")
         _notify(deps, entry)
         return entry
     entry.state = EntryState.FAILED
     return _save(deps, entry)
+
+
+def verify_patched(deps: ExternalDeps, entry: RegistryEntry, patches: list[str]) -> list[str]:
+    """Re-verification of research-modified code before it is put to a human: the patches must apply to the
+    verified tree and the modules must still import in the sandbox (same locked image, no network)."""
+    if not patches:
+        return []
+    code, recs, sha = grants.prepare_code(entry, patches)
+    v = entry.verification
+    lines = [f"patched code {sha[:12]} from {', '.join(Path(r['path']).name + ':' + r['sha256'][:12] for r in recs)}"]
+    for name, argv, wd in verify_mod.import_checks(v.survey, code):
+        res = deps.docker.run_isolated(v.environment.image_id, code, argv, workdir=wd, python_dirs=v.survey.python_dirs,
+                                       limits=deps.limits)
+        lines.append(f"patched {name}: {'ok' if res['exit_code'] == 0 else 'FAILED ' + res['stderr'][-150:]}")
+    return lines
 
 
 def resume_after_license(deps: ExternalDeps, entry: RegistryEntry) -> RegistryEntry:

@@ -66,7 +66,8 @@ def _summary(entry: RegistryEntry, draft: GrantDraft) -> list[str]:
         f"{', '.join(s.file_access.data_paths) or 'none'}; no home, secrets or live repository",
         f"Network: {s.network}",
         f"Limits: {s.max_cpus:g} CPU, {s.max_memory_gb:g} GB, {s.max_walltime_minutes} min per run, "
-        f"{s.max_total_cpu_hours:g} CPU-h total; research patches {'allowed' if s.allow_research_patches else 'not allowed'}",
+        f"{s.max_total_cpu_hours:g} CPU-h total",
+        "Research patches: " + (", ".join(h[:12] for h in s.approved_patches) or "none (original code only)"),
     ]
     if warn:
         lines.append("Scan warnings: " + "; ".join(warn))
@@ -270,8 +271,10 @@ def scope_problems(g: ExecutionGrant, req: ExecutionRequest, used_cpu_hours: flo
     if need > s.max_total_cpu_hours:
         out.append(f"compute budget: {used_cpu_hours:.2f} used + {req.cpus * req.walltime_minutes / 60:.2f} requested "
                    f"> approved {s.max_total_cpu_hours:g} CPU-h")
-    if req.patches and not s.allow_research_patches:
-        out.append("research patches to the external code not approved")
+    new = [h for h in patch_hashes(req.patches) if h not in s.approved_patches]
+    if new:
+        out.append(f"research patch(es) {', '.join(h[:12] for h in new)} not approved: the modified code needs "
+                   "re-verification and re-approval")
     if g.expires_at < utcnow():
         out.append("grant expired")
     return out
@@ -280,7 +283,7 @@ def scope_problems(g: ExecutionGrant, req: ExecutionRequest, used_cpu_hours: flo
 def widened_scope(base: ExecutionScope | None, req: ExecutionRequest) -> ExecutionScope:
     """Smallest scope covering both the existing grant and the new request (for a re-approval draft)."""
     b = base or ExecutionScope(purposes=[], max_cpus=0, max_memory_gb=0, max_walltime_minutes=0,
-                               max_total_cpu_hours=0, allow_research_patches=False,
+                               max_total_cpu_hours=0,
                                file_access=FileAccess(job_checkout="ro"))
     walltime = max(b.max_walltime_minutes, req.walltime_minutes)
     return ExecutionScope(
@@ -293,7 +296,7 @@ def widened_scope(base: ExecutionScope | None, req: ExecutionRequest) -> Executi
         max_cpus=max(b.max_cpus, req.cpus), max_memory_gb=max(b.max_memory_gb, req.memory_gb),
         max_walltime_minutes=walltime,
         max_total_cpu_hours=max(b.max_total_cpu_hours, round(max(req.cpus, 1) * walltime / 60 * 10, 2)),
-        allow_research_patches=b.allow_research_patches or bool(req.patches))
+        approved_patches=sorted(set(b.approved_patches) | set(patch_hashes(req.patches))))
 
 
 def authorize(store, req: ExecutionRequest, *, docker=None) -> GateResult:
@@ -336,6 +339,11 @@ def authorize(store, req: ExecutionRequest, *, docker=None) -> GateResult:
 
 
 # ---------------------------------------------------------------- research modifications
+
+
+def patch_hashes(paths: list[str]) -> list[str]:
+    import hashlib
+    return [hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths]
 
 
 def prepare_code(entry: RegistryEntry, patches: list[str]) -> tuple[Path, list[dict], str]:

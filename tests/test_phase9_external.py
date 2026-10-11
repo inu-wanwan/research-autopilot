@@ -357,9 +357,18 @@ def test_research_patches_are_applied_to_a_copy_and_tracked(tmp_path):
     assert "n * n + 1" in (code / "BOCSpy" / "quad_mat.py").read_text()
     assert "n * n + 1" not in (Path(e.source_dir) / "BOCSpy" / "quad_mat.py").read_text()  # original untouched
     assert sha != e.verification.integrity.tree_sha256 and recs[0]["sha256"]
-    d2, _ = _granted(tmp_path / "b", scope=_scope(allow_research_patches=False))
-    gate = grants.authorize(d2.store, _req(patches=[str(patch)]), docker=d2.docker)
-    assert not gate.allowed and "patches" in gate.reasons[0]
+    gate = grants.authorize(d.store, _req(patches=[str(patch)]), docker=d.docker)  # grant covers original code only
+    assert not gate.allowed and "re-verification and re-approval" in gate.reasons[0]
+    checks = service.verify_patched(d, e, [str(patch)])
+    assert checks[0].startswith("patched code") and all("ok" in c for c in checks[1:])
+    assert d.docker.runs[-1]["code_dir"] == str(code)  # import checks ran on the patched copy, in the sandbox
+    req = grants.request_grant(d.store, e, gate.draft, diff=gate.reasons + checks)
+    _decide(d.store, req)
+    integration.process_approvals(d)
+    assert grants.authorize(d.store, _req(patches=[str(patch)]), docker=d.docker).allowed
+    other = tmp_path / "research" / "other.patch"
+    other.write_text(patch.read_text().replace("n * n + 1", "n * n + 2"))
+    assert not grants.authorize(d.store, _req(patches=[str(other)]), docker=d.docker).allowed  # new change
 
 
 def test_research_container_gets_no_secrets_and_only_granted_mounts(tmp_path, monkeypatch):
@@ -447,6 +456,7 @@ def test_phase4_blocks_unapproved_external_code_then_runs_it_in_the_granted_cont
     argv = " ".join(job.argv)
     assert job.argv[0].endswith("docker") and "--network none" in argv and ":/ext/bocs:ro" in argv
     assert f"{job.checkout_dir}:/work:rw" in argv and job.secret_env_names == []
+    assert m2.environment[job.experiment_id]["external_commit"] == SHA1  # results carry the implementation provenance
     [rec] = registry.executions(deps.store, job_key=job.job_key)
     assert rec.outcome == "succeeded" and rec.task_id == m2.task_id and rec.experiment_run_id == m2.experiment_run_id
     arts = query(deps.store, ArtifactQuery(kind="external-execution", repository_id="ra-external"))
@@ -562,3 +572,23 @@ def test_failed_attempt_is_fed_back_once_and_every_attempt_is_kept(tmp_path):
     assert "numpy<1.25" in v.survey.requirements and "numpy" not in v.survey.requirements
     assert v.environment.python_version == "3.11" and any("revision" in u for u in v.unverified)
     assert v.attempts[0]["runs"][-1]["passed"] is False and "array element" in v.attempts[0]["runs"][-1]["stderr_tail"]
+
+
+def test_an_older_commit_verified_later_never_becomes_current(tmp_path):
+    from datetime import UTC, datetime
+    gh = GitHub(commits={SHA1: dict(FILES), SHA2: dict(FILES)})
+    d, cur = _registered(tmp_path, gh=gh)
+    real = github.identify
+
+    def older(*a, **k):
+        ident = real(*a, **k)
+        if ident.commit == SHA2:
+            ident.commit_date = "2017-01-01T00:00:00Z"
+        return ident
+    github.identify = older
+    try:
+        old = service.onboard(d, "baptistar/BOCS", commit=SHA2, paper=PAPER)
+    finally:
+        github.identify = real
+    assert old.state is EntryState.SUPERSEDED and registry.current_entry(d.store, "baptistar/BOCS").commit == SHA1
+    assert datetime.now(UTC) and grants.authorize(d.store, _req(commit=SHA2[:12])).reasons  # pinned use still gated

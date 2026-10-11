@@ -160,7 +160,11 @@ def run(name: str, work: Path = typer.Option(..., "--work", help="research direc
     if not gate.allowed:
         out = {"allowed": False, "reasons": gate.reasons}
         if gate.draft is not None:
-            ar = grants.request_grant(deps.store, gate.entry, gate.draft, notifier=deps.notifier, diff=gate.reasons)
+            from research_autopilot.external.service import verify_patched
+            checks = verify_patched(deps, gate.entry, req.patches)
+            out["patched_code_checks"] = checks
+            ar = grants.request_grant(deps.store, gate.entry, gate.draft, notifier=deps.notifier,
+                                      diff=gate.reasons + checks)
             out["approval_request"] = {"request_id": ar.request_id, "status": ar.status.value}
         _out(out)
         raise typer.Exit(3)
