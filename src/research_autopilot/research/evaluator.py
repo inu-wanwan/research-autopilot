@@ -23,6 +23,10 @@ research so far) decide the next action for the approved SCOPE:
 - "scope_change": only if the objective cannot be reached inside the approved conditions / budget; list the change in
   scope_change and give proposed_conditions / proposed_budget. Changes of the objective, primary metric, targets,
   scientific invariants or baseline are NOT yours to propose: choose "stop" and explain what a human must decide.
+Publishing is NOT a task and never a reason to stop: when you choose "complete", Research Autopilot itself writes the
+Notion Notes (data, figure/table, interpretation, limitations, provenance), registers the report in the Artifact
+Catalog and sends the Discord completion notice with the Notion URL. Judge "complete" on the scientific results;
+do not plan tasks for, or stop because of, notes / catalog / notifications.
 If HUMAN_RESUME is present, a human resumed the research after a stop: treat the stop reasons named there as
 addressed and prefer retrying the failed / unstarted tasks within LIMITS, unless a scientific reason forbids it.
 Set progress=false when the last cycle added no new information. Record rationale with RESULTS refs in evidence and

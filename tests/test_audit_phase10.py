@@ -630,3 +630,8 @@ def test_dev_only_cli_approval_is_audited_and_ignored_outside_dev(tmp_path, monk
     poll(deps)
     auth = workflow.research_authorization(deps.store, "INU-900")
     assert auth and auth.approved_by == "cli-dev:claude-code (delegated by the user)"
+
+
+def test_the_evaluator_knows_publishing_is_done_by_research_autopilot():
+    from research_autopilot.research.evaluator import EVAL_INSTRUCTIONS
+    assert "Publishing is NOT a task" in EVAL_INSTRUCTIONS and "Artifact" in EVAL_INSTRUCTIONS
