@@ -44,12 +44,12 @@ Phase 6A の最小実装と Fake integration tests を追加。Notion 実DBの�
 - DB 保存後にだけ `Run Requested` を clear し、Notion への status projection は Linear の既存 `Status` mirror と別プロパティだけを PATCH する。checkbox には event ID / CAS がないため、page id + `last_edited_time` の一意性、global poll lease、active-run guard で安全側に倒す。
 - 実 Notion data source を read-only で確認：`Run Requested` checkbox、`Execution Status` status、`Last Run` url、`Execution Error` rich_text、既存 `Status` status は存在。`Run Autopilot` Button は integration から未検出。Notion API は Button を create/configure/press できないため、手動 UI 設定手順を `docs/operations/phase6a_execution_control.md` に記録。
 - 検証済み：`uv run pytest tests/test_phase6_execution.py tests/test_connectors.py` は 23 passed。Phase 5 regression 41 tests は 38 passed / 3 failed。2件は Phase 5 の「follow-up child を label だけで自動起動」期待で、Phase 6A の明示起動不変条件と意図的に非互換。1件は test-only 期待が旧 WorkflowRun の Blocked 作成を期待するため（現実装は DB acceptance 前に Notion Blocked を投影）。
+- 後続修正：子タスクも explicit request に変更、Completed task rerun、Prefect flow URL の `Last Run` 投影、Blocked request のDB履歴とacknowledgement、古いrunによるRequested上書き抑止、cancel DB/Notion projectionを追加。`INU-279` の人間参加E2Eは Button → Requested → Awaiting Approval → Discord approve → Implementing → Experimenting → Completed / Linear Done / Notion Completed まで実サービスで確認済み。修正後の Last Run URL は次回実行で確認が必要。
 
 ### Exact Next Actions
 
-1. Notion UI で `Run Autopilot` Button を作成し、`Run Requested=true` と `Execution Status=Requested` を設定。integration に Update content capability を付与。
-2. テスト fixture を Phase 6A contract に合わせ、子タスクの再実行も明示 checkbox 要求を立てる形へ更新して全 suite を再実行。
-3. 実サービス E2E は test-only の `[TEST]` task に限定し、Button の人間操作後に poller を1回だけ起動して Requested → Accepted → Running を確認する。本番/Eagle には deploy しない。
+1. 次の `[TEST]` Button E2E で、修正後の `Last Run` URL を確認する。本番/Eagle には deploy しない。
+2. Phase 6A の異常系（Notion acknowledgement API failure / stale projection）を HTTP Fake で追加し、全 pytest を再実行する。
 
 ### Phase 5 Discord 通知・承認 UI（2026-10-10 / Codex）
 
