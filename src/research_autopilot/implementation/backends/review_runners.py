@@ -23,7 +23,7 @@ class CodexReviewRunner:
         schema_file.write_text(json.dumps(schema))
         req = BackendRequest(task=task, choice=choice, prompt=prompt, timeout_seconds=REVIEW_TIMEOUT, log_path=log_path)
         result = self.backend.run(req, lambda pid: None, sandbox="read-only",
-                                  extra_args=["--output-schema", str(schema_file)])
+                                  extra_args=["--output-schema", str(schema_file.resolve())])  # codex runs in the worktree
         return result, parse_review(result.summary) if result.status == "completed" else None
 
 
