@@ -121,8 +121,8 @@ def plan_research(deps, run: WorkflowRun, bundle, *, revision_comment: str = "")
         run.blocked_reason = (f"research plan v{plan.version} {plan.status.value}: " + "; ".join(why))[:900]
         _notify(deps, run, "research-needs-input", plan,
                 [f"Plan v{plan.version} cannot be approved yet ({plan.status.value})", *why[:6],
-                 f"Notion: {plan.plan_page_url or ''}",
-                 "Edit the Notion specification, then press Run Autopilot again."], controls=False)
+                 f"Task: {bundle.page.url if bundle.page else ''}", f"Plan: {plan.plan_page_url or ''}"],
+                controls=True, steps=input_steps(plan))
         return plan
     req = request_approval(deps, bundle, plan)
     plan.status, plan.approval_request_id = PlanStatus.PENDING_APPROVAL, req.request_id
@@ -193,8 +193,9 @@ def apply_decision(deps, req: ApprovalRequest, approval, issue, run: WorkflowRun
             hypothesis="; ".join(h.value for h in s.hypotheses) or None,
             scientific_invariants=[i.value for i in s.invariants],
             acceptance_criteria=[c.value for c in s.success_criteria],
-            budget=Budget(api_usd=s.budget.api_usd if s.budget.api_usd is not None else 0.0,
-                          compute_cpu_hours=s.budget.cpu_hours if s.budget.cpu_hours is not None else 0.0),
+            # an unstated limit is no limit (0.0 would read as "exhausted" and loop on budget requests)
+            budget=Budget(api_usd=s.budget.api_usd if s.budget.api_usd is not None else NO_LIMIT,
+                          compute_cpu_hours=s.budget.cpu_hours if s.budget.cpu_hours is not None else NO_LIMIT),
             version=_next_auth_version(deps.store, plan.task_id), kind="research_scope", plan_id=plan.plan_id,
             content_hash=plan.content_hash, scope=s.model_dump(mode="json"))
         deps.store.put(db.authorizations, auth.authorization_id, auth.model_dump(mode="json"), root_task_id=plan.task_id)
@@ -214,6 +215,14 @@ def apply_decision(deps, req: ApprovalRequest, approval, issue, run: WorkflowRun
         _notify(deps, run, f"research-approved:{plan.plan_id}", plan,
                 [f"Research scope v{plan.version} approved by {approval.actor}", f"Notion: {plan.plan_page_url or ''}"],
                 milestone=True)
+    elif approval.decision == "reject" and plan.kind == "scope_change":
+        # a rejected scope change keeps the approved scope: the research step stops with a report and Resume / Cancel
+        plan.status = PlanStatus.REJECTED
+        save_plan(deps.store, plan)
+        project(deps, plan, "Rejected")
+        if run is not None:
+            run.stage, run.waiting_for, run.resume_stage = WorkflowStage.RESEARCHING, None, None
+            run.event("rejected", f"scope change v{plan.version} rejected by {approval.actor}: the approved scope stays")
     elif approval.decision == "reject":
         plan.status = PlanStatus.REJECTED
         save_plan(deps.store, plan)
@@ -334,17 +343,50 @@ def plan_blocks(plan: ResearchPlan) -> list[dict]:
 
 
 def _notify(deps, run: WorkflowRun | None, key: str, plan: ResearchPlan, details: list[str], *, milestone: bool = False,
-            controls: bool = True) -> None:
+            controls: bool = False, steps: list[str] | None = None) -> None:
+    """``controls``: a human must act (approvals channel, Resume / Cancel buttons, numbered ``steps``)."""
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
     kind = EventKind.PHASE_TRANSITION if milestone else EventKind.UNRECOVERABLE_ERROR
     try:
         notify_once(deps.store, NotificationEvent(kind=kind, flow_name="research", flow_run_name=plan.task_id,
-                                                  state_name=plan.status.value, details=details[:12],
+                                                  state_name=plan.status.value, details=[x for x in details if x][:12],
                                                   dedupe_key=f"{key}:{plan.plan_id}",
-                                                  control_task_id=None), deps.notifier)
+                                                  control_task_id=plan.task_id if controls else None,
+                                                  control_actions=["resume", "cancel"] if controls else [],
+                                                  needs_human=controls, steps=list(steps or [])), deps.notifier)
     except Exception:
         pass
+
+
+# Which Notion section of the research task answers a blocking question (docs/phase_specs/ux_policy.md 1.5).
+_SECTION = {"budget": "Budget / Authorization", "invariants": "Scientific Invariants",
+            "success_criteria": "Success Criteria", "stop_conditions": "Stop Conditions", "autonomy": "Autonomy"}
+
+
+def section_for(field: str) -> str:
+    """objective, primary metric, targets, conditions, hypotheses and baseline live in 'Research Objective'."""
+    return _SECTION.get(field.split(".", 1)[0], "Research Objective")
+
+
+def input_steps(plan: ResearchPlan) -> list[str]:
+    """Numbered steps until a needs-input / invalid plan resumes: what to write in which Notion section."""
+    if plan.status is PlanStatus.NEEDS_INPUT:
+        by_section: dict[str, list[str]] = {}
+        for q in plan.scope.blocking():
+            by_section.setdefault(section_for(q.field), []).append(q.question)
+        steps = [f"In the Notion section '{sec}' of the research task, answer: " + " / ".join(qs)[:400]
+                 for sec, qs in by_section.items()]
+    else:
+        steps = [f"Fix the Notion research task so that this is resolved: {p[:300]}" for p in plan.validation_problems[:3]]
+    return [*steps,
+            "Write every number (range, count, budget limit) in the text itself, e.g. 'bond length R between 0.5 and "
+            "3.0 Angstrom' or 'Compute budget: 1 CPU-hour in total; API budget 5 USD': RA never fills in numbers.",
+            "Save the page: RA re-plans automatically within a few minutes and sends the plan for approval here.",
+            "If nothing arrives, press Resume. Cancel ends the research."]
+
+
+NO_LIMIT = 1e9  # policy Budget has no "unlimited": a limit the approved scope does not state
 
 
 def llm_factory_from_env(settings) -> Callable[[], Any]:

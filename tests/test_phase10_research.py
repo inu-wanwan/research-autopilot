@@ -368,7 +368,11 @@ def test_resume_on_a_blocked_research_run_restarts_planning(tmp_path):
     poll(deps)
     assert _run(deps).stage is WorkflowStage.BLOCKED
     sent = [r["event"] for r in deps.store.find(db.notifications_sent) if "event" in r and r["event"]["flow_name"] == "research"]
-    assert sent and all(e.get("control_task_id") is None for e in sent)  # no Stop / Resume on a needs-input notice
+    # a needs-input notice waits for a human: approvals, Resume / Cancel and numbered steps (ux_policy.md, 2026-10-12)
+    assert sent and all(e.get("control_task_id") == "INU-900" and e["control_actions"] == ["resume", "cancel"]
+                        and e["needs_human"] for e in sent)
+    assert any("Budget / Authorization" in x for x in sent[0]["steps"])
+    assert any("re-plans automatically" in x for x in sent[0]["steps"])
     _edit_spec(notion, budget=RESEARCH_SECTIONS["budget"])
     orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
     poll(deps)

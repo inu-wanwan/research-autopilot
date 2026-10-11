@@ -49,8 +49,11 @@ def evaluate(llm, *, scope: ResearchScope, plan: ResearchPlan, cycles: list[Rese
 
 
 def gate(decision: EvaluationDecision, *, scope: ResearchScope, cycles: list[ResearchCycle], results: list[dict],
-         registry: dict, used_values: dict[str, set[str]], used_cpu: float, used_api: float) -> list[str]:
-    """Deterministic checks of an evaluator decision (scope, limits, budget, retries, evidence)."""
+         registry: dict, used_values: dict[str, set[str]], used_cpu: float, used_api: float,
+         authorization_id: str | None = None) -> list[str]:
+    """Deterministic checks of an evaluator decision (scope, limits, budget, retries, evidence).
+
+    ``max_cycles`` counts only the cycles of ``authorization_id`` (the current approved scope) when it is given."""
     a = scope.autonomy
     refs = {r.get("ref") for r in results}
     problems: list[str] = []
@@ -64,7 +67,8 @@ def gate(decision: EvaluationDecision, *, scope: ResearchScope, cycles: list[Res
             if c.get("status") == "met" and not set(c.get("evidence") or []) & refs:
                 problems.append(f"criterion {str(c.get('criterion'))[:80]!r} marked met without a valid result reference")
     if decision.action == "continue":
-        if len(cycles) >= a.max_cycles:
+        in_scope = [c for c in cycles if c.authorization_id == authorization_id] if authorization_id else cycles
+        if len(in_scope) >= a.max_cycles:
             problems.append(f"the approved maximum of {a.max_cycles} cycles is reached")
         decision.new_tasks = [planner_mod.strip_count_parameters(t, scope) for t in decision.new_tasks]
         problems += planner_mod.check_tasks(decision.new_tasks, scope, registry=registry, evidence_ids=set(),

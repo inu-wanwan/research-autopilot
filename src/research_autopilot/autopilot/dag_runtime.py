@@ -201,12 +201,10 @@ def _is_research_parent(deps, parent_run_id: str) -> bool:
     return bool(raw and raw.get("research_cycle_id"))
 
 
-def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
+def schedule_ready(deps, parent: ParentRun, research_run: WorkflowRun | None = None) -> list[WorkflowRun]:
     from research_autopilot.autopilot.engine import _new_run
-    if parent.research_cycle_id:
-        from research_autopilot.research.orchestration import paused
-        if paused(deps.store, parent.parent_task_id):
-            return []  # stopped by the user: nothing new starts, running children finish
+    if parent.research_cycle_id and not _research_may_start(deps, parent, research_run):
+        return []  # stopped / paused / cancelled / out of budget: nothing new starts, running children finish
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
     statuses = _child_statuses(deps, parent)
     active = sum(s in _ACTIVE for s in statuses.values())
@@ -256,6 +254,25 @@ def schedule_ready(deps, parent: ParentRun) -> list[WorkflowRun]:
             running_repos.add(node.repository)
     _save_parent(deps, parent)
     return made
+
+
+def _research_may_start(deps, parent: ParentRun, run: WorkflowRun | None) -> bool:
+    """A research cycle's next child starts only while its research run goes on: not paused by the user, not
+    stopped (budget / revoked scope / max cycles), cancelled or finished, and with budget left.  ``run`` is the
+    in-memory research run when the caller is changing it (its stored copy may still say BLOCKED)."""
+    from research_autopilot.autopilot.models import WorkflowStage
+    from research_autopilot.research import orchestration
+    from research_autopilot.research import workflow as rw
+    run = run if run is not None else orchestration.research_run(deps.store, parent.parent_task_id)
+    if run is not None and run.stage in (WorkflowStage.BLOCKED, WorkflowStage.CANCELLED, WorkflowStage.DONE,
+                                         WorkflowStage.DEAD_LETTER):
+        return False
+    if orchestration.paused(deps.store, parent.parent_task_id, run):
+        return False
+    auth = rw.research_authorization(deps.store, parent.parent_task_id)
+    if auth is None or run is None:
+        return False
+    return not orchestration.budget_problems(deps, run, auth)
 
 
 def _start_parent(deps, parent: ParentRun, execution: ExecutionRun, flow_id: str | None) -> None:
