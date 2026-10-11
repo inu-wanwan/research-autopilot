@@ -75,6 +75,7 @@ class ImplementationTask(BaseModel):
     artifact_requirements: str | None
     plan: ExecutionPlan
     sources: list[SourceRef]
+    catalog_artifacts: list[dict] = Field(default_factory=list)  # Phase 7A verified read-only inputs
 
 
 class BackendStatus(BaseModel):

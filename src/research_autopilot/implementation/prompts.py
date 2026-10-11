@@ -20,6 +20,9 @@ Hard rules (violations are detected automatically and stop the run):
 - Do not download or install anything; no network access is assumed.
 - Write or update automated tests that check the acceptance criteria where they are testable.
 - Keep the change minimal and focused on the task; respect NON-GOALS.
+- CATALOG ARTIFACTS (catalog_artifacts) are verified, read-only research inputs: read them from the listed
+  files (at run time the manifest path is in the RA_CATALOG_INPUTS environment variable); never modify,
+  move, regenerate or re-derive them, and do not hard-code their absolute paths.
 - Finish with a short summary: what you changed, how it is tested, anything you could not verify.
 
 Experiment definition (required): create or update `.autopilot/experiment.json`, matching the JSON schema in
@@ -72,6 +75,7 @@ def _task_block(task: ImplementationTask) -> dict:
         "acceptance_criteria": task.acceptance_criteria,
         "non_goals": task.non_goals,
         "input_artifacts": task.input_artifacts,
+        "catalog_artifacts": task.catalog_artifacts,
         "artifact_requirements": task.artifact_requirements,
         "allowed_file_scope": task.allowed_file_scope,
         "protected_paths": task.protected_paths,

@@ -28,11 +28,14 @@ def build_deps(settings: Settings, on_retry=None) -> Deps:
     linear = LinearClient(settings.linear_api_key.get_secret_value(), settings.linear_project_id,
                           on_retry=on_retry)
     # The Agents SDK reads OPENAI_API_KEY from the environment itself.
+    from research_autopilot.catalog.integration import context_from_env
+    store = Store(settings.resolved_database_url())
     return Deps(
         manager=TaskManager(notion, linear, settings),
         linear=linear,
         planner=OpenAIPlanner(settings.planner_model, tracing=settings.agents_tracing),
         reviewer=OpenAIReviewer(settings.reviewer_model, tracing=settings.agents_tracing),
-        store=Store(settings.resolved_database_url()),
+        store=store,
         settings=settings,
+        catalog=context_from_env(store),
     )

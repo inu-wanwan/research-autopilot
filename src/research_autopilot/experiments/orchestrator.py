@@ -18,6 +18,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from research_autopilot.catalog.integration import (INPUTS_ENV, context_from_env, recheck,
+                                                   write_inputs_manifest)
 from research_autopilot.config import Settings
 from research_autopilot.experiments import resources as res
 from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, ScientificReviewer
@@ -162,6 +164,23 @@ def _accept_contract(deps: ExpDeps, m: ExperimentManifest, phase3_run_id: str) -
     m.spec_history.append(spec.spec_id)
     m.phase2_plan_run_id, m.plan_id = impl.phase2_plan_run_id, impl.plan_id
     m.event("contract", f"accepted {spec.experiment_id} @ {spec.identification.commit[:12]} (Phase 3 {phase3_run_id[:8]})")
+
+
+def _catalog_inputs(deps: ExpDeps, m: ExperimentManifest, impl, jdir: Path, experiment_id: str) -> Path | None:
+    """Phase 7A: re-verify the planned catalog inputs on this host right before the job starts."""
+    if not impl.handoff_path or not Path(impl.handoff_path).exists():
+        return None
+    handoff = ExecutionHandoff.model_validate_json(Path(impl.handoff_path).read_text())
+    if not handoff.catalog_resolution:
+        return None
+    ctx = deps.extra.get("catalog") or context_from_env(deps.store, deps.registry)
+    now, problems = recheck(ctx, handoff.catalog_resolution)
+    if problems:
+        raise _Block(f"{experiment_id}: catalog inputs are not reusable: " + "; ".join(problems[:5]))
+    path = write_inputs_manifest(now, jdir / "catalog_inputs.json")
+    m.artifact_paths[f"catalog_inputs:{experiment_id}"] = str(path)
+    m.event("catalog", f"{experiment_id}: {len(now.artifacts)} verified input artifact(s) on {now.environment}")
+    return path
 
 
 def _repo(deps: ExpDeps, impl: ImplementationManifest):
@@ -319,6 +338,8 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     (jdir / "input_hashes.json").write_text(json.dumps(input_hashes))
     env = {**res.thread_env(alloc), "HOME": str(jdir / "home"), "TMPDIR": str(jdir / "tmp"),
            "PYTHONHASHSEED": "0", "RA_EXPERIMENT_RUN_ID": m.experiment_run_id, "RA_TASK_ID": m.task_id}
+    if (manifest_path := _catalog_inputs(deps, m, impl, jdir, spec.experiment_id)) is not None:
+        env[INPUTS_ENV] = str(manifest_path)
     (jdir / "home").mkdir(parents=True, exist_ok=True)
     (jdir / "tmp").mkdir(parents=True, exist_ok=True)
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,

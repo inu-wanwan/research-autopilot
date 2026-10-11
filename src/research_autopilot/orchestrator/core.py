@@ -11,7 +11,7 @@ This module has no Prefect dependency so it can be unit-tested with fakes;
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from research_autopilot.config import Settings
 from research_autopilot.models import (
@@ -54,6 +54,7 @@ class Deps:
     reviewer: Reviewer
     store: Store
     settings: Settings
+    catalog: Any = None  # catalog.service.CatalogContext (Phase 7A); None -> catalog requirements block
 
 
 def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
@@ -99,6 +100,17 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
         reasons.append(_concurrent(lease))
     if (status := gates.classify(reasons)) is not None:
         return _decision(record, status, reasons, "deterministic gates failed", bundle, approval)
+    # Phase 7A: required catalog artifacts must resolve to verified, unambiguous inputs before planning.
+    from research_autopilot.catalog.integration import planner_context, resolve_for_task
+    resolution, problems = resolve_for_task(deps.catalog, bundle.spec.input_artifacts)
+    if problems:
+        catalog_reasons = [BlockedReason(code=BlockedCode.DATA_INCONSISTENCY, message=f"artifact catalog: {p}")
+                           for p in problems[:20]]
+        return _decision(record, DecisionStatus.BLOCKED, catalog_reasons,
+                         "required catalog artifacts are not reusable", bundle, approval)
+    if resolution is not None:
+        record.events.append(RunEvent(kind="catalog", message=f"resolved {len(resolution.artifacts)} artifact(s) "
+                                                              f"on {resolution.environment}"))
     if mode == "check_only":
         return _decision(record, DecisionStatus.READY, [], "all deterministic gates passed (check only; no plan generated)",
                          bundle, approval)
@@ -108,7 +120,11 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                          "another run holds this task", bundle, approval)
     record.events.append(RunEvent(kind="lease", message=f"acquired lease on {bundle.issue.identifier}"))
     try:
-        outcome = run_planning(bundle.spec, deps.planner, deps.reviewer, s, record)
+        spec = bundle.spec
+        if resolution is not None:
+            spec = spec.model_copy(update={"input_artifacts": "\n\n".join(
+                x for x in (spec.input_artifacts, planner_context(resolution)) if x)})
+        outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
         if outcome.status is not DecisionStatus.READY:
             return _decision(record, outcome.status, outcome.reasons, _loop_rationale(outcome), bundle, approval, outcome)
 
@@ -153,6 +169,7 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
                 phase2_mode=mode, specification=bundle.spec.specification,
                 repository=bundle.spec.repository, file_scope=bundle.spec.file_scope,
                 non_goals=bundle.spec.non_goals, input_artifacts=bundle.spec.input_artifacts,
+                catalog_resolution=resolution.model_dump(mode="json") if resolution is not None else None,
             )))
         return decision
     finally:

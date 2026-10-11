@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from research_autopilot.catalog.integration import implementer_view
 from research_autopilot.config import Settings
 from research_autopilot.implementation import routing
 from research_autopilot.implementation.backends.base import BackendRequest, CodingBackend, pid_alive, terminate_group
@@ -351,6 +352,7 @@ def _prepare_task(deps: ImplDeps, h: ExecutionHandoff, manifest: ImplementationM
         specification=h.specification, scientific_invariants=h.scientific_invariants,
         acceptance_criteria=h.acceptance_criteria, non_goals=h.non_goals, input_artifacts=h.input_artifacts,
         artifact_requirements=h.artifact_requirements, plan=h.plan, sources=h.sources,
+        catalog_artifacts=implementer_view(h.catalog_resolution),
     )
     manifest.task = task
     if rctx is not None:

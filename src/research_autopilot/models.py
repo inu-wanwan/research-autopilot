@@ -413,3 +413,5 @@ class ExecutionHandoff(BaseModel):
     file_scope: str | None = None
     non_goals: str | None = None
     input_artifacts: str | None = None
+    # Phase 7A: frozen catalog resolution (verified artifacts) the plan was made against.
+    catalog_resolution: dict | None = None
