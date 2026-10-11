@@ -117,7 +117,10 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
         return False
     previous = [ParentRun.model_validate(x) for x in deps.store.find(db.parent_runs)
                 if x.get("research_cycle_id") == cycle.cycle_id]
-    retries_used = max(0, len(previous) - 1)
+    # only retries in which some child was planned / worked on count against max_retries_per_task: a retry refused
+    # by a start gate before any work (e.g. a stale Linear state) did not try the task again (user decision)
+    retries_used = sum(1 for p in previous if p.parent_run_id != _first_parent(previous).parent_run_id
+                       and _attempted(deps, p))
     max_retries = int(((auth.scope or {}).get("autonomy") or {}).get("max_retries_per_task", 2))
     if retries_used >= max_retries:
         return False
@@ -125,7 +128,9 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, old.dag_id))
     attempt = retries_used + 1
     page = deps.plan.manager.load(run.task_id).page
-    key = f"research-cycle:{cycle.cycle_id}:retry:{attempt}"
+    # keyed on the ParentRun sequence, not the counted attempt: an uncounted retry must not collide with the next one
+    key = f"research-cycle:{cycle.cycle_id}:retry:{attempt}" if len(previous) == attempt else \
+        f"research-cycle:{cycle.cycle_id}:parent:{len(previous) + 1}"
     req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id,
                            source="research_cycle_retry", specification_hash=dag.parent_specification_hash,
                            status=ExecutionStatus.ACCEPTED, request_key=key)
@@ -138,6 +143,12 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
                                       "previous_parent_run_id": old.parent_run_id})
     deps.store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"),
                           request_id=req.request_id, task_id=run.task_id, status=er.status.value)
+    for task_id in failed:
+        # a blocked/failed child keeps its Linear "In Progress"; its execution is terminal, so put it back to Todo
+        # or the Phase 2 start gate refuses the retry as "already In Progress"
+        issue = deps.linear.get_issue(task_id)
+        if issue.state_type == "started":
+            deps.ops.set_state(issue, "Todo", f"research cycle {cycle.number} retry {attempt}")
     parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
                        parent_execution_run_id=er.execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash,
                        research_cycle_id=cycle.cycle_id,
@@ -160,6 +171,20 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     run.stage = WorkflowStage.RESEARCHING
     run.event("resumed", f"cycle {cycle.number} child DAG retry {attempt}/{max_retries}: {', '.join(failed)}")
     return True
+
+
+def _first_parent(parents: list[ParentRun]) -> ParentRun:
+    return min(parents, key=lambda p: p.created_at)
+
+
+def _attempted(deps, parent: ParentRun) -> bool:
+    """Was any child of this ParentRun actually worked on? Phase 2 planning ran (a plan id, even if the plan was
+    then blocked) -- a start-gate refusal never gets one."""
+    for run_id in parent.child_workflow_run_ids.values():
+        raw = deps.store.get(db.workflow_runs, run_id)
+        if raw and (raw.get("plan_id") or raw.get("phase3_run_ids") or raw.get("experiment_run_ids")):
+            return True
+    return False
 
 
 def request_control(store, task_id: str, action: str, actor: str, channel: str) -> ResearchControl:

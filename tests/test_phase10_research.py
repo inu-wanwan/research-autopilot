@@ -559,6 +559,7 @@ def test_resume_retries_a_blocked_child_dag_inside_the_same_cycle(tmp_path):
     deps.store.put(db.parent_runs, old_parent.parent_run_id, old_parent.model_dump(mode="json"),
                    parent_task_id=old_parent.parent_task_id,
                    parent_execution_run_id=old_parent.parent_execution_run_id, status=old_parent.status.value)
+    linear.human_move(child_id, "In Progress")  # a blocked child keeps its started Linear state
 
     orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
     poll(deps)
@@ -571,6 +572,53 @@ def test_resume_retries_a_blocked_child_dag_inside_the_same_cycle(tmp_path):
     run = _drive(deps, 30)
     assert run.stage is WorkflowStage.DONE
     assert len(orchestration.cycles(deps.store, "INU-900")) == 1
+
+
+def _block_cycle_dag(deps, cycle, *, worked_on: bool) -> None:
+    from research_autopilot.autopilot.dag import ParentRun
+    from research_autopilot.autopilot.execution import ExecutionRun, ExecutionStatus
+
+    parent = ParentRun.model_validate(deps.store.get(db.parent_runs, cycle.parent_run_id))
+    for task_id, execution_id in parent.child_execution_run_ids.items():
+        rec = ExecutionRun.model_validate(deps.store.get(db.execution_runs, execution_id))
+        rec.status = ExecutionStatus.BLOCKED
+        deps.store.put(db.execution_runs, execution_id, rec.model_dump(mode="json"), request_id=rec.request_id,
+                       task_id=task_id, status=rec.status.value)
+    for task_id, run_id in parent.child_workflow_run_ids.items():
+        raw = deps.store.get(db.workflow_runs, run_id)
+        raw.update(stage="blocked", plan_id="p1" if worked_on else None, phase3_run_ids=[], experiment_run_ids=[])
+        deps.store.put(db.workflow_runs, run_id, raw, task_id=task_id, stage="blocked")
+    parent.status = ExecutionStatus.BLOCKED
+    deps.store.put(db.parent_runs, parent.parent_run_id, parent.model_dump(mode="json"),
+                   parent_task_id=parent.parent_task_id, parent_execution_run_id=parent.parent_execution_run_id,
+                   status=parent.status.value)
+    run = _run(deps)
+    run.stage = WorkflowStage.BLOCKED
+    deps.store.put(db.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage="blocked")
+    cycle.decision = EvaluationDecision(action="stop", rationale="child blocked")
+    cycle.status = orchestration.CycleStatus.COMPLETED
+    orchestration.save_cycle(deps.store, cycle)
+
+
+def test_a_retry_refused_before_any_work_does_not_use_up_the_retry_limit(tmp_path):
+    stop = EvaluationDecision(action="stop", rationale="implementation child failed")
+    deps, *_ = _approve_initial(tmp_path, llm=ScriptedResearchLlm(decisions=[stop, complete]))
+    assert _drive(deps, 20).stage is WorkflowStage.BLOCKED
+    worked = [True, False, False, True]  # the original run, two start-gate refusals, then a real retry
+    for i, worked_on in enumerate(worked):
+        cycle = orchestration.cycles(deps.store, "INU-900")[0]
+        _block_cycle_dag(deps, cycle, worked_on=worked_on)
+        orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+        poll(deps)
+        cycle = orchestration.cycles(deps.store, "INU-900")[0]
+        parents = [x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]
+        assert len(parents) == i + 2, i  # still retried: refusals before work are not counted
+    assert cycle.budget_after["cycle_retry"] == 2  # the real retries: max_retries_per_task (2) is now used up
+    _block_cycle_dag(deps, cycle, worked_on=True)
+    orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
+    poll(deps)
+    cycle = orchestration.cycles(deps.store, "INU-900")[0]
+    assert len([x for x in deps.store.find(db.parent_runs) if x.get("research_cycle_id") == cycle.cycle_id]) == 5
 
 
 def test_planning_prompts_treat_bounded_api_discovery_as_implementation_work():
