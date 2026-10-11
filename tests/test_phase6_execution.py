@@ -47,3 +47,12 @@ def test_prefect_run_url_is_persisted_and_projected(tmp_path):
     run = ExecutionRun.model_validate(deps.store.find(db.execution_runs, task_id="INU-900")[0])
     assert run.prefect_flow_run_id == "flow-123"
     assert notion.pages[page_id].last_run_url == "http://prefect/runs/flow-run/flow-123"
+
+def test_blocked_request_is_acknowledged_once(tmp_path):
+    deps, _, notion, *_ = build(tmp_path)
+    page_id = request(deps, notion)
+    page = notion.pages[page_id]
+    notion.pages[page_id] = page.model_copy(update={"sections": {**page.sections, "repository": ""}})
+    poll(deps)
+    assert notion.pages[page_id].run_requested is False
+    assert len(deps.store.find(db.execution_requests)) == 1

@@ -112,7 +112,7 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                     if not deps.settings.dry_run:
                         reason = "; ".join(r.message for r in bundle.reasons) or "missing scientific specification"
                         record_blocked(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec) if bundle.spec else "unavailable", reason=reason)
-                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason)
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason, acknowledge=True)
                     continue
                 try:
                     # Refuse before durable acceptance when the configured write
@@ -121,14 +121,14 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 except WriteRefused as exc:
                     if not deps.settings.dry_run:
                         record_blocked(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec), reason=str(exc))
-                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=str(exc))
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=str(exc), acknowledge=True)
                     continue
                 if rerun and not deps.settings.dry_run:
                     deps.ops.set_state(bundle.issue, "Todo", "explicit rerun requested")
                 execution, reason = accept(store, page=page, issue=bundle.issue, spec_hash=_spec_hash_of(bundle.spec))
                 if execution is None:
                     if reason != "request already accepted or requires reconciliation" and not deps.settings.dry_run:
-                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason)
+                        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason, acknowledge=True)
                     continue
                 summary["discovered"].append(bundle.issue.identifier)
                 if deps.settings.dry_run:
