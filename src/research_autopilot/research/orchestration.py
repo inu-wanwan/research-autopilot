@@ -77,6 +77,11 @@ def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
         last = cs[-1]  # a human resumed a stopped research: the last cycle is evaluated again
         last.status = CycleStatus.EVALUATING
         last.results = []
+        last.budget_after = {**last.budget_after, "human_resume": {
+            "actor": control.actor, "at": control.at.isoformat(),
+            "note": (control.actor.split("(", 1)[1].rstrip(")") if "(" in control.actor else
+                     "resumed from Discord: the human asks to continue after the stop reasons were addressed"),
+            "previous_decision": last.decision.rationale[:600]}}
         save_cycle(deps.store, last)
         run.event("resumed", f"cycle {last.number} is re-evaluated after the human resume")
 
@@ -417,13 +422,14 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
               "budget": scope.budget.model_dump(include={"cpu_hours", "api_usd"})}
     repos = {rid: str(getattr(cfg, "path", "")).rsplit("/", 1)[-1] for rid, cfg in deps.impl.registry.items()}
     llm = deps.research.llm_factory()
+    resume = (cur.budget_after or {}).get("human_resume")
     d = evaluator_mod.evaluate(llm, scope=scope, plan=plan, cycles=cs, results=all_results, limits=limits,
-                               repositories=repos)
+                               repositories=repos, human_resume=resume)
     problems = evaluator_mod.gate(d, scope=scope, cycles=cs, results=all_results, registry=deps.impl.registry,
                                   used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd)
     if problems and d.action in ("continue", "complete"):
         d = evaluator_mod.evaluate(llm, scope=scope, plan=plan, cycles=cs, results=all_results, limits=limits,
-                                   repositories=repos, feedback=problems)
+                                   repositories=repos, feedback=problems, human_resume=resume)
         problems = evaluator_mod.gate(d, scope=scope, cycles=cs, results=all_results, registry=deps.impl.registry,
                                       used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd)
     run.research_cost_usd = round(run.research_cost_usd + getattr(llm, "spent", 0.0), 6)
@@ -448,7 +454,8 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     cur.status = CycleStatus.COMPLETED
     cur.finished_at = utcnow()
     u2 = usage(deps, run.task_id)
-    cur.budget_after = {"cpu_hours": round(u2.cpu_hours, 4), "api_usd": round(u2.api_usd + cur.cost_usd, 4)}
+    cur.budget_after = {"cpu_hours": round(u2.cpu_hours, 4), "api_usd": round(u2.api_usd + cur.cost_usd, 4),
+                        **({"human_resume": resume} if resume else {})}
     save_cycle(store, cur)
     run.event("research_evaluation", f"cycle {cur.number}: {d.action} ({d.rationale[:200]})")
     _milestone(deps, run.task_id, f"cycle-{cur.cycle_id}",

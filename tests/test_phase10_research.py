@@ -523,3 +523,5 @@ def test_resume_after_a_stop_re_evaluates_the_last_cycle(tmp_path):
     orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
     run = _drive(deps, 20)
     assert run.stage is WorkflowStage.DONE and orchestration.cycles(deps.store, "INU-900")[0].decision.action == "complete"
+    evals = [c[1] for c in llm.calls if c[0] == "ResearchEvaluator"]
+    assert "HUMAN_RESUME" not in evals[0] and evals[-1]["HUMAN_RESUME"]["actor"] == "discord:1001"
