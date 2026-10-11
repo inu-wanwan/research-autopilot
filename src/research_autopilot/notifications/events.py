@@ -45,6 +45,8 @@ class NotificationEvent(BaseModel):
     approval_request_id: str | None = None
     control_task_id: str | None = None  # Phase 10: research run that Stop / Resume buttons act on
     control_actions: list[str] = Field(default_factory=list)  # which buttons ("stop" / "resume") the message offers
+    needs_human: bool = False  # route to approvals: a human must act
+    steps: list[str] = Field(default_factory=list)  # numbered actions until the run resumes
 
     def title(self) -> str:
         return f"[Research Autopilot] {self.flow_name}: {self.kind.value}"

@@ -209,6 +209,8 @@ class ResearchPlan(BaseModel):
     models: list[str] = Field(default_factory=list)
     cost_usd: float = 0.0
     content_hash: str = ""
+    source_cycle_id: str | None = None   # scope_change: the cycle (and its evaluation number) that proposed it
+    source_evaluation: int = 0
 
     def compute_hash(self) -> str:
         """What a human approves: the scope, the plan and the source text version (not ids / bookkeeping)."""
@@ -240,6 +242,8 @@ class EvaluationDecision(BaseModel):
     proposed_budget: BudgetItem | None = None                                # scope_change: new budget limits
     conclusion: str = ""                                                     # complete / stop: what the results show
     gate_problems: list[str] = Field(default_factory=list)     # deterministic scope / budget gate findings
+    # why a stop was decided (selects the human's resume steps): "" (evaluator) / "no_progress" / "failure"
+    stop_kind: str = ""
 
 
 class CriterionAssessment(BaseModel):
@@ -292,15 +296,23 @@ class ResearchCycle(BaseModel):
     cost_usd: float = 0.0
     started_at: datetime = Field(default_factory=utcnow)
     finished_at: datetime | None = None
+    evaluations: int = 0              # how often this cycle was evaluated (re-evaluated after a resume / revision)
 
 
 class ResearchControl(BaseModel):
-    """A verified stop / resume request (Discord button of an authorized user, or CLI)."""
+    """A verified stop / resume / cancel request (Discord button of an authorized user, or CLI).
+
+    A control acts on the research run that applied it (``run_id`` / ``execution_run_id`` are set then); a control
+    created before that run started, or one that had nothing to act on (``ignored``), never pauses a later run.
+    """
 
     control_id: str = Field(default_factory=new_id)
     task_id: str
-    action: Literal["stop", "resume"]
+    action: Literal["stop", "resume", "cancel"]
     actor: str
     channel: str
     at: datetime = Field(default_factory=utcnow)
     applied: bool = False
+    run_id: str | None = None             # WorkflowRun the control was applied to
+    execution_run_id: str | None = None   # its execution run at that time
+    ignored: bool = False                 # applied without effect (e.g. Stop on an already stopped run)

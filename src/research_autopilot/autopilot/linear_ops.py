@@ -75,6 +75,25 @@ class LinearOps:
         self.linear.set_state(issue.id, state_id)
         issue.state_name, issue.state_type = name, state_type
 
+    def cancel_by_human(self, issue, actor: str, reason: str) -> None:
+        """Move an issue to Canceled for a verified human Cancel (Discord button of an authorized user / CLI).
+
+        ``set_state`` refuses 'Canceled' on purpose (Autopilot never rejects on its own); only the research
+        Cancel control calls this, with the verified actor, and every write is audited like any other.
+        """
+        if not actor or actor.startswith("auto:"):
+            raise WriteRefused("Canceled requires a verified human actor")
+        self._guard(issue)
+        if issue.state_name == REJECTED or issue.state_type in ("completed", "canceled"):
+            return
+        states = self.linear.team_states(issue.team_id)
+        if REJECTED not in states:
+            raise WriteRefused(f"Linear workflow state {REJECTED!r} does not exist")
+        state_id, state_type = states[REJECTED]
+        self.store.record_linear_write(issue.identifier, REJECTED, f"human cancel by {actor}: {reason}"[:500])
+        self.linear.set_state(issue.id, state_id)
+        issue.state_name, issue.state_type = REJECTED, state_type
+
     def comment(self, issue, body: str) -> str:
         self._guard(issue)
         return self.linear.create_comment(issue.id, body)

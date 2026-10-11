@@ -104,6 +104,11 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
             if req.kind in (ApprovalKind.EXTERNAL_CODE, ApprovalKind.EXTERNAL_LICENSE):
                 continue  # Phase 9 requests are decided by external.grants (not tied to a Linear state)
             summary["approvals"].append(_check_approval(deps, req))
+        if deps.research is not None and not deps.settings.dry_run:
+            from research_autopilot.research import orchestration
+            # a research-scope request that went stale / expired just now is re-planned in this same poll
+            if replanned := orchestration.replan_stale(deps):
+                summary.setdefault("research", {}).setdefault("replanned", []).extend(replanned)
         # Recovery-first: persisted parents may have newly-ready children even
         # when no fresh Notion checkbox is present after a process restart.
         advance_parents(deps)
@@ -118,6 +123,17 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 if not page.run_requested or not page.linear_issue_id or (only_task and page.linear_issue_id != only_task):
                     continue
                 bundle = deps.plan.manager.load(page.linear_issue_id)
+                if deps.research is not None and not deps.settings.dry_run:
+                    # Phase 10: a research objective keeps one WorkflowRun; Run Autopilot restarts a stopped one
+                    from research_autopilot.research import orchestration
+                    adopted = orchestration.adopt_existing(deps, page.linear_issue_id)
+                    if adopted is not None:
+                        deps.notion_writer.project_execution(page.page_id, status="Running", acknowledge=True)
+                        if adopted is not True:
+                            summary["discovered"].append(page.linear_issue_id)
+                            active.append(adopted)
+                            break
+                        continue
                 if page.child_page_ids:
                     if deps.settings.dry_run:
                         from research_autopilot.autopilot.dag import discover_and_build
@@ -263,6 +279,7 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
         before = run.stage
         try:
             fn(deps, run)
+            run.attempts = 0  # max_stage_attempts counts consecutive failures, not failures over the run's life
         except WriteRefused as exc:
             _block(deps, run, f"write refused: {exc}")
         except Exception as exc:  # noqa: BLE001 - transient or unexpected: retry, then dead-letter
@@ -427,6 +444,8 @@ def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
     d = rec.decision
     run.plan_run_id, run.plan_id = rec.plan_run_id, d.plan_id
     run.plan_version += 1
+    if seed is not None and d.status is DecisionStatus.READY:
+        run.dod_claim = {**run.dod_claim, "consumed": True}  # a transient failure keeps the seed for the retry
     if seed is not None and d.status is DecisionStatus.READY and (kept := _claim_rejected(rec, run.dod_claim)):
         _block(deps, run, "Definition of Done infeasibility not accepted on re-planning (items kept unchanged: "
                           f"{', '.join(kept)}); a human decides. Claim: {run.dod_claim['evidence'][:300]}")
@@ -462,6 +481,8 @@ def _continue(deps: AutopilotDeps, run: WorkflowRun) -> bool:
     except _Stop as stop:
         run.event("replan", f"plan not reused ({stop.message[:200]}); planning again")
         run.continue_from = None
+        if issue.state_type == "started":  # Phase 2 plans only a not-started task: undo the In Progress above
+            deps.ops.set_state(issue, "Todo", "plan not reused: planning again")
         return False
     run.plan_run_id, run.plan_id = c["plan_run_id"], c.get("plan_id")
     run.plan_version += 1
@@ -497,12 +518,14 @@ def _replan_for_dod(deps: AutopilotDeps, run: WorkflowRun, m) -> None:
     """Send the plan back to Phase 2 once with the infeasibility claim (docs/phase_specs/phase3.md)."""
     plan = _plan_of(deps, run.plan_run_id, run.plan_id)
     statements = {c.id: c.statement for c in (plan.definition_of_done if plan else [])}
-    run.dod_replans += 1
-    run.dod_claim = {**m.dod_infeasible, "plan_run_id": run.plan_run_id, "plan_id": run.plan_id,
-                     "statements": {i: statements.get(i, "") for i in m.dod_infeasible["criteria"]}}
+    # Linear first: if this write fails the run is retried with its claim / counter untouched
     issue = deps.linear.get_issue(run.task_id)
     deps.ops.set_state(issue, "Todo", f"re-planning: Definition of Done {', '.join(m.dod_infeasible['criteria'])} "
                                       "reported infeasible")  # Phase 2 starts only from an approved, not-started task
+    run.dod_replans += 1
+    run.dod_claim = {**m.dod_infeasible, "plan_run_id": run.plan_run_id, "plan_id": run.plan_id,
+                     "statements": {i: statements.get(i, "") for i in m.dod_infeasible["criteria"]},
+                     "consumed": False}
     run.stage = WorkflowStage.PLANNING
     run.event("dod_infeasible", f"{m.dod_infeasible['by']} reported {', '.join(m.dod_infeasible['criteria'])} "
                                 f"infeasible; re-planning once: {m.dod_infeasible['evidence'][:200]}")
@@ -515,8 +538,8 @@ def _plan_of(deps: AutopilotDeps, plan_run_id: str | None, plan_id: str | None):
 
 def _dod_seed(deps: AutopilotDeps, run: WorkflowRun):
     c = run.dod_claim
-    if not c or run.plan_run_id != c["plan_run_id"]:
-        return None  # no claim, or the re-plan already happened
+    if not c or c.get("consumed") or ("consumed" not in c and run.plan_run_id != c["plan_run_id"]):
+        return None  # no claim, or the re-plan already produced a READY plan (older records: a new plan run)
     plan = _plan_of(deps, c["plan_run_id"], c["plan_id"])
     if plan is None:
         return None

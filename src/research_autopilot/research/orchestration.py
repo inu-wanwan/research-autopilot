@@ -43,37 +43,88 @@ def controls(store, task_id: str) -> list[ResearchControl]:
     return [ResearchControl.model_validate(r) for r in store.find(db.research_controls, task_id=task_id)]
 
 
-def paused(store, task_id: str) -> bool:
-    cs = controls(store, task_id)
+def research_run(store, task_id: str) -> WorkflowRun | None:
+    """The research objective's own (top-level) WorkflowRun: the newest one."""
+    runs = [WorkflowRun.model_validate(r) for r in store.find(db.workflow_runs, task_id=task_id)]
+    runs = [r for r in runs if not r.parent_task_id and not r.chain_depth]
+    return max(runs, key=lambda r: r.created_at) if runs else None
+
+
+def _effective(cs: list[ResearchControl], run: WorkflowRun | None) -> list[ResearchControl]:
+    """Stop / resume controls that act on ``run``: not ignored, not created before the run started, not applied
+    to another run (a late Stop from an old message never pauses a later run)."""
+    cs = [c for c in cs if c.action in ("stop", "resume") and not c.ignored]
+    if run is not None:
+        cs = [c for c in cs if c.at >= run.created_at and c.run_id in (None, run.run_id)]
+    return cs
+
+
+def paused(store, task_id: str, run: WorkflowRun | None = None) -> bool:
+    cs = _effective(controls(store, task_id), run if run is not None else research_run(store, task_id))
     return bool(cs) and cs[-1].action == "stop"
 
 
-def _mark_applied(store, c: ResearchControl, note: str) -> None:
+def _last_control(store, task_id: str, run: WorkflowRun | None) -> ResearchControl | None:
+    cs = _effective(controls(store, task_id), run)
+    return cs[-1] if cs else None
+
+
+def _mark_applied(store, c: ResearchControl, note: str, run: WorkflowRun | None = None, *,
+                  ignored: bool = False) -> None:
     c.applied = True
+    c.ignored = c.ignored or ignored
+    if run is not None:
+        c.run_id, c.execution_run_id = run.run_id, run.execution_run_id
     store.put(db.research_controls, c.control_id, {**c.model_dump(mode="json"), "note": note[:300]}, task_id=c.task_id)
 
 
-def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl) -> None:
-    """Resume of a blocked research run = a new explicit start (the blocked execution record stays terminal)."""
-    page = deps.plan.manager.load(run.task_id).page
-    key = f"resume:{control.control_id}"
-    req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id, source="research_resume",
-                           specification_hash="resume", status=ExecutionStatus.ACCEPTED, request_key=key)
+def _request_by_key(store, task_id: str, key: str) -> ExecutionRequest | None:
+    raw = next((x for x in store.find(db.execution_requests, linear_issue_id=task_id) if x.get("request_key") == key),
+               None)
+    return ExecutionRequest.model_validate(raw) if raw else None
+
+
+def _keyed_execution(deps, run_task_id: str, page_id: str, key: str, source: str, spec_hash: str,
+                     metadata: dict) -> tuple[ExecutionRequest, ExecutionRun]:
+    """An idempotent (request, execution run) pair: a request already stored under ``key`` (a crash after its insert,
+    or the same control processed twice) is adopted with its execution run instead of being dropped."""
+    req = ExecutionRequest(notion_task_id=page_id, linear_issue_id=run_task_id, source=source,
+                           specification_hash=spec_hash, status=ExecutionStatus.ACCEPTED, request_key=key)
     if not deps.store.insert_new(db.execution_requests, req.request_id, req.model_dump(mode="json"),
-                                 notion_task_id=page.page_id, linear_issue_id=run.task_id, status=req.status.value,
+                                 notion_task_id=page_id, linear_issue_id=run_task_id, status=req.status.value,
                                  dedupe_key=key):
-        return
-    er = ExecutionRun(request_id=req.request_id, task_id=run.task_id, notion_task_id=page.page_id,
-                      retry_metadata={"resumed_by": control.actor, "previous_execution_run_id": run.execution_run_id})
+        req = _request_by_key(deps.store, run_task_id, key)
+        if req is None:
+            raise RuntimeError(f"execution request {key} exists but cannot be read")
+        raw = next((x for x in deps.store.find(db.execution_runs, request_id=req.request_id)), None)
+        if raw:
+            return req, ExecutionRun.model_validate(raw)
+    er = ExecutionRun(request_id=req.request_id, task_id=run_task_id, notion_task_id=page_id, retry_metadata=metadata)
     deps.store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=req.request_id,
-                          task_id=run.task_id, status=er.status.value)
-    run.execution_run_id, run.execution_request_id = er.execution_run_id, req.request_id
+                          task_id=run_task_id, status=er.status.value)
+    return req, er
+
+
+def _restart_blocked(deps, run: WorkflowRun, control: ResearchControl, *, replan: bool = False) -> None:
+    """Resume of a blocked research run = a new explicit start (the blocked execution record stays terminal).
+
+    ``replan``: the spec was edited (automatic re-plan) -- the stopped cycle is not re-evaluated; the edited spec
+    makes the authorization stale, so a new plan version is drafted for approval."""
+    page = deps.plan.manager.load(run.task_id).page
+    req, er = _keyed_execution(deps, run.task_id, page.page_id, f"resume:{control.control_id}", "research_resume",
+                               "resume", {"resumed_by": control.actor,
+                                          "previous_execution_run_id": run.execution_run_id})
+    if run.execution_run_id != er.execution_run_id:
+        run.execution_run_id, run.execution_request_id = er.execution_run_id, req.request_id
     run.stage, run.blocked_reason, run.waiting_for = WorkflowStage.DISCOVERED, None, None
+    run.attempts = 0
     run.event("resumed", f"blocked research restarted by {control.actor}: authorization and plan are re-checked")
+    if replan:
+        return
     auth = rw.research_authorization(deps.store, run.task_id)
     cs = cycles(deps.store, run.task_id)
     if auth is not None and cs and cs[-1].authorization_id == auth.authorization_id and cs[-1].decision \
-            and cs[-1].decision.action == "stop":
+            and cs[-1].decision.action in ("stop", "scope_change") and cs[-1].status is CycleStatus.COMPLETED:
         last = cs[-1]  # a human resumed a stopped research: the last cycle is evaluated again
         if _retry_blocked_cycle(deps, run, last, auth, control):
             return
@@ -133,31 +184,29 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     # keyed on the ParentRun sequence, not the counted attempt: an uncounted retry must not collide with the next one
     key = f"research-cycle:{cycle.cycle_id}:retry:{attempt}" if len(previous) == attempt else \
         f"research-cycle:{cycle.cycle_id}:parent:{len(previous) + 1}"
-    req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id,
-                           source="research_cycle_retry", specification_hash=dag.parent_specification_hash,
-                           status=ExecutionStatus.ACCEPTED, request_key=key)
-    if not deps.store.insert_new(db.execution_requests, req.request_id, req.model_dump(mode="json"),
-                                 notion_task_id=page.page_id, linear_issue_id=run.task_id,
-                                 status=req.status.value, dedupe_key=key):
-        return False
-    er = ExecutionRun(request_id=req.request_id, task_id=run.task_id, notion_task_id=page.page_id,
-                      retry_metadata={"research_cycle_id": cycle.cycle_id, "retry": attempt,
-                                      "previous_parent_run_id": old.parent_run_id})
-    deps.store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"),
-                          request_id=req.request_id, task_id=run.task_id, status=er.status.value)
+    # a key collision (the same Resume processed again after a crash) adopts the stored request / run / parent
+    req, er = _keyed_execution(deps, run.task_id, page.page_id, key, "research_cycle_retry",
+                               dag.parent_specification_hash,
+                               {"research_cycle_id": cycle.cycle_id, "retry": attempt,
+                                "previous_parent_run_id": old.parent_run_id})
+    adopted = next((ParentRun.model_validate(x) for x in deps.store.find(
+        db.parent_runs, parent_execution_run_id=er.execution_run_id)), None)
     for task_id in failed:
         # a blocked/failed child keeps its Linear "In Progress"; its execution is terminal, so put it back to Todo
         # or the Phase 2 start gate refuses the retry as "already In Progress" (a continued child skips Phase 2)
         issue = deps.linear.get_issue(task_id)
         if issue.state_type == "started" and task_id not in carry:
             deps.ops.set_state(issue, "Todo", f"research cycle {cycle.number} retry {attempt}")
-    parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
-                       parent_execution_run_id=er.execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash,
-                       research_cycle_id=cycle.cycle_id, carry_over=carry,
-                       completion_reasons=[f"retry {attempt} after: {', '.join(failed)}"
-                                           + "".join(f"; {t} continues at {c['stage']}" for t, c in carry.items())])
-    _save_parent(deps, parent)
-    _start_parent(deps, parent, er, None)
+    if adopted is not None:
+        parent = adopted
+    else:
+        parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
+                           parent_execution_run_id=er.execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash,
+                           research_cycle_id=cycle.cycle_id, carry_over=carry,
+                           completion_reasons=[f"retry {attempt} after: {', '.join(failed)}"
+                                               + "".join(f"; {t} continues at {c['stage']}" for t, c in carry.items())])
+        _save_parent(deps, parent)
+        _start_parent(deps, parent, er, None)
     cycle.parent_run_id = parent.parent_run_id
     cycle.status = CycleStatus.RUNNING
     cycle.results = []
@@ -170,8 +219,8 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
         "cycle_retry": attempt}
     cycle.decision = None
     save_cycle(deps.store, cycle)
-    schedule_ready(deps, parent)
     run.stage = WorkflowStage.RESEARCHING
+    schedule_ready(deps, parent, research_run=run)
     run.event("resumed", f"cycle {cycle.number} child DAG retry {attempt}/{max_retries}: {', '.join(failed)}")
     return True
 
@@ -193,7 +242,8 @@ def _carry_over(deps, old: ParentRun, task_id: str) -> dict | None:
         done = next((m for m in manifests if m.state is RunState.COMPLETED and m.implementation_commit), None)
         if done and raw.get("experiment_run_ids"):
             e = deps.store.get_experiment(raw["experiment_run_ids"][-1])
-            if e and e.state is ExperimentState.BLOCKED and ENVIRONMENT_FAILURE in (e.block_reason or ""):
+            if e and e.state is ExperimentState.BLOCKED and ENVIRONMENT_FAILURE in (e.block_reason or "") \
+                    and not _phase4_rerun_used(deps, old, task_id):
                 return {**base, "stage": "experimenting", "phase3_run_id": done.phase3_run_id,
                         "commit": done.implementation_commit}
         if manifests and not raw.get("experiment_run_ids") and continuable(manifests[0]):
@@ -201,6 +251,13 @@ def _carry_over(deps, old: ParentRun, task_id: str) -> dict | None:
     except Exception:  # an unreadable record never blocks the retry: plan again
         return None
     return None
+
+
+def _phase4_rerun_used(deps, old: ParentRun, task_id: str) -> bool:
+    """At most one Phase-4-only rerun per task and cycle: a second environment failure is planned again."""
+    parents = [ParentRun.model_validate(x) for x in deps.store.find(db.parent_runs)
+               if old.research_cycle_id and x.get("research_cycle_id") == old.research_cycle_id] or [old]
+    return any((p.carry_over.get(task_id) or {}).get("stage") == "experimenting" for p in parents)
 
 
 def _first_parent(parents: list[ParentRun]) -> ParentRun:
@@ -244,47 +301,221 @@ def request_control(store, task_id: str, action: str, actor: str, channel: str) 
 
 
 def tick(deps) -> dict:
-    """Projection retries, stop / resume requests and re-planning of stale scope requests."""
-    from research_autopilot.autopilot.engine import _runs, _save
-    out = {"projections": rw.retry_projections(deps), "controls": [], "replanned": []}
-    runs = [r for r in _runs(deps) if r.stage not in (WorkflowStage.DONE, WorkflowStage.CANCELLED,
-                                                      WorkflowStage.DEAD_LETTER)]
+    """Projection retries, stop / resume / cancel requests, automatic re-planning after a spec edit and re-planning
+    of stale scope requests.  One run's failure never aborts the poll for the others."""
+    from research_autopilot.autopilot.engine import _runs
+    out = {"projections": rw.retry_projections(deps), "controls": [], "replanned": [], "errors": []}
+    runs = [r for r in _runs(deps) if r.stage not in (WorkflowStage.DONE, WorkflowStage.CANCELLED)]
     for run in runs:
         if run.parent_task_id or run.chain_depth:
             continue
-        pending = [c for c in controls(deps.store, run.task_id) if not c.applied]
-        if pending and pending[-1].action == "resume" and run.stage is WorkflowStage.BLOCKED and run.task_id \
-                and (rw.latest_plan(deps.store, run.task_id) is not None):
-            _restart_blocked(deps, run, pending[-1])
-            _save(deps, run)
-            out["controls"].append(f"{run.task_id}: blocked research restarted")
-        for c in pending:
-            _mark_applied(deps.store, c, f"seen at stage {run.stage.value}")
-        stop = paused(deps.store, run.task_id)
-        if stop and run.stage is WorkflowStage.RESEARCHING:
-            run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
-            run.event("paused", "stopped by the user: no new work starts; running jobs finish")
-            _save(deps, run)
-            # one message per Stop (a constant key would swallow every later pause of the same task)
-            _milestone(deps, run.task_id, f"paused:{controls(deps.store, run.task_id)[-1].control_id}", ["Research paused by the user (running jobs finish)."],
-                       kind=_ev().UNRECOVERABLE_ERROR, buttons="resume")
-            out["controls"].append(f"{run.task_id}: paused")
-        elif not stop and run.stage is WorkflowStage.PAUSED:
-            run.stage, run.resume_stage = WorkflowStage.RESEARCHING, None
-            run.event("resumed", "resumed by the user; authorization and budget are re-checked")
-            _save(deps, run)
-            _milestone(deps, run.task_id, "resumed", ["Research resumed; authorization and budget re-checked."],
-                       kind=_ev().PHASE_TRANSITION, buttons=None)
-            out["controls"].append(f"{run.task_id}: resumed")
-        if run.stage in (WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.AWAITING_APPROVAL) and run.waiting_for:
-            raw = deps.store.get(db.approval_requests, run.waiting_for)
-            if raw and raw.get("kind") == "research_scope" and raw.get("status") in (
-                    ApprovalStatus.STALE.value, ApprovalStatus.EXPIRED.value):
-                run.stage, run.waiting_for = WorkflowStage.DISCOVERED, None  # present a revised version
-                run.event("replan", f"scope request {raw['status']}: a new plan version is drafted")
-                _save(deps, run)
-                out["replanned"].append(run.task_id)
+        try:
+            _tick_run(deps, run, out)
+        except Exception as exc:  # noqa: BLE001 - reported; the next poll retries this run
+            out["errors"].append(f"{run.task_id}: {type(exc).__name__}: {str(exc)[:200]}")
+    if not out["errors"]:
+        del out["errors"]
     return out
+
+
+def _tick_run(deps, run: WorkflowRun, out: dict) -> None:
+    from research_autopilot.autopilot.engine import _save
+    store = deps.store
+    is_research = rw.latest_plan(store, run.task_id) is not None
+    pending = [c for c in controls(store, run.task_id) if not c.applied]
+    for c in [c for c in pending if c.at < run.created_at]:  # pressed on a message of an earlier run
+        _mark_applied(store, c, "created before this research run started", run, ignored=True)
+    pending = [c for c in pending if c.at >= run.created_at]
+    cancel = next((c for c in pending if c.action == "cancel"), None)
+    if cancel is not None and is_research:
+        cancel_research(deps, run, cancel)
+        for c in pending:
+            _mark_applied(store, c, f"research cancelled by {cancel.actor}", run, ignored=c is not cancel)
+        out["controls"].append(f"{run.task_id}: cancelled")
+        return
+    stopped = run.stage in (WorkflowStage.BLOCKED, WorkflowStage.DEAD_LETTER)
+    acting = [c for c in pending if c.action in ("stop", "resume")]
+    if acting and acting[-1].action == "resume" and stopped and is_research:
+        _restart_blocked(deps, run, acting[-1])
+        _save(deps, run)
+        out["controls"].append(f"{run.task_id}: blocked research restarted")
+    for c in pending:
+        # a Stop on a stopped run has nothing to stop: it must not pause the run after its next Resume
+        _mark_applied(store, c, f"seen at stage {run.stage.value}", run,
+                      ignored=c.action == "cancel" or (c.action == "stop" and stopped))
+    if run.stage is WorkflowStage.DEAD_LETTER:
+        return
+    if run.stage is WorkflowStage.BLOCKED and is_research and _auto_replan(deps, run):
+        _save(deps, run)
+        out["replanned"].append(run.task_id)
+        return
+    stop = paused(store, run.task_id, run)
+    if stop and run.stage is WorkflowStage.RESEARCHING:
+        run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
+        run.event("paused", "stopped by the user: no new work starts; running jobs finish")
+        _save(deps, run)
+        last = _last_control(store, run.task_id, run)
+        # one message per Stop (a constant key would swallow every later pause of the same task)
+        _milestone(deps, run.task_id, f"paused:{last.control_id if last else run.execution_run_id}",
+                   [f"Research paused by {last.actor if last else 'the user'}: no new work starts; running jobs "
+                    "finish.", _page_line(deps, run.task_id)],
+                   kind=_ev().UNRECOVERABLE_ERROR, buttons=["resume", "cancel"], needs_human=True,
+                   steps=STEPS["paused"])
+        out["controls"].append(f"{run.task_id}: paused")
+    elif not stop and run.stage is WorkflowStage.PAUSED:
+        run.stage, run.resume_stage = WorkflowStage.RESEARCHING, None
+        run.event("resumed", "resumed by the user; authorization and budget are re-checked")
+        _save(deps, run)
+        last = _last_control(store, run.task_id, run)
+        _milestone(deps, run.task_id, f"resumed:{last.control_id if last else run.execution_run_id}",
+                   ["Research resumed; authorization and budget re-checked."],
+                   kind=_ev().PHASE_TRANSITION, buttons=None)
+        out["controls"].append(f"{run.task_id}: resumed")
+    if replan_stale_run(deps, run):
+        out["replanned"].append(run.task_id)
+
+
+def replan_stale(deps) -> list[str]:
+    """Research-scope requests that went stale / expired in this poll: draft the revised version now."""
+    from research_autopilot.autopilot.engine import _runs
+    done = []
+    for run in _runs(deps):
+        if run.parent_task_id or run.chain_depth:
+            continue
+        try:
+            if replan_stale_run(deps, run):
+                done.append(run.task_id)
+        except Exception:  # noqa: BLE001 - the next poll's tick retries
+            continue
+    return done
+
+
+def replan_stale_run(deps, run: WorkflowRun) -> bool:
+    from research_autopilot.autopilot.engine import _save
+    if run.stage not in (WorkflowStage.AWAITING_AUTHORIZATION, WorkflowStage.AWAITING_APPROVAL) or not run.waiting_for:
+        return False
+    raw = deps.store.get(db.approval_requests, run.waiting_for)
+    if not (raw and raw.get("kind") == "research_scope" and raw.get("status") in (
+            ApprovalStatus.STALE.value, ApprovalStatus.EXPIRED.value)):
+        return False
+    # an initial plan is drafted again; a scope change is decided by the research step (re-proposed or stopped)
+    run.stage, run.waiting_for = WorkflowStage.DISCOVERED, None
+    run.event("replan", f"scope request {raw['status']}: a new plan version is drafted")
+    _save(deps, run)
+    return True
+
+
+def _auto_replan(deps, run: WorkflowRun) -> bool:
+    """A research blocked on its plan (needs input / invalid) or stopped re-plans by itself once the Notion spec
+    was edited: the spec hash must differ from the plan's and be the same on two consecutive polls (the human may
+    still be typing).  Resume stays the fallback when the edit is not detected."""
+    plan = rw.latest_plan(deps.store, run.task_id)
+    if plan is None:
+        return False
+    if plan.status not in (PlanStatus.NEEDS_INPUT, PlanStatus.INVALID) \
+            and not (run.blocked_reason or "").startswith("research stopped"):
+        return False
+    from research_autopilot.research import scope as scope_mod
+    spec = deps.plan.manager.load(run.task_id).spec
+    if spec is None or not scope_mod.is_research_objective(spec):
+        return False
+    h = scope_mod.spec_hash(spec)
+    raw = deps.store.get(db.research_plans, plan.plan_id) or {}
+    if h == plan.spec_hash:
+        return False
+    if raw.get("spec_edit_seen") != h:  # first sighting: wait one poll for the edit to settle
+        raw["spec_edit_seen"] = h
+        deps.store.put(db.research_plans, plan.plan_id, raw, task_id=raw["task_id"], version=raw["version"],
+                       status=raw["status"])
+        return False
+    control = request_control(deps.store, run.task_id, "resume", "auto:spec-edit", "auto")
+    _restart_blocked(deps, run, control, replan=True)
+    _mark_applied(deps.store, control, "Notion specification edited: re-planning", run)
+    run.event("replan", "the Notion specification was edited: a new plan version is drafted")
+    return True
+
+
+def adopt_existing(deps, task_id: str, actor: str = "notion:run-autopilot") -> WorkflowRun | bool | None:
+    """Run Autopilot on a research objective that already has a research run: never a second WorkflowRun.
+
+    Returns the restarted run (it was blocked / dead-lettered), True when the existing run is still going (the
+    request is only acknowledged), or None when there is nothing to adopt."""
+    from research_autopilot.autopilot.engine import _save
+    run = research_run(deps.store, task_id)
+    if run is None or run.stage in (WorkflowStage.DONE, WorkflowStage.CANCELLED) \
+            or rw.latest_plan(deps.store, task_id) is None:
+        return None
+    if run.stage not in (WorkflowStage.BLOCKED, WorkflowStage.DEAD_LETTER):
+        return True
+    control = request_control(deps.store, task_id, "resume", actor, "notion")
+    _restart_blocked(deps, run, control)
+    _mark_applied(deps.store, control, "Run Autopilot on a stopped research: restarted", run)
+    _save(deps, run)
+    return run
+
+
+def cancel_research(deps, run: WorkflowRun, control: ResearchControl) -> None:
+    """Verified human Cancel: the research run and its current cycle stop for good and Linear shows Canceled for the
+    research objective and every unfinished child (the only path that may write Canceled; audited)."""
+    from research_autopilot.autopilot.dag_runtime import _sync_parent_status
+    from research_autopilot.autopilot.engine import TERMINAL, _runs
+    store = deps.store
+    reason = f"cancelled by {control.actor} ({control.channel})"
+    cs = cycles(store, run.task_id)
+    cycle_ids = {c.cycle_id for c in cs}
+    for raw in store.find(db.parent_runs, parent_task_id=run.task_id):
+        parent = ParentRun.model_validate(raw)
+        if parent.status in (ExecutionStatus.ACCEPTED, ExecutionStatus.RUNNING, ExecutionStatus.AWAITING_APPROVAL):
+            _sync_parent_status(deps, parent, ExecutionStatus.CANCELED, reason, terminal=True)
+    children = [r for r in _runs(deps) if r.run_id != run.run_id
+                and (r.research_cycle_id in cycle_ids or r.parent_task_id == run.task_id)]
+    for child in children:
+        if child.stage in TERMINAL:
+            continue
+        child.stage, child.waiting_for = WorkflowStage.CANCELLED, None
+        child.event("cancelled", f"research {run.task_id} {reason}")
+        _save_cancelled(deps, child)
+    linear_done, refused = [], []
+    for task_id in [run.task_id, *dict.fromkeys(t for c in cs for t in c.child_task_ids.values())]:
+        try:
+            issue = deps.linear.get_issue(task_id)
+            if issue.state_type in ("completed", "canceled"):
+                continue
+            deps.ops.cancel_by_human(issue, control.actor, f"research {run.task_id} cancelled")
+            linear_done.append(task_id)
+        except Exception as exc:  # noqa: BLE001 - recorded; the run is cancelled regardless
+            refused.append(f"{task_id}: {type(exc).__name__}: {str(exc)[:120]}")
+    run.stage, run.waiting_for, run.resume_stage = WorkflowStage.CANCELLED, None, None
+    run.blocked_reason = f"research {reason}"
+    run.event("cancelled", f"{reason}; Linear Canceled: {', '.join(linear_done) or '-'}"
+                           + (f"; not written: {'; '.join(refused)}" if refused else ""))
+    _save_cancelled(deps, run)
+    _milestone(deps, run.task_id, f"cancelled:{control.control_id}",
+               [f"Research cancelled by {control.actor}.",
+                f"Linear Canceled: {', '.join(linear_done) or '-'}",
+                *([f"Not written (do it by hand): {'; '.join(refused)}"] if refused else []),
+                _page_line(deps, run.task_id)], kind=_ev().PHASE_TRANSITION, buttons=None)
+
+
+def _save_cancelled(deps, run: WorkflowRun) -> None:
+    """Save a cancelled run; an execution that already ended (Failed / Completed) stays as recorded."""
+    from research_autopilot.autopilot.engine import _save
+    rec = deps.store.get(db.execution_runs, run.execution_run_id) if run.execution_run_id else None
+    if rec and rec.get("status") in (ExecutionStatus.FAILED.value, ExecutionStatus.COMPLETED.value,
+                                     ExecutionStatus.CANCELED.value):
+        run.updated_at = utcnow()
+        deps.store.put(db.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id,
+                       stage=run.stage.value)
+        return
+    _save(deps, run)
+
+
+def _page_line(deps, task_id: str) -> str:
+    try:
+        page = deps.plan.manager.load(task_id).page
+        return f"Task: {page.url}" if page and page.url else ""
+    except Exception:  # noqa: BLE001 - a link is optional
+        return ""
 
 
 # ---------------------------------------------------------------- main step
@@ -301,18 +532,17 @@ def step(deps, run: WorkflowRun) -> None:
             run.stage = WorkflowStage.DISCOVERED  # re-plan from the edited spec -> new version for approval
             run.event("replan", problems[0])
             return
-        _finish(deps, run, bundle, auth, "stopped", "; ".join(problems))
+        _finish(deps, run, bundle, auth, "stopped", "; ".join(problems), why="authorization")
         return
     run.authorization_id = auth.authorization_id
-    if paused(store, run.task_id):
+    if paused(store, run.task_id, run):
         run.stage, run.resume_stage = WorkflowStage.PAUSED, WorkflowStage.RESEARCHING.value
         return
     over = budget_problems(deps, run, auth)
     if over:
-        _finish(deps, run, bundle, auth, "stopped", "; ".join(over), budget=True)
+        _finish(deps, run, bundle, auth, "stopped", "; ".join(over), budget=True, why="budget")
         return
     cs = [c for c in cycles(store, run.task_id)]
-    cur = cs[-1] if cs else None
     plan = rw.get_plan(store, auth.plan_id)
     try:
         _advance_cycles(deps, run, bundle, auth, plan, cs)
@@ -326,10 +556,9 @@ def _advance_cycles(deps, run, bundle, auth, plan, cs) -> None:
     if cur is None:
         _start_cycle(deps, run, bundle, auth, 1, plan.tasks, plan.plan_id)
         return
-    if cur.authorization_id != auth.authorization_id and cur.status is CycleStatus.COMPLETED and cur.decision \
-            and cur.decision.action in ("stop", "complete") and not any(c.plan_id == plan.plan_id for c in cs):
-        # a newly approved scope after a stopped research: its plan starts the next cycle
-        _start_cycle(deps, run, bundle, auth, cur.number + 1, plan.tasks, plan.plan_id)
+    if cur.status is CycleStatus.RUNNING and not cur.parent_run_id:
+        # saved before its child DAG was started (a crash / failed creation): finish starting it, never evaluate it
+        _start_cycle(deps, run, bundle, auth, cur.number, cur.tasks, cur.plan_id)
         return
     if cur.status in (CycleStatus.RUNNING, CycleStatus.EVALUATING):
         parent = ParentRun.model_validate(store.get(db.parent_runs, cur.parent_run_id)) if cur.parent_run_id else None
@@ -338,17 +567,79 @@ def _advance_cycles(deps, run, bundle, auth, plan, cs) -> None:
             return  # children still running
         _evaluate(deps, run, bundle, auth, cs)
         return
+    _act(deps, run, bundle, auth, plan, cs)
+
+
+def _act(deps, run, bundle, auth: ResearchAuthorization, plan: ResearchPlan, cs: list[ResearchCycle]) -> None:
+    """Carry out the recorded decision of the last (evaluated) cycle.  Re-entrant: a step that failed half-way
+    (e.g. ``_finish`` raised after the decision was saved) is retried from here on the next poll."""
+    cur = cs[-1]
+    if plan is not None and plan.plan_id not in {c.plan_id for c in cs}:
+        # a newly approved plan no cycle has run yet (scope change, or a re-approved initial plan after a stop /
+        # a superseded scope change): it starts the next cycle, whatever the last decision was
+        _start_cycle(deps, run, bundle, auth, cur.number + 1, plan.tasks, plan.plan_id)
+        return
     d = cur.decision
     if d is None:
         return
     if d.action == "continue":
         _start_cycle(deps, run, bundle, auth, cur.number + 1, d.new_tasks, cur.plan_id)
+    elif d.action in ("complete", "stop"):
+        _finish(deps, run, bundle, auth, "completed" if d.action == "complete" else "stopped",
+                d.conclusion or d.rationale, decision=d, why=d.stop_kind or "evaluation")
     elif d.action == "scope_change":
-        nxt = rw.get_plan(store, cur.next_plan_id) if cur.next_plan_id else None
-        if nxt is not None and nxt.status is PlanStatus.APPROVED and auth.plan_id == nxt.plan_id:
-            _start_cycle(deps, run, bundle, auth, cur.number + 1, nxt.tasks, nxt.plan_id)
-        elif nxt is None or nxt.status in (PlanStatus.REJECTED, PlanStatus.SUPERSEDED):
-            _finish(deps, run, bundle, auth, "stopped", "the proposed scope change was not approved")
+        _act_scope_change(deps, run, bundle, auth, cur, d)
+
+
+def _act_scope_change(deps, run, bundle, auth: ResearchAuthorization, cur: ResearchCycle,
+                      d: EvaluationDecision) -> None:
+    store = deps.store
+    nxt = rw.get_plan(store, cur.next_plan_id) if cur.next_plan_id else None
+    if nxt is None:  # the proposal failed before it was linked to the cycle: propose (or adopt) it again
+        _propose_scope_change(deps, run, bundle, auth, cur, d)
+        return
+    if nxt.status in (PlanStatus.PENDING_APPROVAL, PlanStatus.DRAFT):
+        raw = store.get(db.approval_requests, nxt.approval_request_id) if nxt.approval_request_id else None
+        status = (raw or {}).get("status")
+        if nxt.status is PlanStatus.DRAFT or raw is None:
+            _propose_scope_change(deps, run, bundle, auth, cur, d)  # adopts the drafted plan, requests approval
+        elif status == ApprovalStatus.PENDING.value:
+            _wait_for(run, nxt)
+        else:
+            _finish(deps, run, bundle, auth, "stopped", f"the proposed scope change v{nxt.version} {status} without "
+                    "a decision; the research stays within the approved scope", why="scope_expired")
+    elif nxt.status is PlanStatus.REVISION_REQUESTED:
+        # redraft: the Evaluator decides again with the human's comment (a revised proposal or a step in scope)
+        cur.status, cur.results, cur.next_plan_id = CycleStatus.EVALUATING, [], None
+        cur.budget_after = {**cur.budget_after, "human_resume": {
+            "actor": "approver", "at": utcnow().isoformat(),
+            "note": f"the human requested a revision of the proposed scope change v{nxt.version}: "
+                    f"{nxt.revision_comment or '(no comment)'}. Revise the proposal accordingly or continue inside "
+                    "the approved scope.",
+            "previous_decision": d.rationale[:600]}}
+        save_cycle(store, cur)
+        run.event("revision", f"scope change v{nxt.version}: revision requested; cycle {cur.number} is re-evaluated")
+        _evaluate(deps, run, bundle, auth, cycles(store, run.task_id))
+    elif nxt.status is PlanStatus.REJECTED:
+        _finish(deps, run, bundle, auth, "stopped", f"the proposed scope change v{nxt.version} was rejected; the "
+                f"research stays within the approved scope v{auth.version}", why="scope_rejected")
+    else:  # superseded (or approved and superseded again): follow the newest version if it waits for a decision
+        latest = rw.latest_plan(store, run.task_id)
+        if latest is not None and latest.status is PlanStatus.PENDING_APPROVAL and latest.approval_request_id \
+                and (store.get(db.approval_requests, latest.approval_request_id) or {}).get("status") \
+                == ApprovalStatus.PENDING.value:
+            _wait_for(run, latest)
+        else:
+            _finish(deps, run, bundle, auth, "stopped", f"the proposed scope change v{nxt.version} was not approved "
+                    f"({nxt.status.value})", why="scope_rejected")
+
+
+def _wait_for(run: WorkflowRun, plan: ResearchPlan) -> None:
+    run.stage, run.waiting_for = WorkflowStage.AWAITING_APPROVAL, plan.approval_request_id
+    run.resume_stage = WorkflowStage.RESEARCHING.value
+    if plan.approval_request_id not in run.approval_request_ids:
+        run.approval_request_ids.append(plan.approval_request_id)
+    run.event("approval", f"waiting for the decision on plan v{plan.version}")
 
 
 # ---------------------------------------------------------------- budget
@@ -382,10 +673,14 @@ def _start_cycle(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, nu
     from research_autopilot.autopilot.dag_runtime import _save_dag, _save_parent, _start_parent, schedule_ready
     store = deps.store
     a = (auth.scope or {}).get("autonomy") or {}
-    if number > int(a.get("max_cycles", 5)):
-        _finish(deps, run, bundle, auth, "stopped", f"the approved maximum of {a.get('max_cycles')} cycles is reached")
+    all_cycles = cycles(store, run.task_id)
+    # max_cycles bounds the cycles of the current authorization: a re-approved scope may run its own cycles
+    in_scope = [c for c in all_cycles if c.authorization_id == auth.authorization_id and c.number < number]
+    if len(in_scope) >= int(a.get("max_cycles", 5)):
+        _finish(deps, run, bundle, auth, "stopped", f"the approved maximum of {a.get('max_cycles')} cycles is reached",
+                why="max_cycles")
         raise _Stop()
-    existing = [c for c in cycles(store, run.task_id) if c.number == number]
+    existing = [c for c in all_cycles if c.number == number]
     cycle = existing[0] if existing else ResearchCycle(
         task_id=run.task_id, authorization_id=auth.authorization_id, authorization_version=auth.version,
         number=number, tasks=tasks, plan_id=plan_id)
@@ -396,6 +691,14 @@ def _start_cycle(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, nu
                                 dedupe_key=f"research:{run.task_id}:{number}", status=cycle.status.value):
             return [c for c in cycles(store, run.task_id) if c.number == number][0]
     if cycle.parent_run_id:
+        return cycle
+    adopted = next((ParentRun.model_validate(x) for x in store.find(db.parent_runs, parent_task_id=run.task_id)
+                    if x.get("research_cycle_id") == cycle.cycle_id), None)
+    if adopted is not None:  # the child DAG was started but not yet linked (a crash in between)
+        cycle.parent_run_id = adopted.parent_run_id
+        save_cycle(store, cycle)
+        schedule_ready(deps, adopted, research_run=run)
+        run.event("research_cycle", f"cycle {number}: adopted its started child DAG {adopted.parent_run_id[:8]}")
         return cycle
     page = bundle.page
     keys = {}
@@ -427,16 +730,12 @@ def _start_cycle(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, nu
                   parent_specification_hash=specification_hash(bundle.spec), dag_hash="", nodes=nodes,
                   status=DAGStatus.VALID)
     dag.dag_hash = dag_hash(dag)
-    key = f"research-cycle:{cycle.cycle_id}"
-    req = ExecutionRequest(notion_task_id=page.page_id, linear_issue_id=run.task_id, source="research_cycle",
-                           specification_hash=dag.parent_specification_hash, status=ExecutionStatus.ACCEPTED,
-                           request_key=key)
-    store.insert_new(db.execution_requests, req.request_id, req.model_dump(mode="json"), notion_task_id=page.page_id,
-                     linear_issue_id=run.task_id, status=req.status.value, dedupe_key=key)
-    er = ExecutionRun(request_id=req.request_id, task_id=run.task_id, notion_task_id=page.page_id,
-                      retry_metadata={"research_cycle_id": cycle.cycle_id})
-    store.insert_new(db.execution_runs, er.execution_run_id, er.model_dump(mode="json"), request_id=req.request_id,
-                     task_id=run.task_id, status=er.status.value)
+    req, er = _keyed_execution(deps, run.task_id, page.page_id, f"research-cycle:{cycle.cycle_id}", "research_cycle",
+                               dag.parent_specification_hash, {"research_cycle_id": cycle.cycle_id})
+    old_dag = next((x for x in store.find(db.task_dags, parent_task_id=run.task_id)
+                    if x.get("parent_execution_run_id") == er.execution_run_id), None)
+    if old_dag is not None:  # an earlier attempt saved the DAG of this execution: keep it (unique per execution)
+        dag = TaskDAG.model_validate(old_dag)
     dag.parent_execution_run_id = er.execution_run_id
     _save_dag(deps, dag)
     parent = ParentRun(parent_task_id=run.task_id, parent_notion_page_id=page.page_id,
@@ -446,7 +745,7 @@ def _start_cycle(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, nu
     _start_parent(deps, parent, er, None)
     cycle.parent_run_id = parent.parent_run_id
     save_cycle(store, cycle)
-    schedule_ready(deps, parent)
+    schedule_ready(deps, parent, research_run=run)
     run.event("research_cycle", f"cycle {number} started: {len(cycle.tasks)} task(s) "
                                 f"{', '.join(cycle.child_task_ids.values())}")
     return cycle
@@ -556,6 +855,7 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     store = deps.store
     cur = cs[-1]
     cur.status = CycleStatus.EVALUATING
+    cur.next_plan_id = None  # a new decision replaces an earlier (revised / expired) scope-change proposal
     save_cycle(store, cur)
     cur.results = results_for(deps, cur)
     all_results = [r for c in cs[:-1] for r in c.results] + cur.results
@@ -563,7 +863,8 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     plan = rw.get_plan(store, auth.plan_id)
     u = usage(deps, run.task_id)
     used_values = _used_values(cs)
-    limits = {"cycle": cur.number, "max_cycles": scope.autonomy.max_cycles,
+    in_scope = [c for c in cs if c.authorization_id == auth.authorization_id]
+    limits = {"cycle": cur.number, "cycles_in_this_scope": len(in_scope), "max_cycles": scope.autonomy.max_cycles,
               "max_new_tasks_per_cycle": scope.autonomy.max_new_tasks_per_cycle,
               "max_retries_per_task": scope.autonomy.max_retries_per_task,
               "used_parameter_values": {k: sorted(v) for k, v in used_values.items()},
@@ -576,12 +877,14 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     d = evaluator_mod.evaluate(llm, scope=scope, plan=plan, cycles=cs, results=all_results, limits=limits,
                                repositories=repos, human_resume=resume)
     problems = evaluator_mod.gate(d, scope=scope, cycles=cs, results=all_results, registry=deps.impl.registry,
-                                  used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd)
+                                  used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd,
+                                  authorization_id=auth.authorization_id)
     if problems and d.action in ("continue", "complete"):
         d = evaluator_mod.evaluate(llm, scope=scope, plan=plan, cycles=cs, results=all_results, limits=limits,
                                    repositories=repos, feedback=problems, human_resume=resume)
         problems = evaluator_mod.gate(d, scope=scope, cycles=cs, results=all_results, registry=deps.impl.registry,
-                                      used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd)
+                                      used_values=used_values, used_cpu=u.cpu_hours, used_api=u.api_usd,
+                                      authorization_id=auth.authorization_id)
     run.research_cost_usd = round(run.research_cost_usd + getattr(llm, "spent", 0.0), 6)
     cur.cost_usd = round(getattr(llm, "spent", 0.0), 6)
     d.gate_problems = problems
@@ -592,6 +895,7 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
         else:
             d.action = "stop"
             d.conclusion = d.conclusion or "the next step would leave the approved scope or limits: " + "; ".join(problems)
+            d.stop_kind = "max_cycles" if any("cycles is reached" in p for p in problems) else "limits"
     elif problems and d.action == "complete":
         d.action = "stop"
         d.conclusion = (d.conclusion + " " if d.conclusion else "") + "Success is not established: " + "; ".join(problems)
@@ -607,7 +911,12 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
         if scope.autonomy.no_progress_cycles > 1 else []
     if d.action == "continue" and not d.progress and len(stalled) >= scope.autonomy.no_progress_cycles - 1:
         d.action, d.conclusion = "stop", f"{scope.autonomy.no_progress_cycles} cycles without new information"
+        d.stop_kind = "no_progress"
+    if d.action == "stop" and not d.stop_kind and any(not r.get("validated") and (r.get("data") or {}).get("status")
+                                                      for r in cur.results):
+        d.stop_kind = "failure"  # some task of the cycle did not finish (blocked / failed / not started)
     cur.decision = d
+    cur.evaluations += 1
     cur.status = CycleStatus.COMPLETED
     cur.finished_at = utcnow()
     u2 = usage(deps, run.task_id)
@@ -615,53 +924,29 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
                         **({"human_resume": resume} if resume else {})}
     save_cycle(store, cur)
     run.event("research_evaluation", f"cycle {cur.number}: {d.action} ({d.rationale[:200]})")
-    _milestone(deps, run.task_id, f"cycle-{cur.cycle_id}",
+    # keyed per evaluation: a re-evaluation (after a resume / a revision request) is reported again
+    _milestone(deps, run.task_id, f"cycle-{cur.cycle_id}:{cur.evaluations}",
                [f"Cycle {cur.number} evaluated: {d.action}", d.rationale[:400],
                 f"Results: {sum(1 for r in cur.results if r['validated'])}/{len(cur.results)} validated",
                 f"Budget used: {cur.budget_after.get('cpu_hours')} CPU-h, ${cur.budget_after.get('api_usd')}",
                 *([f"Next: {len(d.new_tasks)} task(s): " + ", ".join(t.title for t in d.new_tasks)[:300]]
                   if d.action == "continue" else []),
                 f"Notion: {bundle.page.url if bundle.page else ''}"])
-    if d.action == "continue":
-        try:
-            _start_cycle(deps, run, bundle, auth, cur.number + 1, d.new_tasks, cur.plan_id)
-        except _Stop:
-            return
-    elif d.action == "scope_change":
-        _propose_scope_change(deps, run, bundle, auth, cur, d)
-    else:
-        _finish(deps, run, bundle, auth, "completed" if d.action == "complete" else "stopped",
-                d.conclusion or d.rationale, decision=d)
+    _act(deps, run, bundle, auth, plan, cycles(store, run.task_id))
 
 
 def _propose_scope_change(deps, run, bundle, auth: ResearchAuthorization, cur: ResearchCycle,
                           d: EvaluationDecision) -> None:
-    from research_autopilot.research.models import ResearchScope
     approved = rw.get_plan(deps.store, auth.plan_id)
-    scope = ResearchScope.model_validate(auth.scope)
-    changes = []
-    for c in d.proposed_conditions:
-        old = next((x for x in scope.conditions if x.name == c.name and x.kind == c.kind), None)
-        c = c.model_copy(update={"status": "stated", "quote": f"proposed scope change (cycle {cur.number})",
-                                 "note": "becomes part of the scope only through this approval"})
-        changes.append(f"condition {c.name}: {rw._cond(old) if old else 'new'} -> {rw._cond(c)}")
-        scope.conditions = [x for x in scope.conditions if not (x.name == c.name and x.kind == c.kind)] + [c]
-    if d.proposed_budget is not None:
-        b = d.proposed_budget
-        changes.append(f"budget: {scope.budget.cpu_hours} CPU-h / ${scope.budget.api_usd} -> {b.cpu_hours} CPU-h / ${b.api_usd}")
-        scope.budget = b.model_copy(update={"status": "stated", "quote": f"proposed scope change (cycle {cur.number})"})
-    plan = ResearchPlan(task_id=run.task_id, notion_page_id=bundle.page.page_id if bundle.page else None,
-                        version=(rw.latest_plan(deps.store, run.task_id).version + 1), kind="scope_change",
-                        spec_hash=approved.spec_hash, scope=scope, evidence=approved.evidence,
-                        rationale=d.rationale, rationale_evidence=d.evidence, tasks=d.new_tasks,
-                        replanning_rules=approved.replanning_rules, assumptions=approved.assumptions,
-                        previous_plan_id=approved.plan_id, change_summary=[*changes, *d.scope_change],
-                        models=approved.models)
-    plan.estimate_cpu_hours = round(sum(t.estimate_cpu_hours for t in plan.tasks), 4)
-    plan.content_hash = plan.compute_hash()
-    rw._record_page(deps, plan)
-    rw.save_plan(deps.store, plan)
-    req = rw.request_approval(deps, bundle, plan)
+    # a proposal of this very evaluation that was saved before a failure is adopted, never drafted twice
+    plan = next((p for p in rw.plans(deps.store, run.task_id) if p.kind == "scope_change"
+                 and p.source_cycle_id == cur.cycle_id and p.source_evaluation == cur.evaluations
+                 and p.status in (PlanStatus.DRAFT, PlanStatus.PENDING_APPROVAL)), None)
+    if plan is None:
+        plan, changes = _draft_scope_change(deps, run, bundle, auth, approved, cur, d)
+    else:
+        changes = plan.change_summary
+    req = rw.request_approval(deps, bundle, plan)  # deduplicated per plan id
     plan.status, plan.approval_request_id = PlanStatus.PENDING_APPROVAL, req.request_id
     rw.save_plan(deps.store, plan)
     rw.project(deps, plan, "Pending")
@@ -673,11 +958,47 @@ def _propose_scope_change(deps, run, bundle, auth: ResearchAuthorization, cur: R
     run.event("scope_change", f"scope change v{plan.version} proposed: {'; '.join(changes)[:300]}")
 
 
+def _draft_scope_change(deps, run, bundle, auth: ResearchAuthorization, approved: ResearchPlan, cur: ResearchCycle,
+                        d: EvaluationDecision) -> tuple[ResearchPlan, list[str]]:
+    from research_autopilot.research.models import ResearchScope
+    scope = ResearchScope.model_validate(auth.scope)
+    changes = []
+    for c in d.proposed_conditions:
+        old = next((x for x in scope.conditions if x.name == c.name and x.kind == c.kind), None)
+        c = c.model_copy(update={"status": "stated", "quote": f"proposed scope change (cycle {cur.number})",
+                                 "note": "becomes part of the scope only through this approval"})
+        changes.append(f"condition {c.name}: {rw._cond(old) if old else 'new'} -> {rw._cond(c)}")
+        scope.conditions = [x for x in scope.conditions if not (x.name == c.name and x.kind == c.kind)] + [c]
+    if d.proposed_budget is not None:
+        b = d.proposed_budget
+        # a limit the proposal leaves out keeps its approved value (None would read as "no limit")
+        b = b.model_copy(update={"cpu_hours": b.cpu_hours if b.cpu_hours is not None else scope.budget.cpu_hours,
+                                 "api_usd": b.api_usd if b.api_usd is not None else scope.budget.api_usd})
+        changes.append(f"budget: {scope.budget.cpu_hours} CPU-h / ${scope.budget.api_usd} -> {b.cpu_hours} CPU-h / ${b.api_usd}")
+        scope.budget = b.model_copy(update={"status": "stated", "quote": f"proposed scope change (cycle {cur.number})"})
+    plan = ResearchPlan(task_id=run.task_id, notion_page_id=bundle.page.page_id if bundle.page else None,
+                        version=(rw.latest_plan(deps.store, run.task_id).version + 1), kind="scope_change",
+                        spec_hash=approved.spec_hash, scope=scope, evidence=approved.evidence,
+                        rationale=d.rationale, rationale_evidence=d.evidence, tasks=d.new_tasks,
+                        replanning_rules=approved.replanning_rules, assumptions=approved.assumptions,
+                        previous_plan_id=approved.plan_id, change_summary=[*changes, *d.scope_change],
+                        models=approved.models, source_cycle_id=cur.cycle_id, source_evaluation=cur.evaluations)
+    plan.estimate_cpu_hours = round(sum(t.estimate_cpu_hours for t in plan.tasks), 4)
+    plan.content_hash = plan.compute_hash()
+    rw._record_page(deps, plan)
+    rw.save_plan(deps.store, plan)
+    return plan, plan.change_summary
+
+
 # ---------------------------------------------------------------- completion / stop
 
 
 def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, outcome: str, reason: str, *,
-            decision: EvaluationDecision | None = None, budget: bool = False) -> None:
+            decision: EvaluationDecision | None = None, budget: bool = False, why: str = "evaluation") -> None:
+    """Complete (results) or stop (approvals: a human decides with Resume / Cancel and numbered steps).
+
+    Idempotent: the Notes item, the report id and the message keys are stable for the same run / execution run, so
+    a step that failed half-way calls it again."""
     from research_autopilot.autopilot.engine import _notify
     from research_autopilot.notifications.events import EventKind
     cs = cycles(deps.store, run.task_id)
@@ -708,8 +1029,71 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         # deduplicated away and the human never gets a Resume button again
         _milestone(deps, run.task_id, f"stopped:{run.run_id}:{run.execution_run_id}",
                    [f"Research stopped after {len(cs)} cycle(s): {reason[:500]}", f"Notes: {note_url}",
-                    f"Task: {bundle.page.url if bundle.page else ''}"],
-                   kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR, buttons="resume")
+                    f"Task: {bundle.page.url if bundle.page else ''}", _budget_line(deps, run, auth)],
+                   kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR,
+                   buttons=["resume", "cancel"], needs_human=True, steps=stop_steps(why, auth))
+
+
+# Numbered "what to do until it resumes" per stop reason (docs/phase_specs/ux_policy.md 1.5).  Saving the Notion page
+# re-plans automatically (an edit makes the approved scope stale); Resume is the fallback and the way to continue
+# without an edit; Cancel ends the research and cancels its unfinished tasks.
+_SAVE = "Save the page: RA re-plans within a few minutes and sends the new scope for approval here; approve it."
+_RESUME = "If no new approval request arrives, press Resume."
+_NUMBERS = ("Write every number (limit, range, count) in the text itself, e.g. 'Compute budget: 2 CPU-hours in "
+            "total; API budget 10 USD': RA never fills in numbers.")
+STEPS = {
+    "paused": ["Running jobs finish; no new task starts while the research is paused.",
+               "Press Resume to continue (the approved scope and the budget are checked again).",
+               "Press Cancel to end the research; its unfinished tasks are set to Canceled in Linear."],
+    "budget": ["Open the research task in Notion and, in the section 'Budget / Authorization', raise the limit "
+               "that was used up.", _NUMBERS, _SAVE, _RESUME + " Cancel ends the research."],
+    "max_cycles": ["Read the results in Notes (link above).",
+                   "To allow more cycles, write the new limit in the section 'Autonomy' of the Notion task "
+                   "(e.g. 'at most 8 cycles').", _SAVE,
+                   "Resume re-evaluates the results within the current limits; Cancel ends the research."],
+    "no_progress": ["Read the results in Notes (link above): the last cycles added no new information.",
+                    "If the objective or the conditions need to change, edit 'Research Objective' in Notion. " + _SAVE,
+                    "Press Resume to continue anyway (the no-progress count starts again), or Cancel."],
+    "failure": ["Read why the task(s) failed (Notes, errors channel).",
+                "If the cause is in the specification, fix the Notion task. " + _SAVE,
+                "Press Resume to retry the failed tasks (within the approved retry limit), or Cancel."],
+    "authorization": ["The approved research scope is no longer valid (revoked, expired or changed).",
+                      "Press Resume: RA drafts a new plan version and asks for approval here.",
+                      "Or press Cancel to end the research."],
+    "scope_rejected": ["The research keeps the approved scope; the proposed change is not applied.",
+                       "Press Resume to let RA evaluate again within the approved scope (it may propose another "
+                       "change), or edit the Notion task to re-plan.", "Press Cancel to end the research."],
+    "scope_expired": ["The scope change request expired without a decision.",
+                      "Press Resume: RA evaluates again and re-proposes the change (or continues in scope).",
+                      "Press Cancel to end the research."],
+    "limits": ["The next step would leave the approved scope or limits (see the reason above).",
+               "To widen the scope, edit the Notion task (conditions in 'Research Objective', limits in "
+               "'Budget / Authorization' / 'Autonomy'). " + _NUMBERS, _SAVE,
+               "Or press Resume to let RA evaluate again within the approved scope, or Cancel."],
+    "evaluation": ["Read the stop reason above and the results in Notes.",
+                   "If the specification must change, edit the Notion task. " + _SAVE,
+                   "Press Resume to let RA evaluate again and continue, or Cancel to end the research."],
+}
+
+
+def stop_steps(why: str, auth: ResearchAuthorization | None = None) -> list[str]:
+    steps = list(STEPS.get(why) or STEPS["evaluation"])
+    if why == "failure" and auth is not None:
+        n = ((auth.scope or {}).get("autonomy") or {}).get("max_retries_per_task")
+        if n is not None:
+            steps[2] = steps[2].replace("approved retry limit", f"approved retry limit of {n}")
+    return steps
+
+
+def _budget_line(deps, run: WorkflowRun, auth: ResearchAuthorization | None) -> str:
+    try:
+        u = usage(deps, run.task_id)
+        b = BudgetItem.model_validate((auth.scope or {}).get("budget") or {}) if auth else BudgetItem()
+        cpu = "no limit" if b.cpu_hours is None else f"{b.cpu_hours:g}"
+        api = "no limit" if b.api_usd is None else f"${b.api_usd:g}"
+        return f"Budget used: {u.cpu_hours:.3f} / {cpu} CPU-h, ${u.api_usd:.2f} / {api}"
+    except Exception:  # noqa: BLE001 - informational
+        return ""
 
 
 def report_record(deps, run, bundle, auth, cs: list[ResearchCycle], outcome: str, reason: str,
@@ -815,16 +1199,21 @@ def _ev():
     return EventKind
 
 
-def _milestone(deps, task_id: str, key: str, details: list[str], *, kind=None, buttons: str | None = "stop") -> None:
-    """Research milestones. ``buttons``: "stop" on cycle evaluations (results), "resume" on stops / anomalies
-    (routed to approvals: they wait for a human decision), None elsewhere -- the logs channel never carries controls."""
+def _milestone(deps, task_id: str, key: str, details: list[str], *, kind=None,
+               buttons: str | list[str] | None = "stop", needs_human: bool = False,
+               steps: list[str] | None = None) -> None:
+    """Research milestones. ``buttons``: "stop" on cycle evaluations (results), ["resume", "cancel"] with numbered
+    ``steps`` on stops / pauses (``needs_human``: routed to approvals, a human decides), None elsewhere -- the logs
+    channel never carries controls."""
     from research_autopilot.notifications import notify_once
     from research_autopilot.notifications.events import EventKind, NotificationEvent
+    actions = [buttons] if isinstance(buttons, str) else list(buttons or [])
     try:
         notify_once(deps.store, NotificationEvent(kind=kind or EventKind.ANALYSIS_COMPLETED, flow_name="research",
                                                   flow_run_name=task_id, details=[x for x in details if x][:12],
                                                   dedupe_key=f"research:{task_id}:{key}",
-                                                  control_task_id=task_id if buttons else None,
-                                                  control_actions=[buttons] if buttons else []), deps.notifier)
+                                                  control_task_id=task_id if actions else None,
+                                                  control_actions=actions, needs_human=needs_human,
+                                                  steps=list(steps or [])), deps.notifier)
     except Exception:
         pass
