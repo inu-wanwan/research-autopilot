@@ -29,7 +29,8 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     # was lost, so never construct another DAG from it.
     if any(r.get("request_key") == request_key(page) for r in deps.store.find(db.execution_requests)):
         return None, []
-    provisional = discover_and_build(deps.plan.manager, bundle, "")
+    provisional = discover_and_build(deps.plan.manager, bundle, "",
+                                     registered_repositories=set(deps.impl.registry))
     history = deps.store.find(db.task_dags, parent_task_id=bundle.issue.identifier)
     provisional.version = max((int(item.get("version", 0)) for item in history), default=0) + 1
     if needs_dependency_inference(provisional):

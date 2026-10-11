@@ -129,9 +129,18 @@ def specification_hash(spec: TaskSpec) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def discover_and_build(manager, parent_bundle, parent_execution_run_id: str) -> TaskDAG:
-    """Discover direct children and return a validated immutable snapshot."""
+def discover_and_build(manager, parent_bundle, parent_execution_run_id: str, *,
+                       registered_repositories: set[str] | None = None) -> TaskDAG:
+    """Discover direct children and return a validated immutable snapshot.
+
+    ``registered_repositories`` (the Phase 3 registry keys) makes an unknown
+    Repository fail at intake instead of after the DAG has started.
+    """
     problems: list[DAGProblem] = []
+    for reason in parent_bundle.reasons:
+        if reason.code is BlockedCode.OUT_OF_SCOPE:
+            problems.append(DAGProblem(code="parent_out_of_scope", task_id=parent_bundle.issue.identifier,
+                                       message=reason.message))
     nodes: list[TaskDAGNode] = []
     parent = parent_bundle.page
     if parent is None:
@@ -184,8 +193,15 @@ def discover_and_build(manager, parent_bundle, parent_execution_run_id: str) -> 
             problems.append(DAGProblem(code="missing_acceptance_criteria", task_id=bundle.issue.identifier,
                                        message="canonical Acceptance Criteria section is required"))
         if not spec.repository:
+            near = [h for h in (spec.other_sections or {}) if "repositor" in h.lower()]
+            hint = (f"; found non-canonical heading(s) {near}, add a 'Repository' heading with the registry key"
+                    if near else "")
             problems.append(DAGProblem(code="invalid_repository_mapping", task_id=bundle.issue.identifier,
-                                       message="canonical Repository section is required"))
+                                       message="canonical Repository section is required" + hint))
+        elif registered_repositories is not None and spec.repository not in registered_repositories:
+            problems.append(DAGProblem(code="invalid_repository_mapping", task_id=bundle.issue.identifier,
+                                       message=f"Repository {spec.repository!r} is not registered in the research "
+                                               f"repository registry"))
         nodes.append(TaskDAGNode(task_id=bundle.issue.identifier, notion_page_id=page.page_id,
                                  parent_task_id=parent_bundle.issue.identifier,
                                  project_id=bundle.issue.project_id, repository=spec.repository,

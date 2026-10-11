@@ -112,7 +112,8 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
                 if page.child_page_ids:
                     if deps.settings.dry_run:
                         from research_autopilot.autopilot.dag import discover_and_build
-                        dag = discover_and_build(deps.plan.manager, bundle, "")
+                        dag = discover_and_build(deps.plan.manager, bundle, "",
+                                              registered_repositories=set(deps.impl.registry))
                         summary["discovered"].append({"parent": bundle.issue.identifier,
                                                       "dag_status": dag.status.value,
                                                       "problems": [p.model_dump() for p in dag.problems]})

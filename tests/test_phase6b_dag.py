@@ -399,3 +399,39 @@ def test_partial_dag_recovery_resumes_without_rerunning_completed_children(tmp_p
     assert len(_child_runs(deps, first)) == 1
     assert sum(len(_child_runs(deps, t)) for t in repos) == 2
     assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.RUNNING
+
+
+def test_parent_without_scope_label_is_blocked(tmp_path):
+    deps, linear, _, _, _ = _parent_fixture(tmp_path, count=1)
+    linear.issues["INU-900"] = linear.issues["INU-900"].model_copy(update={"labels": []})
+    dag = discover_and_build(deps.plan.manager, deps.plan.manager.load("INU-900"), "")
+    assert dag.status is DAGStatus.BLOCKED
+    assert any(p.code == "parent_out_of_scope" and p.task_id == "INU-900" for p in dag.problems)
+
+
+def test_unregistered_repository_is_blocked_at_intake(tmp_path):
+    deps, _, notion, _, child_pages = _parent_fixture(tmp_path, count=1)
+    page = notion.pages[child_pages[0]]
+    notion.pages[page.page_id] = page.model_copy(update={"sections": {**page.sections, "repository": "unknown-repo"}})
+    bundle = deps.plan.manager.load("INU-900")
+    assert discover_and_build(deps.plan.manager, bundle, "").status is DAGStatus.VALID  # registry not supplied
+    dag = discover_and_build(deps.plan.manager, bundle, "", registered_repositories=set(deps.impl.registry))
+    assert dag.status is DAGStatus.BLOCKED
+    assert any(p.code == "invalid_repository_mapping" and "not registered" in p.message for p in dag.problems)
+    poll(deps)  # the real intake path applies the registry and starts nothing
+    assert deps.store.find(db.parent_runs) == []
+    assert deps.store.find(db.execution_runs, task_id="INU-901") == []
+
+
+def test_non_canonical_repository_heading_is_named_in_the_block_reason(tmp_path):
+    deps, _, notion, _, child_pages = _parent_fixture(tmp_path, count=1)
+    page = notion.pages[child_pages[0]]
+    sections = {k: v for k, v in page.sections.items() if k != "repository"}
+    notion.pages[page.page_id] = page.model_copy(update={"sections": sections})
+    bundle = deps.plan.manager.load("INU-900")
+    child = deps.plan.manager.load("INU-901")
+    child.spec.other_sections["Repository / execution environment"] = "- Mac: ~/repo"
+    deps.plan.manager.load = lambda tid, _orig=deps.plan.manager.load: child if tid == "INU-901" else _orig(tid)
+    dag = discover_and_build(deps.plan.manager, bundle, "")
+    problem = next(p for p in dag.problems if p.code == "invalid_repository_mapping")
+    assert "Repository / execution environment" in problem.message
