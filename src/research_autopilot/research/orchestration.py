@@ -485,6 +485,11 @@ def cancel_research(deps, run: WorkflowRun, control: ResearchControl) -> None:
             linear_done.append(task_id)
         except Exception as exc:  # noqa: BLE001 - recorded; the run is cancelled regardless
             refused.append(f"{task_id}: {type(exc).__name__}: {str(exc)[:120]}")
+    # a late Approve on a request of the cancelled research must create nothing: close what is still pending
+    tasks = {run.task_id, *(t for c in cs for t in c.child_task_ids.values())}
+    for req in deps.approvals.pending():
+        if req.task_id in tasks:
+            deps.approvals._close(req, ApprovalStatus.STALE, f"研究 {run.task_id} が打ち切られたため無効")
     run.stage, run.waiting_for, run.resume_stage = WorkflowStage.CANCELLED, None, None
     run.blocked_reason = f"research {reason}"
     run.event("cancelled", f"{reason}; Linear Canceled: {', '.join(linear_done) or '-'}"

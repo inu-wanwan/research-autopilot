@@ -506,3 +506,22 @@ def test_only_one_phase4_only_rerun_per_task_and_cycle(tmp_path):
     assert orchestration._phase4_rerun_used(deps, second, "INU-901")
     assert not orchestration._phase4_rerun_used(deps, second, "INU-902")
 
+
+
+def test_a_confirmed_discord_cancel_ends_the_research_and_voids_its_pending_approval(tmp_path):
+    from research_autopilot.autopilot.models import ApprovalStatus
+    from research_autopilot.notifications.discord import DiscordControlInput, InteractionResult
+    from test_discord_notifications import settings
+    deps, linear, *_ = _build(tmp_path)
+    poll(deps)  # 10A: the research-scope request is pending
+    [pending] = [r for r in deps.approvals.pending() if r.kind.value == "research_scope"]
+    s = settings()
+    result = DiscordControlInput(deps.store, s).submit(interaction_id="c1", task_id="INU-900", action="cancel",
+                                                       user_id=200, guild_id=s.guild_id,
+                                                       channel_id=s.approval_channel_id)
+    assert result is InteractionResult.ACCEPTED
+    poll(deps)
+    assert _runs(deps)[-1].stage is WorkflowStage.CANCELLED
+    assert linear.issues["INU-900"].state_name == "Canceled"
+    closed = ApprovalRequest.model_validate(deps.store.get(db.approval_requests, pending.request_id))
+    assert closed.status is ApprovalStatus.STALE and "打ち切られた" in closed.payload["_closed_note"]
