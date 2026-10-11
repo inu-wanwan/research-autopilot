@@ -260,6 +260,9 @@ class WorkflowRun(BaseModel):
     # retry of a run cut off by a non-task limit: {"stage": "implementing"|"experimenting", "plan_run_id",
     # "plan_id", "phase3_run_id", "commit"?} -- the plan (and a completed implementation) is reused, not redone
     continue_from: dict | None = None
+    # Phase 3 reported Definition of Done items infeasible: re-planned once with the claim, then a human decides
+    dod_replans: int = 0
+    dod_claim: dict | None = None  # {"criteria", "evidence", "by", "statements", "plan_run_id", "plan_id"}
     chain_depth: int = 0  # 0 = user-created root task
     parent_task_id: str | None = None
     attempts: int = 0

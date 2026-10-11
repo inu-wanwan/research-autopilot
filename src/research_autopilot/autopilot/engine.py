@@ -421,11 +421,16 @@ def _plan(deps: AutopilotDeps, run: WorkflowRun) -> None:
         return
     issue = deps.linear.get_issue(run.task_id)
     deps.ops._guard(issue)
-    rec = plan_task(deps.plan, task_id=run.task_id, mode="apply")
+    seed = _dod_seed(deps, run)
+    rec = plan_task(deps.plan, task_id=run.task_id, mode="apply", seed=seed)
     deps.store.record_linear_write(run.task_id, "In Progress", f"Phase 2 apply {rec.plan_run_id}")
     d = rec.decision
     run.plan_run_id, run.plan_id = rec.plan_run_id, d.plan_id
     run.plan_version += 1
+    if seed is not None and d.status is DecisionStatus.READY and (kept := _claim_rejected(rec, run.dod_claim)):
+        _block(deps, run, "Definition of Done infeasibility not accepted on re-planning (items kept unchanged: "
+                          f"{', '.join(kept)}); a human decides. Claim: {run.dod_claim['evidence'][:300]}")
+        return
     if d.status is DecisionStatus.READY:
         run.stage = WorkflowStage.IMPLEMENTING
         run.event("planned", f"plan {d.plan_id[:8]} approved by the Planner/Reviewer loop")
@@ -482,8 +487,54 @@ def _implement(deps: AutopilotDeps, run: WorkflowRun) -> None:
         run.commits.append(m.implementation_commit)
         run.stage = WorkflowStage.EXPERIMENTING
         run.event("implemented", f"commit {m.implementation_commit[:12]} (Phase 3 {m.phase3_run_id[:8]})")
+    elif m.dod_infeasible and run.dod_replans == 0:
+        _replan_for_dod(deps, run, m)
     else:
         _block(deps, run, "Phase 3: " + "; ".join(b.message for b in m.block_reasons)[:400])
+
+
+def _replan_for_dod(deps: AutopilotDeps, run: WorkflowRun, m) -> None:
+    """Send the plan back to Phase 2 once with the infeasibility claim (docs/phase_specs/phase3.md)."""
+    plan = _plan_of(deps, run.plan_run_id, run.plan_id)
+    statements = {c.id: c.statement for c in (plan.definition_of_done if plan else [])}
+    run.dod_replans += 1
+    run.dod_claim = {**m.dod_infeasible, "plan_run_id": run.plan_run_id, "plan_id": run.plan_id,
+                     "statements": {i: statements.get(i, "") for i in m.dod_infeasible["criteria"]}}
+    issue = deps.linear.get_issue(run.task_id)
+    deps.ops.set_state(issue, "Todo", f"re-planning: Definition of Done {', '.join(m.dod_infeasible['criteria'])} "
+                                      "reported infeasible")  # Phase 2 starts only from an approved, not-started task
+    run.stage = WorkflowStage.PLANNING
+    run.event("dod_infeasible", f"{m.dod_infeasible['by']} reported {', '.join(m.dod_infeasible['criteria'])} "
+                                f"infeasible; re-planning once: {m.dod_infeasible['evidence'][:200]}")
+
+
+def _plan_of(deps: AutopilotDeps, plan_run_id: str | None, plan_id: str | None):
+    rec = deps.store.get_run(plan_run_id) if plan_run_id else None
+    return next((a.plan for a in (rec.plans if rec else []) if a.plan_id == plan_id), None)
+
+
+def _dod_seed(deps: AutopilotDeps, run: WorkflowRun):
+    c = run.dod_claim
+    if not c or run.plan_run_id != c["plan_run_id"]:
+        return None  # no claim, or the re-plan already happened
+    plan = _plan_of(deps, c["plan_run_id"], c["plan_id"])
+    if plan is None:
+        return None
+    from research_autopilot.models import RevisionRequest
+    return plan, [RevisionRequest(
+        aspect="feasibility", severity="major", step_ids=[],
+        issue=f"Phase 3 ({c['by']}) reports Definition of Done item(s) {', '.join(c['criteria'])} impossible as "
+              f"written: {c['evidence'][:1500]}",
+        requested_change="If the evidence holds, rewrite those items so they are achievable with the available "
+                         "API / environment without weakening the acceptance criteria; keep them unchanged only "
+                         "if the evidence is wrong.")]
+
+
+def _claim_rejected(rec, claim: dict) -> list[str]:
+    """Items whose statement survived the re-plan unchanged: the planner did not accept the claim."""
+    plan = next((a.plan for a in rec.plans if a.plan_id == rec.decision.plan_id), None)
+    kept = {c.statement.strip() for c in (plan.definition_of_done if plan else [])}
+    return [i for i, st in claim.get("statements", {}).items() if st and st.strip() in kept]
 
 
 def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:

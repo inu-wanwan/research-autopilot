@@ -181,3 +181,16 @@ Fake Connector と Fake Agent を使った単体テストで、次を検証す�
 ## 13. Non-goals
 
 Codex / Claude Code による研究コードの自動実装、研究計算の自律実行、実験結果の自律解析、Linear と Notion の Status Mirror の再実装、独自のワークフローエンジン、研究タスクの無断変更、独立した大規模 Web UI。
+
+## 14. Definition of Done（2026-10-12 ユーザー承認の追加仕様）
+
+背景：INU-292 の実データ E2E で、Phase 3 の Code Reviewer が仕様にない要件（JSON Schema の完全性、PySCF のソルバー既定値の網羅、ロックファイル等）で差し戻しを繰り返した（INU-303：6 試行中 5 回 revise、科学的誤り 0 件）。計画の要件が「固定する」「再現可能」「A または B」のような範囲の開いた表現で、合格ラインが Implementer と Reviewer で一致しなかったことが原因。対策として、合格条件を計画の時点で項目単位に固める。別の役（エージェント）は設けず、Planner の出力に含める（ユーザー決定）。
+
+- **Planner** は計画の一部として `definition_of_done`（DoD）を出力する。各項目は `id`（D1, D2, …）、`statement`（合否判定できる1文：出力項目・設定・挙動・許容誤差を具体的に書く。「適切に」「再現可能」「A または B」は不可）、`source`（その項目を要求する仕様の一節の逐語引用、または `phase4_contract`）、`check`（`test` / `deterministic` / `review`）、`how`（確認方法）を持つ。各受け入れ条件は `acceptance_mapping.done_criteria` で 1 つ以上の DoD 項目に対応づける。
+- **固定の基本項目** B1〜B5（テスト成功、experiment.json がスキーマ適合、出力の単位宣言、実行時依存の宣言、変更範囲の遵守）はシステムが付与する。Planner は書かない。
+- **決定論的な検証**（LLM を使わない。不合格なら Reviewer を呼ばずに Planner へ差し戻す）：DoD が空でない、タスク固有の項目は 10 個まで、`source` の引用が仕様（purpose / specification / acceptance_criteria / scientific_invariants / artifact_requirements / non_goals）に実在する、曖昧語を含まない、全受け入れ条件が DoD で覆われる、B 番号を使わない。
+- **Plan Reviewer** は DoD を spec_consistency / evaluation の観点で審査する：各項目が合否判定可能か、仕様に根拠があるか、**過剰でないか**（仕様が求めない provenance・スキーマ・ツール類は削除を求める）。
+- **環境の事実**：Planner には、Phase 4 の環境構築の契約（`uv venv` → 依存ファイルからインストール → `uv pip freeze` を記録。`install_argv` は実行しない）、リポジトリの依存ファイル、テスト環境に入っているパッケージ（テストコマンドがローカルの Python を使う場合）を渡す。
+- DoD は技術的な合格条件であり、**人の承認対象には含めない**（Plan Reviewer の承認で確定する。ユーザー決定）。
+- **すべてのタスクに適用**する（研究タスクに限らない。ユーザー決定）。DoD を持たない過去の handoff は、Phase 3 で従来のレビュー規則のまま扱う。
+- Phase 3 から DoD 項目の実現不能が報告された場合は、前回の計画と報告内容を起点に 1 回だけ再計画する（phase3.md §11）。

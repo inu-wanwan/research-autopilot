@@ -88,8 +88,25 @@ Rules:
   bounded technical steps. Plan those as early implementation steps with verification.
   Ask the researcher only when the available implementations require a real change to
   the scientific specification, invariant, acceptance criterion, or approved budget.
+- Definition of Done (definition_of_done): the pass/fail contract the implementation is accepted against. The
+  implementer builds to exactly these items and the code reviewer may send work back only for them (plus a
+  fixed system baseline B1-B5: tests pass, experiment.json valid, output units declared, runtime dependencies
+  declared, file scope respected -- do not repeat those). Rules:
+  * ids D1, D2, ...; at most 10 items; every acceptance criterion lists the items that prove it in
+    acceptance_mapping.done_criteria.
+  * each statement is checkable: name the exact output fields, settings, behaviours and tolerances (e.g.
+    "each result records rhf.conv_tol, rhf.max_cycle, fci.conv_tol, fci.max_cycle and the convergence flags"),
+    never "appropriate", "reproducible", "complete", or "A or B" choices left open -- decide them.
+  * each item's source quotes the task specification verbatim (or is 'phase4_contract'); do not add
+    requirements the specification does not ask for (no extra provenance, schemas or tooling "for safety").
+  * prefer check="test" (a repository test asserts it); use "review" only for what a test cannot show.
+  * only use libraries that ENVIRONMENT FACTS list as available in the test environment, or that the plan
+    declares as a runtime dependency (Phase 4 installs the declared dependency files; see the contract there).
+- ENVIRONMENT FACTS (if present) are measured facts about the repository, its test environment and how
+  Phase 4 builds the run environment. Plan within them.
 - If reviewer revision requests are provided, address each of them explicitly while
-  still obeying the rules above.
+  still obeying the rules above. A request may report that a Definition of Done item is infeasible: fix the
+  item if the evidence holds; keep it unchanged only if the evidence is wrong.
 - LITERATURE EVIDENCE (if present in the input) comes from an automated literature review: claims marked
   VERIFIED were found verbatim in the cited source; UNVERIFIED ones were not and must not be treated as facts.
   Use the evidence to ground methods and conditions, cite source ids, and never change the fixed scientific
@@ -122,6 +139,12 @@ plan may deliberately resolve them in an early, bounded discovery step, then rec
 the selected version/API/settings in provenance and test the resulting contract. Do
 not require those facts to be known before execution unless choosing among them would
 change a researcher-approved invariant, metric, acceptance criterion, or budget.
+
+Definition of Done (judge it under spec_consistency and evaluation): every item must be pass/fail checkable
+(exact fields, settings, behaviours, tolerances; no open "A or B" choices), grounded in the quoted
+specification, and proportionate -- request removal of items the specification does not require (extra
+provenance, schemas, tooling) as well as additions where an acceptance criterion is not proven. The code
+reviewer will judge the implementation only against these items, so this is where the acceptance bar is set.
 
 Be specific and conservative: if the plan alters the task's purpose, invariants or
 acceptance criteria, that is at least a blocking revision request. Write in the same
@@ -172,11 +195,21 @@ class _AgentsSdkBase:
 
 
 class OpenAIPlanner(_AgentsSdkBase):
+    # (spec) -> facts about the repository / test environment / Phase 4 environment contract, or None
+    environment_facts = None
+
     def plan(self, spec: TaskSpec, previous: ExecutionPlan | None,
              feedback: list[RevisionRequest]) -> AgentRun[ExecutionPlan]:
         agent = Agent(name="Planner", instructions=PLANNER_INSTRUCTIONS, model=self.model,
                       output_type=ExecutionPlan)
         payload: dict = {"task_specification": _spec_payload(spec)}
+        if self.environment_facts is not None:
+            try:
+                facts = self.environment_facts(spec)
+            except Exception:  # facts help the plan; their absence never blocks it
+                facts = None
+            if facts:
+                payload["environment_facts"] = facts
         if previous is not None:
             payload["previous_plan"] = previous.model_dump(mode="json")
             payload["reviewer_revision_requests"] = [f.model_dump(mode="json") for f in feedback]

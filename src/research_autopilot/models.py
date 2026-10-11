@@ -186,6 +186,27 @@ class AcceptanceMapping(BaseModel):
     criterion: str = Field(description="Acceptance criterion quoted from the task spec")
     covered_by_steps: list[str]
     verification: str
+    done_criteria: list[str] = Field(default_factory=list, description=(
+        "Ids of the definition_of_done items that together prove this criterion (at least one)"))
+
+
+class DoneCriterion(BaseModel):
+    """One pass/fail item of a plan's Definition of Done (docs/phase_specs/phase2.md, Definition of Done).
+
+    The Code Reviewer judges an implementation against exactly these items (plus the system baseline and the
+    scientific invariants); anything else is a suggestion, never a reason to send the work back."""
+
+    id: str = Field(description="D1, D2, ... (unique)")
+    statement: str = Field(description=(
+        "One checkable statement: exact fields / settings / behaviours, never 'appropriate', 'reproducible', "
+        "'A or B'"))
+    source: str = Field(description=(
+        "Verbatim quote from the task specification (purpose, specification, acceptance criteria, scientific "
+        "invariants, artifact requirements or non-goals) that requires this item, or 'phase4_contract'"))
+    check: Literal["test", "deterministic", "review"] = Field(description=(
+        "test: an automated test in the repository proves it; deterministic: a system check proves it; "
+        "review: only the Code Reviewer can judge it"))
+    how: str = Field(description="What the test asserts / which check / what the reviewer looks at")
 
 
 class ResourceEstimate(BaseModel):
@@ -206,6 +227,10 @@ class ExecutionPlan(BaseModel):
     resource_estimate: ResourceEstimate
     open_questions: list[str]
     approvals_needed: list[str] = Field(description="Decisions that need human approval before execution")
+    definition_of_done: list[DoneCriterion] = Field(default_factory=list, description=(
+        "Pass/fail items the implementation is accepted against (at most 10; every acceptance criterion is "
+        "covered via acceptance_mapping.done_criteria). The implementer builds to them and the code reviewer "
+        "judges only them, the system baseline and the scientific invariants"))
     literature_requests: list[str] = Field(default_factory=list, description=(
         "Literature questions whose evidence would materially change this plan (empty if none); Research "
         "Autopilot investigates them and asks for a revised plan"))
@@ -230,6 +255,12 @@ class ExecutionPlan(BaseModel):
         for m in self.acceptance_mapping:
             if missing := set(m.covered_by_steps) - known:
                 raise ValueError(f"acceptance mapping references unknown steps {sorted(missing)}")
+        dod = [c.id for c in self.definition_of_done]
+        if len(set(dod)) != len(dod):
+            raise ValueError("duplicate definition_of_done ids")
+        for m in self.acceptance_mapping:
+            if missing := set(m.done_criteria) - set(dod):
+                raise ValueError(f"acceptance mapping references unknown done criteria {sorted(missing)}")
         return self
 
 

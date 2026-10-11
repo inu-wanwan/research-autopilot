@@ -10,6 +10,7 @@ with ``implement(..., resume_run_id=...)`` from Git + manifest. An interrupted
 process is recorded as ``interrupted`` -- never as success or failure.
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -458,6 +459,11 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
 
         attempt.result = _run_with_fallback(deps, m, task, wt, attempt, requests, run_dir, started, rctx)
         choice = attempt.choice  # may have switched backend
+        if claim := _infeasibility_claim(attempt.result.summary, task):
+            attempt.diff_path = str(_save_diff(wt, task, run_dir, number))
+            attempt.commit = wt.commit_all(Path(task.worktree_path),
+                                           f"autopilot: {task.task_id} attempt {number} (definition of done infeasible)")
+            _dod_infeasible(m, claim["criteria"], claim["evidence"], "implementer")
         attempt.diff_path = str(_save_diff(wt, task, run_dir, number))
         attempt.commit = wt.commit_all(Path(task.worktree_path),
                                        f"autopilot: {task.task_id} attempt {number} ({choice.backend}/{choice.model})")
@@ -570,7 +576,9 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     choice = routing.reviewer_choice(s, m.assessment)
     fallbacks = [(routing.choose(s, b, choice.tier), deps.reviewers[b]) for b in s.fallback_backends
                  if b != choice.backend and b in deps.reviewers]
+    previous = next((a.review for a in reversed(m.attempts) if a is not attempt and a.review and a.review.llm), None)
     outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallbacks,
+                     previous=previous,
                      on_event=lambda msg: _progress(deps, m, run_dir, msg),
                      extra_checks=lambda: [_experiment_check(task, wt)],
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,
@@ -591,9 +599,11 @@ def _finish_on_review(deps: ImplDeps, m: ImplementationManifest, task: Implement
         _complete(deps, m, task, outcome, run_dir, wt, rctx)
         return True
     if outcome.verdict == "blocked":
+        m.final_review = outcome
+        if "dod_infeasible" in outcome.categories and outcome.llm and outcome.llm.dod_infeasible:
+            _dod_infeasible(m, outcome.llm.dod_infeasible.criteria, outcome.llm.dod_infeasible.evidence, "reviewer")
         code = "unapproved_change" if {"scope_violation", "dangerous_change", "science_change"} & set(
             outcome.categories) else "review_blocked"
-        m.final_review = outcome
         raise _Stop(RunState.BLOCKED, code, outcome.reason, code)
     return False
 
@@ -626,6 +636,33 @@ def _complete(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTas
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _infeasibility_claim(summary: str, task: ImplementationTask) -> dict | None:
+    """``DOD_INFEASIBLE: {...}`` at the end of the implementer's message, naming real items with evidence."""
+    from research_autopilot.implementation.reviewer import MIN_INFEASIBILITY_EVIDENCE
+    from research_autopilot.planning import dod
+    ids = {c.id for c in dod.full(task.plan)}
+    for line in reversed((summary or "").splitlines()):
+        if line.strip().startswith("DOD_INFEASIBLE:"):
+            try:
+                raw = json.loads(line.split(":", 1)[1])
+                criteria = [str(c) for c in raw.get("criteria", []) if str(c) in ids]
+                evidence = str(raw.get("evidence", "")).strip()
+            except (ValueError, AttributeError):
+                return None
+            if criteria and len(evidence) >= MIN_INFEASIBILITY_EVIDENCE:
+                return {"criteria": criteria, "evidence": evidence}
+            return None  # an unsupported claim is ignored: the review judges the work as usual
+    return None
+
+
+def _dod_infeasible(m: ImplementationManifest, criteria: list[str], evidence: str, by: str) -> None:
+    """Stop: the plan's Definition of Done must be revised by Phase 2 (once per task run; the engine decides)."""
+    m.dod_infeasible = {"criteria": list(criteria), "evidence": evidence[:2000], "by": by}
+    raise _Stop(RunState.BLOCKED, "dod_infeasible",
+                f"{by}: Definition of Done item(s) {', '.join(criteria)} infeasible as written: {evidence[:400]}",
+                "dod_infeasible")
 
 
 def _check_budget(s: Phase3Settings, m: ImplementationManifest, started) -> None:

@@ -32,6 +32,7 @@ from research_autopilot.planning.agents import (
     Reviewer,
     TransientAgentError,
 )
+from research_autopilot.planning import dod
 from research_autopilot.planning.cost import estimate_cost
 
 
@@ -45,12 +46,15 @@ class LoopOutcome:
 
 
 def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings: Settings,
-                 record: PlanRunRecord, sleep: Callable[[float], None] = time.sleep) -> LoopOutcome:
+                 record: PlanRunRecord, sleep: Callable[[float], None] = time.sleep,
+                 seed: tuple[ExecutionPlan, list[RevisionRequest]] | None = None) -> LoopOutcome:
+    """``seed``: re-plan from an earlier plan with feedback (e.g. Phase 3 reported a Definition of Done item
+    infeasible) instead of planning from scratch."""
     if settings.review_policy is not ReviewPolicy.ALWAYS:  # pragma: no cover - only ALWAYS exists in Phase 2
         raise NotImplementedError(settings.review_policy)
 
-    previous: ExecutionPlan | None = None
-    feedback: list[RevisionRequest] = []
+    previous: ExecutionPlan | None = seed[0] if seed else None
+    feedback: list[RevisionRequest] = list(seed[1]) if seed else []
     last_review: ReviewAttempt | None = None
 
     for iteration in range(settings.max_replans + 1):
@@ -61,6 +65,16 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
             return stop.outcome
         attempt = PlanAttempt(plan_id=new_id(), iteration=iteration, plan=plan_run.output)
         record.plans.append(attempt)
+
+        # The Definition of Done must be checkable and grounded before a reviewer looks at the plan.
+        if dod_problems := dod.problems(spec, attempt.plan):
+            previous, feedback = attempt.plan, [RevisionRequest(
+                aspect="evaluation", severity="major", issue=f"Definition of Done: {p}",
+                requested_change="Fix the definition_of_done as described (see the planner rules).", step_ids=[])
+                for p in dod_problems]
+            record.events.append(RunEvent(kind="replan", message=(
+                f"iteration {iteration}: definition of done rejected ({len(dod_problems)} problem(s))")))
+            continue
 
         try:
             review_run = _call(record, settings, "reviewer", reviewer.model, iteration, sleep,

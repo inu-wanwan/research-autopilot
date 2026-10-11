@@ -179,6 +179,20 @@ class CodeFinding(BaseModel):
     file: str
     issue: str
     requested_change: str
+    criterion: str = Field(default="", description=(
+        "Definition of Done id (B1.., D1..) or 'invariant' this finding breaks; a defect outside the Definition of "
+        "Done must name the item or invariant it endangers, else it is only a suggestion"))
+
+
+class CriterionAssessment(BaseModel):
+    id: str = Field(description="Definition of Done id (B1.., D1..)")
+    status: Literal["met", "not_met", "cannot_judge"]
+    evidence: str = Field(description="Where in the diff / tests this was checked, and why")
+
+
+class InfeasibilityClaim(BaseModel):
+    criteria: list[str] = Field(description="Definition of Done ids that cannot be satisfied as written")
+    evidence: str = Field(description="Concrete evidence (API / environment facts and how they were checked)")
 
 
 class CodeReviewResult(BaseModel):
@@ -189,10 +203,17 @@ class CodeReviewResult(BaseModel):
     findings: list[CodeFinding]
     invariant_violations: list[str] = Field(description="Scientific invariants the change violates; empty if none")
     unverified_items: list[str] = Field(description="Claims that tests cannot prove (e.g. scientific correctness)")
+    criteria: list[CriterionAssessment] = Field(default_factory=list, description=(
+        "One assessment per Definition of Done item (empty only when the task has no Definition of Done)"))
+    suggestions: list[str] = Field(default_factory=list, description=(
+        "Improvements outside the Definition of Done; recorded, never a reason to send the work back"))
+    dod_infeasible: InfeasibilityClaim | None = Field(default=None, description=(
+        "Only when a Definition of Done item is impossible as written (not merely hard), with evidence"))
 
     @model_validator(mode="after")
     def _consistent(self) -> "CodeReviewResult":
-        if self.verdict == "revise" and not self.findings and not self.invariant_violations:
+        if self.verdict == "revise" and not self.findings and not self.invariant_violations \
+                and not any(c.status == "not_met" for c in self.criteria):
             raise ValueError("revise needs at least one finding")
         if self.verdict == "pass" and (self.invariant_violations or any(f.severity == "blocking" for f in self.findings)):
             raise ValueError("pass cannot contain invariant violations or blocking findings")
@@ -201,7 +222,7 @@ class CodeReviewResult(BaseModel):
 
 FailureCategory = Literal[
     "tests", "lint", "typecheck", "no_changes", "review_findings", "experiment_spec", "invariant_violation",
-    "scope_violation", "dangerous_change", "science_change",
+    "scope_violation", "dangerous_change", "science_change", "dod_infeasible",
 ]
 
 # Categories where escalating to a stronger model is allowed if they persist.
@@ -264,7 +285,7 @@ class BlockReason(BaseModel):
         "not_approved", "handoff_invalid", "spec_changed", "repository_invalid", "scope_missing",
         "concurrent_run", "budget_exceeded", "time_exceeded", "revision_limit", "review_blocked",
         "invariant_violation", "unapproved_change", "backend_unavailable", "auth_error", "fallback_unavailable",
-        "connector_error", "transient_error", "experiment_spec_invalid", "repair_not_allowed",
+        "connector_error", "transient_error", "experiment_spec_invalid", "repair_not_allowed", "dod_infeasible",
     ]
     message: str
 
@@ -310,6 +331,7 @@ class ImplementationManifest(BaseModel):
     inherited_usage: Usage = Field(default_factory=Usage)
     inherited_cost_usd: float = 0.0
     continued_from: str | None = None  # a blocked run cut off by a non-task limit, continued in its worktree
+    dod_infeasible: dict | None = None  # {"criteria", "evidence", "by"}: sent back to Phase 2 by the engine
 
     @property
     def revisions_used(self) -> int:

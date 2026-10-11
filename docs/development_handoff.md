@@ -99,8 +99,17 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 検証済み：`uv run pytest tests/test_phase6_execution.py tests/test_connectors.py` は 23 passed。Phase 5 regression 41 tests は 38 passed / 3 failed。2件は Phase 5 の「follow-up child を label だけで自動起動」期待で、Phase 6A の明示起動不変条件と意図的に非互換。1件は test-only 期待が旧 WorkflowRun の Blocked 作成を期待するため（現実装は DB acceptance 前に Notion Blocked を投影）。
 - 後続修正：子タスクも explicit request に変更、Completed task rerun、Prefect flow URL の `Last Run` 投影、Blocked request のDB履歴とacknowledgement、古いrunによるRequested上書き抑止、cancel DB/Notion projectionを追加。`INU-279` の人間参加E2Eは Button → Requested → Awaiting Approval → Discord approve → Implementing → Experimenting → Completed / Linear Done / Notion Completed まで実サービスで確認済み。修正後の Last Run URL は次回実行で確認が必要。
 
+### Definition of Done（2026-10-12 / Claude Code、ユーザー承認の設計変更）
+
+- 背景：INU-303 の Phase 3 で Reviewer が仕様外の要件で差し戻しを繰り返した（6 試行中 5 回 revise、科学的誤り 0 件）。原因は計画の要件が合否判定できない粒度だったこと。
+- 決定（ユーザー）：Planner の出力に DoD を含める（別の役は置かない）。DoD 外の欠陥は影響する項目・不変条件を示せる場合のみ revise（案 b）。DoD は人の承認対象外。全タスクに適用。dod_infeasible は根拠必須・再計画 1 回まで・却下または再申告で人の判断・研究再試行の回数に数える。
+- 仕様：`docs/phase_specs/phase2.md` §14、`docs/phase_specs/phase3.md` §11。
+- 実装：`planning/dod.py`（決定論的検証・基本項目 B1〜B5）、`models.DoneCriterion` / `ExecutionPlan.definition_of_done` / `AcceptanceMapping.done_criteria`、計画ループでの検証と seed 再計画、Planner / Plan Reviewer / Implementer / Code Reviewer のプロンプト、`implementation/facts.py`（環境の事実）、`reviewer.judge_against_dod`、`orchestrator._infeasibility_claim`、engine の `_replan_for_dod`。
+- 検証：`tests/test_definition_of_done.py`（12 件）ほか全テスト（結果は commit メッセージ参照）。実モデル（Planner が DoD を出力し、Plan Reviewer がそれを審査する）での動作は未検証。
+
 ### Exact Next Actions
 
+0. **DoD の実データ確認**：INU-292 の次の再試行で、Planner が引用付きの DoD を出し、決定論的検証を通り、Code Reviewer が項目別に判定することを確認する。DoD の決定論的検証で Planner が収束しない（`plan not approved after N replans`）場合は、引用一致の厳しさを見直す。
 0. **（2026-10-12 00:3x JST 時点）INU-292 サイクル 5 の再試行を実行中**：INU-303 の Phase 3 が API 課金 Codex（`codex_api`）で実装中。経緯と 2026-10-12 の修正（`12807f6` `542e590` `75daadc` `b69f8bd`）は `docs/operations/phase10_research_orchestration.md`「2026-10-12 の仕組み修正」。ポーリング loop（前セッションの scratchpad の `poll_loop.sh`、PID 18811）は 01:10 JST ごろ 4 時間上限で終了するため、終了を `ps -eo pid,etime,command | grep "autopilot poll"` で確認してから同文書の手順で 1 本だけ再起動する。Discord gateway は `uv run research-agent discord run`（PID 18313）が稼働中。
 0. Phase 10 E2E（INU-292）の続き：`docs/operations/phase10_research_orchestration.md`「引き継ぎ：E2E の続け方」に従い、ポーリングと Discord gateway が動いているか確認し、サイクル 4 以降を監視する。完了したら受け入れ条件（INU-292 の Acceptance 1〜6）を確認し、結果を同文書に記録してユーザーに報告。main merge / push はユーザー指示待ち。
 

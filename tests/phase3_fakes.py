@@ -111,17 +111,25 @@ class FakeBackend:
             raise item["raise"]
         return ImplementationResult(
             backend=self.name, model=request.choice.model, status=item.get("status", "completed"), exit_code=0,
-            summary="done", usage=Usage(input_tokens=item.get("tokens", 1000), output_tokens=100),
+            summary=item.get("summary", "done"), usage=Usage(input_tokens=item.get("tokens", 1000), output_tokens=100),
             cost_usd=item.get("cost"), pid=item.get("pid"), error=item.get("error"),
         )
 
 
-def code_review(verdict: str = "pass", invariant: bool = False) -> CodeReviewResult:
-    findings = [] if verdict == "pass" else [CodeFinding(aspect="scientific_correctness", severity="major",
-                                                         file="h2_energy.py", issue="wrong sign", requested_change="fix")]
+def code_review(verdict: str = "pass", invariant: bool = False, criteria: dict | None = None,
+                findings: list | None = None, suggestions: list | None = None, infeasible=None) -> CodeReviewResult:
+    """A reviewer result in the Definition of Done format (B1-B5 + the fake plan's D1)."""
+    from research_autopilot.implementation.models import CriterionAssessment
+    if findings is None:
+        findings = [] if verdict == "pass" else [CodeFinding(aspect="scientific_correctness", severity="major",
+                                                             file="h2_energy.py", issue="wrong sign",
+                                                             requested_change="fix", criterion="D1")]
+    status = {i: "met" for i in ("B1", "B2", "B3", "B4", "B5", "D1")} | (criteria or {})
     return CodeReviewResult(verdict=verdict, summary=verdict, findings=findings,
                             invariant_violations=["basis must be STO-3G"] if invariant else [],
-                            unverified_items=["energy value not checked against reference"])
+                            unverified_items=["energy value not checked against reference"],
+                            criteria=[CriterionAssessment(id=i, status=st, evidence="checked") for i, st in status.items()],
+                            suggestions=suggestions or [], dod_infeasible=infeasible)
 
 
 class FakeReviewer:

@@ -30,10 +30,12 @@ def build_deps(settings: Settings, on_retry=None) -> Deps:
     # The Agents SDK reads OPENAI_API_KEY from the environment itself.
     from research_autopilot.catalog.integration import context_from_env
     store = Store(settings.resolved_database_url())
+    planner = OpenAIPlanner(settings.planner_model, tracing=settings.agents_tracing)
+    planner.environment_facts = _environment_facts()
     return Deps(
         manager=TaskManager(notion, linear, settings),
         linear=linear,
-        planner=OpenAIPlanner(settings.planner_model, tracing=settings.agents_tracing),
+        planner=planner,
         reviewer=OpenAIReviewer(settings.reviewer_model, tracing=settings.agents_tracing),
         store=store,
         settings=settings,
@@ -69,3 +71,13 @@ def _literature(settings: Settings, catalog):
     def run(question: str, task_id: str | None, seeds: list[str], purpose: str | None = None):
         return research(deps_from_env(catalog, writer), question, task_id=task_id, seeds=seeds, purpose=purpose)
     return run
+
+
+def _environment_facts():
+    """Repository / test-environment facts for the Planner; None if the Phase 3 registry is unavailable."""
+    try:
+        from research_autopilot.implementation.config import load_phase3_settings, load_registry
+        from research_autopilot.implementation.facts import environment_facts
+        return environment_facts(load_registry(load_phase3_settings().repos_file))
+    except Exception:
+        return None

@@ -7,6 +7,7 @@ attempts is never forwarded (fallback resumes from Git + manifest).
 import json
 
 from research_autopilot.implementation.models import ImplementationTask
+from research_autopilot.planning import dod
 
 IMPLEMENTER_RULES = """\
 You are the Implementer of Research Autopilot, working non-interactively in a dedicated Git worktree
@@ -18,6 +19,13 @@ Hard rules (violations are detected automatically and stop the run):
 - Do not change the research purpose, scientific invariants or acceptance criteria. If they cannot be met,
   stop and explain why in your final message instead of weakening them.
 - Do not download or install anything; no network access is assumed.
+- DEFINITION OF DONE (in TASK) is the acceptance contract: build to exactly these items, no less and no more.
+  Write repository tests for every item with check "test". Items B1-B5 are the system baseline. Use only
+  libraries that are installed in the test environment or that you declare as runtime dependencies.
+- If an item is IMPOSSIBLE as written (not merely hard) -- e.g. the approved library does not expose the
+  required setting -- do what you can, then end your final message with one line
+  `DOD_INFEASIBLE: {"criteria": ["D3"], "evidence": "<what you checked and what it showed>"}`. The plan is then
+  revised. Difficulty, effort or time are not infeasibility.
 - Write or update automated tests that check the acceptance criteria where they are testable.
 - Keep the change minimal and focused on the task; respect NON-GOALS.
 - Resolve bounded technical details by inspecting the repository and installed APIs. Selecting an API supported by
@@ -86,6 +94,17 @@ List every scientific invariant the change violates in invariant_violations (emp
 List claims that the automated tests cannot prove (e.g. scientific correctness of a formula) in
 unverified_items. Respond only with JSON matching the given schema.
 
+Definition of Done (when TASK has one):
+- Assess EVERY item of definition_of_done in `criteria` (met / not_met / cannot_judge, with evidence). B1-B5 are
+  proven by the automated checks shown below; mark them from those results.
+- Send the work back (revise) only for: a not_met item, a violated scientific invariant, or a defect that
+  breaks a specific item or invariant -- give that id (or "invariant") in the finding's `criterion`.
+- Everything else (style, extra provenance, stricter schemas, nicer structure) goes to `suggestions`; it is
+  recorded but never a reason to revise. Do not raise the bar beyond the items.
+- In a later round (PREVIOUS ASSESSMENT given), re-check the items that were not_met and look for
+  regressions of items that were met; do not open new topics.
+- If an item is impossible as written (not merely hard), report it in `dod_infeasible` with evidence.
+
 Role boundary:
 - This is an implementation review before Phase 4. The Implementer is explicitly forbidden from running the actual
   research calculation. Do not require real result JSON/CSV, completed experiment outputs, or empirical acceptance
@@ -122,6 +141,7 @@ def _task_block(task: ImplementationTask) -> dict:
         "allowed_file_scope": task.allowed_file_scope,
         "protected_paths": task.protected_paths,
         "plan": task.plan.model_dump(mode="json"),
+        "definition_of_done": [c.model_dump(mode="json") for c in dod.full(task.plan)],
     }
 
 
@@ -143,10 +163,12 @@ def implementer_prompt(task: ImplementationTask, attempt: int, revision_requests
 
 
 def reviewer_prompt(task: ImplementationTask, diff: str, checks: list[dict], changed_files: list[str],
-                    max_diff_chars: int = 60000) -> str:
+                    max_diff_chars: int = 60000, previous: list[dict] | None = None) -> str:
     truncated = diff if len(diff) <= max_diff_chars else diff[:max_diff_chars] + "\n... [diff truncated]"
+    earlier = ["PREVIOUS ASSESSMENT (re-check not_met items and regressions only):",
+               json.dumps(previous, ensure_ascii=False, indent=2)] if previous else []
     return "\n\n".join([
-        REVIEWER_RULES,
+        REVIEWER_RULES, *earlier,
         "TASK (JSON):", json.dumps(_task_block(task), ensure_ascii=False, indent=2),
         "CHANGED FILES:", "\n".join(changed_files),
         "AUTOMATED CHECK RESULTS:", json.dumps(checks, ensure_ascii=False, indent=2),

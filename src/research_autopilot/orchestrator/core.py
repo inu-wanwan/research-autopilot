@@ -60,7 +60,8 @@ class Deps:
 
 
 def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
-              mode: Mode = "dry_run", flow_run_id: str | None = None) -> PlanRunRecord:
+              mode: Mode = "dry_run", flow_run_id: str | None = None, seed=None) -> PlanRunRecord:
+    """``seed``: (previous ExecutionPlan, [RevisionRequest]) -- re-plan from an earlier plan with feedback."""
     if (task_id is None) == (not next_task):
         raise ValueError("specify exactly one of task_id or next_task")
     if mode == "apply" and not deps.settings.linear_write_enabled:
@@ -72,7 +73,7 @@ def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False
     )
     deps.store.init_schema()
     try:
-        record.decision = _run(deps, record, task_id, next_task, mode)
+        record.decision = _run(deps, record, task_id, next_task, mode, seed)
     except Exception as exc:
         record.events.append(RunEvent(kind="error", message=f"unexpected {type(exc).__name__}: {exc}"))
         raise
@@ -84,7 +85,8 @@ def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False
 # ---------------------------------------------------------------- steps
 
 
-def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool, mode: Mode) -> WorkflowDecision:
+def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool, mode: Mode,
+         seed=None) -> WorkflowDecision:
     s = deps.settings
     try:
         bundle = _select_next(deps, record) if next_task else deps.manager.load(task_id)
@@ -131,7 +133,7 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
             reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
         spec, external = _with_external(deps, record, bundle.spec, spec, reports)  # Phase 9 (Registry only)
-        outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
+        outcome = run_planning(spec, deps.planner, deps.reviewer, s, record, seed=seed)
         requests = (outcome.plan.plan.literature_requests if outcome.status is DecisionStatus.READY and outcome.plan
                     else [])
         if requests and deps.literature is not None:  # the Planner asked for evidence: research, re-plan once

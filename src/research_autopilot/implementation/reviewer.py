@@ -26,6 +26,7 @@ from research_autopilot.implementation.models import (
 )
 from research_autopilot.implementation.backends.base import sanitized_env
 from research_autopilot.implementation.prompts import reviewer_prompt
+from research_autopilot.planning import dod
 from research_autopilot.implementation.worktree import WorktreeManager, matches_any
 
 DANGER_PATTERNS: list[tuple[str, str, str]] = [
@@ -63,6 +64,51 @@ def parse_review(text: str) -> CodeReviewResult | None:
         return CodeReviewResult.model_validate(json.loads(m.group(0)))
     except (ValueError, ValidationError):
         return None
+
+
+MIN_INFEASIBILITY_EVIDENCE = 20
+
+
+def judge_against_dod(parsed: CodeReviewResult, criteria: list, common: dict) -> ReviewOutcome:
+    """The verdict follows from the Definition of Done, not from the reviewer's overall impression
+    (docs/phase_specs/phase3.md, Code Reviewer and the Definition of Done)."""
+    ids = {c.id: c for c in criteria}
+    claim = parsed.dod_infeasible
+    if claim and set(claim.criteria) & set(ids) and len(claim.evidence.strip()) >= MIN_INFEASIBILITY_EVIDENCE:
+        return ReviewOutcome(verdict="blocked", categories=["dod_infeasible"], llm=parsed, revision_requests=[],
+                             reason=f"Definition of Done infeasible ({', '.join(claim.criteria)}): "
+                                    f"{claim.evidence[:600]}", **common)
+    if parsed.verdict == "blocked":
+        return ReviewOutcome(verdict="blocked", reason="reviewer blocked: " + parsed.summary, categories=[],
+                             llm=parsed, revision_requests=[], **common)
+    not_met = [a for a in parsed.criteria if a.id in ids and a.status == "not_met"]
+    binding = [f for f in parsed.findings
+               if f.severity in ("blocking", "major") and (f.criterion in ids or f.criterion == "invariant")]
+    demoted = [f"[{f.severity}/{f.aspect}] {f.file}: {f.issue} -> {f.requested_change}"
+               for f in parsed.findings if f not in binding]
+    assessed = {a.id for a in parsed.criteria}
+    unjudged = [f"{i}: not assessed by the reviewer" for i in ids if i not in assessed]
+    llm = parsed.model_copy(update={"suggestions": parsed.suggestions + demoted,
+                                    "unverified_items": parsed.unverified_items + unjudged})
+    if parsed.invariant_violations:
+        return ReviewOutcome(verdict="revise", reason="scientific invariants violated",
+                             categories=["invariant_violation"], llm=llm,
+                             revision_requests=[f"Scientific invariant violated: {v}" for v in parsed.invariant_violations]
+                             + [_request(f) for f in binding], **common)
+    if not_met or binding:
+        requests = [f"[{a.id} not met] {ids[a.id].statement} -- {a.evidence}" for a in not_met]
+        requests += [_request(f) for f in binding if f.criterion not in {a.id for a in not_met}]
+        return ReviewOutcome(verdict="revise", categories=["review_findings"], llm=llm, revision_requests=requests,
+                             reason="Definition of Done not met: " + ", ".join(
+                                 sorted({a.id for a in not_met} | {f.criterion for f in binding})), **common)
+    return ReviewOutcome(verdict="pass", categories=[], llm=llm, revision_requests=[],
+                         reason="deterministic checks passed and every Definition of Done item is met"
+                                + (f" ({len(llm.suggestions)} suggestion(s) recorded)" if llm.suggestions else ""),
+                         **common)
+
+
+def _request(f) -> str:
+    return f"[{f.criterion}] [{f.severity}/{f.aspect}] {f.file}: {f.issue} -> {f.requested_change}"
 
 
 def scan_diff(diff: str) -> list[DangerFinding]:
@@ -113,7 +159,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
            on_event: Callable[[str], None] = lambda m: None,
            extra_checks: Callable[[], list[CheckResult]] | None = None,
            science_guard: Callable[[], list[str]] | None = None,
-           extra_instructions: str = "") -> ReviewOutcome:
+           extra_instructions: str = "", previous: ReviewOutcome | None = None) -> ReviewOutcome:
     det, diff = deterministic_report(task, repo, wt)
     if extra_checks is not None:
         det.checks.extend(extra_checks())
@@ -151,7 +197,9 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
                              revision_requests=[f"`{' '.join(c.command or [])}` failed:\n{c.output_tail[-1500:]}"
                                                 for c in failed])
 
-    prompt = reviewer_prompt(task, diff, [c.model_dump(mode="json") for c in det.checks], det.changed_files)
+    earlier = [a.model_dump(mode="json") for a in previous.llm.criteria] if previous and previous.llm else None
+    prompt = reviewer_prompt(task, diff, [c.model_dump(mode="json") for c in det.checks], det.changed_files,
+                             previous=earlier)
     if extra_instructions:
         prompt = extra_instructions + "\n\n" + prompt
     usage, cost = Usage(), 0.0
@@ -181,6 +229,8 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
     if parsed is None:
         return ReviewOutcome(verdict="blocked", reason="LLM reviewer unavailable or returned invalid output",
                              categories=[], llm=None, revision_requests=[], **common)
+    if criteria := dod.full(task.plan):
+        return judge_against_dod(parsed, criteria, common)
     requests = [f"[{f.severity}/{f.aspect}] {f.file}: {f.issue} -> {f.requested_change}" for f in parsed.findings
                 if f.severity != "minor" or parsed.verdict == "revise"]
     if parsed.verdict == "blocked":

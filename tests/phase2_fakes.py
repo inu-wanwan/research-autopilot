@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from research_autopilot.config import Settings
 from research_autopilot.models import (
     AcceptanceMapping,
+    DoneCriterion,
     ExecutionPlan,
     IssueRef,
     LinearIssue,
@@ -128,7 +129,11 @@ def make_plan(n_steps: int = 2) -> ExecutionPlan:
         execution_order=ids, environment=["python 3.12", "pyscf"], constraints=["cc-pVDZ"],
         verification_methods=["compare with reference"],
         acceptance_mapping=[AcceptanceMapping(criterion="Energy error table for all geometries",
-                                              covered_by_steps=[ids[-1]], verification="table exists")],
+                                              covered_by_steps=[ids[-1]], verification="table exists",
+                                              done_criteria=["D1"])],
+        definition_of_done=[DoneCriterion(id="D1", statement="The output has one energy error row per geometry.",
+                                          source="phase4_contract", check="test",  # spec-agnostic fake
+                                          how="test counts the rows")],
         resource_estimate=ResourceEstimate(compute="1 node", wall_time="2h", memory="16GB", notes=""),
         open_questions=[], approvals_needed=[],
     )

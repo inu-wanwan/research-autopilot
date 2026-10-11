@@ -131,3 +131,20 @@ Phase 4 の Experiment Runner、TSUBAME / Slurm での実行、長時間の研�
   - Phase 3 ↔ 4 の差し戻しは最大2往復。依頼に書かれた回数と、記録されているチェーンの回数の大きい方で判定する。
   - 同じ FailureReport は二度処理しない（DB の一意制約）。
   - 予算は元の run からチェーン全体で累積し、修正によってリセットしない。
+
+## 11. Definition of Done に基づくレビュー（2026-10-12 ユーザー承認の追加仕様）
+
+phase2.md §14 の Definition of Done（DoD）を Phase 3 の合格条件とする。
+
+- **Implementer** は handoff の DoD（B1〜B5 + D 項目）を合格条件として実装し、`check: test` の項目にはリポジトリのテストを書く。テスト環境にあるか、依存として宣言したライブラリだけを使う。
+- **Code Reviewer** は DoD の全項目を `met` / `not_met` / `cannot_judge` と根拠で評価する（`criteria`）。判定は LLM の総合判断ではなく次の規則で決定論的に決める：
+  - revise にできるのは、DoD 項目が `not_met`、科学的不変条件の違反、または特定の DoD 項目・不変条件を壊す欠陥（指摘の `criterion` にその id か `invariant` を示す）だけ。DoD 外の明白な欠陥も、影響する項目・不変条件を示せば revise にできる（ユーザー決定 (b)）。
+  - それ以外の指摘は `suggestions` として記録し（manifest に残る）、差し戻しの理由にしない。
+  - 2 回目以降のレビューには前回の項目別評価を渡し、前回 `not_met` だった項目と、`met` だった項目の回帰だけを確認させる（新しい論点を持ち込まない）。
+  - 評価されなかった項目は unverified_items に記録する。
+- **DoD 項目の実現不能（dod_infeasible）**：
+  - Implementer は最終メッセージの `DOD_INFEASIBLE: {"criteria": [...], "evidence": "..."}`、Reviewer は `dod_infeasible` で報告できる。項目 id と具体的な証拠（20 文字以上）が必須。証拠のない申告は無視して通常どおりレビューする。「難しい」「時間が足りない」は理由として認めない（revision_limit で扱う）。
+  - 報告があると Phase 3 は `dod_infeasible` で停止する。Autopilot は、前回の計画と申告内容を Planner / Plan Reviewer に渡して **1 回だけ**再計画する（タスクの 1 回の実行あたり）。
+  - 再計画で該当項目が変更されなかった場合（申告の却下）、または再計画後に再び申告された場合は、自動では回さず blocked（人の判断）にする。
+  - 研究サイクルの再試行では、この停止は通常の失敗として `max_retries_per_task` に数える（利用上限・開始ゲート拒否と異なりタスクの中身に関わるため）。
+- DoD を持たない過去の handoff（2026-10-12 以前）は、従来どおり Reviewer の verdict をそのまま使う。
