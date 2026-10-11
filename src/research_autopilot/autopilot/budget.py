@@ -1,6 +1,6 @@
 """Cumulative budget usage of a research chain (root task + all follow-up tasks).
 
-API cost: Phase 2 plan runs + Phase 3 known CLI cost + Phase 4 LLM cost. Calls with unknown
+API cost: Phase 2 plan runs (incl. Phase 8 literature research) + Phase 3 known CLI cost + Phase 4 LLM cost. Calls with unknown
 price are counted separately. Compute: allocated CPUs x wall time of every Phase 4 job.
 Nothing is reset by retries / fallbacks / repairs.
 """
@@ -25,6 +25,7 @@ def chain_usage(store: Store, runs: list[dict]) -> Usage:
             if rec and rec.cost:
                 if rec.cost.estimated_cost_usd is None and rec.llm_calls:
                     u.unknown_api_cost_calls += len(rec.llm_calls)
+                    u.api_usd += rec.literature_cost_usd  # Phase 8 research cost is known even then
                 else:
                     u.api_usd += rec.cost.estimated_cost_usd or 0.0
         for rid in run.get("phase3_run_ids", []):

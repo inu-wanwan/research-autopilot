@@ -89,14 +89,15 @@ def select(llm: LlmCall, question: str, cands: list[Candidate], max_sources: int
     payload = {"QUESTION": question, "MAX_SOURCES": max_sources, "SEED_IDS": seeds,
                "CANDIDATES": [{"candidate_id": c.candidate_id, "title": c.title, "authors": c.authors[:6],
                                "year": c.year, "venue": c.venue, "doi": c.doi, "arxiv": c.arxiv_id,
-                               "repo": c.repo_full_name, "stars": c.stars, "open_access": c.is_oa,
+                               "repo": c.repo_full_name, "doc_url": c.doc_url, "stars": c.stars, "open_access": c.is_oa,
                                "found_by": c.found_by, "abstract": (c.abstract or "")[:700]} for c in cands]}
     return llm("LiteratureSelector", SELECT_INSTRUCTIONS, payload, SelectionResult)
 
 
 def source_text(src: Source, pages: list[str] | None, files: dict[str, str] | None) -> str:
     if pages is not None:
-        parts = [f"[page {i}]\n{p}" for i, p in enumerate(pages, 1)]
+        label = "part" if src.retrieval.method == "document_snapshot" else "page"
+        parts = [f"[{label} {i}]\n{p}" for i, p in enumerate(pages, 1)]
     else:
         parts = []
         for path, body in (files or {}).items():
@@ -125,8 +126,10 @@ def verify(src: Source, extracted: ExtractionResult, pages: list[str] | None,
         if pages is not None:
             page = find_quote(ec.quote, pages)
             if page is not None:
-                c.status, c.page, c.locator = "verified", page, f"page {page}"
-                c.verification = f"quote found on page {page} of sha256 {src.retrieval.sha256[:12]}"
+                doc = src.retrieval.method == "document_snapshot"
+                c.status, c.page = "verified", page
+                c.locator = f"{src.url} part {page}" if doc else f"page {page}"
+                c.verification = f"quote found in {'part' if doc else 'page'} {page} of sha256 {src.retrieval.sha256[:12]}"
             else:
                 c.verification = "quote not found in the extracted PDF text"
         else:

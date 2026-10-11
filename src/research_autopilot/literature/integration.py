@@ -6,14 +6,24 @@ import re
 
 from research_autopilot.literature.models import LiteratureReport
 
+URL = re.compile(r"https://[^\s<>()\[\]`'\"]+")
 SEED = re.compile(r"(10\.\d{4,9}/[^\s,;)>\]]+|arxiv:\s*\d{4}\.\d{4,5}|\b\d{4}\.\d{4,5}(?:v\d+)?\b|"
                   r"github\.com/[\w.-]+/[\w.-]+)", re.I)
 MAX_CONTEXT_CLAIMS = 40
 
 
 def seeds_from(text: str) -> list[str]:
+    """DOIs, arXiv ids, GitHub repositories and other https URLs (official documentation) named in the text."""
     out = []
-    for m in SEED.findall(text or ""):
+    text = text or ""
+    for url in URL.findall(text):
+        url = url.rstrip(".,;:")
+        host = re.match(r"https://([^/:]+)", url).group(1).lower()
+        if host not in ("github.com", "doi.org", "dx.doi.org") and not host.endswith("arxiv.org"):
+            if url not in out:
+                out.append(url)
+            text = text.replace(url, " ")  # DOIs / ids inside a documentation URL are not seeds
+    for m in SEED.findall(text):
         s = m.rstrip(".")
         s = re.sub(r"(?i)^arxiv:\s*", "", s)
         s = re.sub(r"(?i)^github\.com/", "", s)

@@ -43,6 +43,7 @@ class Candidate(BaseModel):
     oa_pdf_url: str | None = None
     is_oa: bool | None = None
     repo_full_name: str | None = None  # GitHub "owner/name" for implementations
+    doc_url: str | None = None         # official documentation page (HTML or PDF) on an allowlisted host
     stars: int | None = None
     kind_hint: SourceType | None = None
     related_ids: list[str] = Field(default_factory=list)  # other versions (preprint <-> published)
@@ -50,7 +51,7 @@ class Candidate(BaseModel):
 
 class Retrieval(BaseModel):
     method: Literal["zotero_existing", "zotero_connector", "open_access_download", "repository_snapshot",
-                    "none"] = "none"
+                    "document_snapshot", "none"] = "none"
     status: Literal["ok", "failed", "not_attempted", "requires_human"] = "not_attempted"
     detail: str = ""
     retrieved_at: datetime | None = None
@@ -132,6 +133,7 @@ class LiteratureReport(BaseModel):
     task_id: str | None = None
     topic_key: str                   # normalized question + seeds, for reuse lookups
     created_at: datetime = Field(default_factory=utcnow)
+    candidates: list[dict] = Field(default_factory=list)  # what the search returned (audit of discovery/selection)
     sources: list[Source] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)

@@ -15,7 +15,7 @@ from research_autopilot.literature import acquire, analysis, search
 from research_autopilot.literature import store as lit_store
 from research_autopilot.literature.models import (Candidate, Failure, LiteratureReport, Retrieval, Source,
                                                   SourceType, StageRecord)
-from research_autopilot.literature.text import pdf_pages, repo_files
+from research_autopilot.literature.text import doc_pages, pdf_pages, repo_files
 from research_autopilot.models import utcnow
 
 
@@ -53,7 +53,8 @@ class ResearcherDeps:
 
 
 def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None, seeds: list[str] = (),
-             code_query: str | None = None, reuse: bool = True, write_note: bool = True) -> LiteratureReport:
+             code_query: str | None = None, reuse: bool = True, write_note: bool = True,
+             purpose: str | None = None) -> LiteratureReport:
     key = lit_store.topic_key(question, list(seeds))
     if reuse:
         old = lit_store.reusable_report(deps.catalog, key, deps.reuse_days)
@@ -78,6 +79,7 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
         rec, c0 = stage("search"), deps.llm.spent
         cands, fails = search.discover(deps.net, question, seeds=list(seeds), code_query=code_query)
         report.failures += fails
+        report.candidates = [c.model_dump(mode="json", exclude={"abstract"}, exclude_none=True) for c in cands]
         close(rec, f"{len(cands)} candidate(s) from {sorted({s for c in cands for s in c.found_by})}", c0)
         if not cands:
             report.unresolved.append("no source could be discovered for the question")
@@ -85,7 +87,8 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
 
         # 2. selection (seeds always kept)
         rec, c0 = stage("selection"), deps.llm.spent
-        chosen = _select(deps, question, cands, list(seeds), report)
+        chosen = _select(deps, question if not purpose else f"{question}\n(research task purpose: {purpose[:1500]})",
+                         cands, list(seeds), report)
         close(rec, f"{len(chosen)} selected", c0)
 
         # 3-6. acquisition, text, extraction, verification per source
@@ -97,6 +100,9 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
                 repos[src.source_id] = cand.repo_full_name
                 if not _reuse_source(deps, src, repo=cand.repo_full_name):
                     report.failures += acquire.snapshot_repository(deps.net, src, cand.repo_full_name, limit)
+            elif cand.doc_url:
+                src.source_type = SourceType.OFFICIAL_DOC
+                report.failures += acquire.snapshot_document(deps.net, src, cand.doc_url, limit)
             elif not _reuse_source(deps, src, doi=cand.doi, arxiv_id=cand.arxiv_id):
                 if zotero is None and deps.zotero_factory is not None:
                     zotero = deps.zotero_factory()
@@ -109,6 +115,10 @@ def research(deps: ResearcherDeps, question: str, *, task_id: str | None = None,
                 pages = files = None
                 if cand.repo_full_name:
                     files = repo_files(Path(src.retrieval.local_path))
+                elif cand.doc_url:
+                    pages = doc_pages(Path(src.retrieval.local_path), src.retrieval.sha256)
+                    if not any(p.strip() for p in pages):
+                        raise ValueError("documentation page has no extractable text")
                 else:
                     pages = pdf_pages(Path(src.retrieval.local_path), src.retrieval.sha256)
                     src.retrieval.pages = len(pages)

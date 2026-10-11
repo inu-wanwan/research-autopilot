@@ -7,6 +7,7 @@ others continue (spec 2.1: keep going with what is reachable).
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 import unicodedata
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -162,6 +163,21 @@ def discover(net: Net, query: str, *, seeds: list[str] = (), code_query: str | N
 
 def _seed(net: Net, seed: str) -> list[Candidate]:
     seed = seed.strip()
+    if seed.lower().startswith(("https://", "http://")):
+        host = (urlparse(seed).hostname or "").lower()
+        if host in ("doi.org", "dx.doi.org"):
+            seed = normalize_doi(seed) or seed
+        elif host.endswith("arxiv.org") and ARXIV_ID.search(urlparse(seed).path):
+            m = ARXIV_ID.search(urlparse(seed).path)
+            seed = m.group(1) + (m.group(2) or "")
+        elif host == "github.com" and len([p for p in urlparse(seed).path.split("/") if p]) == 2:
+            seed = urlparse(seed).path.strip("/")
+        else:  # an official documentation page named by the task
+            if not net.allowed_host(seed):
+                raise ValueError(f"documentation host not on the literature allowlist: {host} "
+                                 "(add it to RA_LITERATURE_EXTRA_HOSTS)")
+            return [Candidate(candidate_id=f"doc:{seed}", title=seed, url=seed, doc_url=seed, found_by=["seed"],
+                              kind_hint=SourceType.OFFICIAL_DOC, is_oa=True)]
     if m := re.match(r"(?:https?://github\.com/)?([\w.-]+/[\w.-]+)$", seed):
         if "/" in seed and not seed.startswith("10."):
             r = net.json(f"https://api.github.com/repos/{m.group(1)}")
@@ -181,7 +197,7 @@ def _seed(net: Net, seed: str) -> list[Candidate]:
                           year=_first_year(it.get("issued")), doi=doi, url=it.get("URL"),
                           venue=(it.get("container-title") or [None])[0], found_by=["seed"],
                           arxiv_id=arxiv_from_doi(doi))]
-    raise ValueError(f"unrecognized seed {seed!r} (DOI, arXiv id or GitHub owner/name)")
+    raise ValueError(f"unrecognized seed {seed!r} (DOI, arXiv id, GitHub owner/name or documentation URL)")
 
 
 def _arxiv_by_id(net: Net, arxiv_id: str) -> list[Candidate]:
@@ -230,6 +246,8 @@ def merge(cands: list[Candidate]) -> list[Candidate]:
 
 
 def _same_work(a: Candidate, b: Candidate) -> bool:
+    if a.doc_url or b.doc_url:
+        return a.doc_url == b.doc_url
     if a.repo_full_name or b.repo_full_name:
         return bool(a.repo_full_name) and a.repo_full_name == b.repo_full_name
     if a.doi and b.doi and a.doi == b.doi:
