@@ -292,6 +292,11 @@ def resolve(ctx: CatalogContext, queries: list[ArtifactQuery], *, verify: bool =
 def _missing_combinations(q: ArtifactQuery, found: list[Artifact], res: Resolution, label: str) -> None:
     """When every identity field is constrained, each requested combination must exist."""
     fields = list(found[0].identity)
+    # Every requested value of a constrained identity field must be covered by some artifact.
+    for f in (f for f in fields if f in q.filters):
+        for wanted in q.filters[f]:
+            if not any(_matches(str(a.identity.get(f)), [wanted]) for a in found):
+                res.problems.append(f"[{label}] missing {f}={wanted}")
     if not fields or any(f not in q.filters for f in fields):
         return
     present = {tuple(str(a.identity[f]) for f in fields) for a in found}

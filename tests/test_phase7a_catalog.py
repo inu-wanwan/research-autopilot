@@ -176,8 +176,9 @@ def test_missing_combinations_and_expected_count_fail_closed(tmp_path):
     install(ctx, CASCI_ADAPTER, ["casci"])
     service.scan(ctx, "casci")
     res = service.resolve(ctx, _q("catalog: kind=toy-condition molecule=H2 geometry_id=h2-r0.7 k=2..4"))
-    assert res.problems == ["[catalog: kind=toy-condition molecule=H2 geometry_id=h2-r0.7 k=2..4] missing "
-                            "{'molecule': 'H2', 'geometry_id': 'h2-r0.7', 'k': 4}"]
+    label = "[catalog: kind=toy-condition molecule=H2 geometry_id=h2-r0.7 k=2..4]"
+    assert res.problems == [f"{label} missing k=4",
+                            f"{label} missing {{'molecule': 'H2', 'geometry_id': 'h2-r0.7', 'k': 4}}"]
     res = service.resolve(ctx, _q("catalog: kind=toy-condition expect=3"))
     assert any("expected 3" in p for p in res.problems)
     assert not service.resolve(ctx, _q("catalog: kind=nothing")).ok
@@ -245,3 +246,34 @@ def test_requirement_parsing():
     assert (qs[0].repository_id, qs[0].expect_count, qs[1].kind) == ("r", 6, "y")
     with pytest.raises(ValueError):
         service.parse_requirements("catalog: molecule=N2")
+
+
+def test_cli_lifecycle_scan_and_resolve(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from research_autopilot.catalog import cli
+    from research_autopilot.catalog.service import CatalogContext
+    from research_autopilot.implementation.models import RepoConfig
+    from research_autopilot.storage.db import Store
+
+    repo = casci_repo(tmp_path / "casci")
+    store = Store(f"sqlite:///{tmp_path / 'cli.db'}")
+    store.init_schema()
+    ctx = CatalogContext(store=store, registry={"casci": RepoConfig(id="casci", path=str(repo))}, environment="mac")
+    monkeypatch.setattr(cli, "_ctx", lambda: ctx)
+    adapter_file = tmp_path / "adapter.json"
+    adapter_file.write_text(json.dumps(CASCI_ADAPTER))
+    r = CliRunner()
+    assert r.invoke(cli.app, ["adapter", "register", str(adapter_file), "--actor", HUMAN]).exit_code == 0
+    assert r.invoke(cli.app, ["adapter", "validate", "toy-casci@1.0.0", "--repository", "casci",
+                              "--actor", HUMAN]).exit_code == 0
+    refused = r.invoke(cli.app, ["adapter", "activate", "toy-casci@1.0.0", "--actor", "autopilot"])
+    assert refused.exit_code == 1 and "human" in refused.output
+    assert r.invoke(cli.app, ["adapter", "activate", "toy-casci@1.0.0", "--actor", HUMAN]).exit_code == 0
+    assert r.invoke(cli.app, ["bind", "casci", "toy-casci", "--actor", HUMAN]).exit_code == 0
+    scan = r.invoke(cli.app, ["scan", "casci"])
+    assert scan.exit_code == 0 and json.loads(scan.output)["by_status"] == {"verified": 2}
+    ok = r.invoke(cli.app, ["resolve", "catalog: kind=toy-condition k=2..3 expect=2"])
+    assert ok.exit_code == 0 and json.loads(ok.output)["resolved"] == 2
+    bad = r.invoke(cli.app, ["resolve", "catalog: kind=toy-condition k=2..4"])
+    assert bad.exit_code == 1 and json.loads(bad.output)["problems"]
