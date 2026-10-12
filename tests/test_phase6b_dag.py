@@ -393,6 +393,24 @@ def test_rerun_of_stopped_parent_returns_stopped_children_to_todo(tmp_path):
     assert linear.issues["INU-903"].state_name == "In Progress"  # only stopped children are reset
 
 
+
+def test_rerun_of_stopped_parent_carries_over_where_stopped_children_can_continue(tmp_path, monkeypatch):
+    from research_autopilot.autopilot.dag_runtime import _carry_over_from_stopped, advance_parents, schedule_ready
+    from research_autopilot.research import orchestration
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    schedule_ready(deps, parent)
+    asked = []
+    monkeypatch.setattr(orchestration, "_carry_over",
+                        lambda d, old, t: asked.append(t) or {"stage": "experimenting", "phase3_run_id": "p3"})
+    assert _carry_over_from_stopped(deps, "INU-900") == {}  # parent still running
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, "environment preparation failed")
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
+    assert _carry_over_from_stopped(deps, "INU-900") == {"INU-901": {"stage": "experimenting", "phase3_run_id": "p3"}}
+    assert asked == ["INU-901"]  # completed children are not continued (they are reused)
+
+
 def test_independent_ready_child_still_starts_after_sibling_fails(tmp_path):
     from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
     repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}

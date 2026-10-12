@@ -72,7 +72,7 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     _save_dag(deps, provisional)
     parent = ParentRun(parent_task_id=bundle.issue.identifier, parent_notion_page_id=page.page_id,
                        parent_execution_run_id=execution.execution_run_id, dag_id=provisional.dag_id,
-                       dag_hash=provisional.dag_hash)
+                       dag_hash=provisional.dag_hash, carry_over=_carry_over_from_stopped(deps, bundle.issue.identifier))
     _save_parent(deps, parent)
     deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
     if provisional.status is DAGStatus.PENDING_APPROVAL:
@@ -346,17 +346,35 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
                                       consumer_task_id=consumer, dedupe_key=handoff.dedupe_key)
 
 
+def _stopped_parent(deps, parent_task_id: str) -> ParentRun | None:
+    """The parent's latest run when it ended Blocked/Failed (a rerun of it is being started)."""
+    rows = [r for r in deps.store.find(db.parent_runs, parent_task_id=parent_task_id) if not r.get("research_cycle_id")]
+    if not rows:
+        return None
+    last = ParentRun.model_validate(max(rows, key=lambda r: str(r["created_at"])))
+    return last if last.status in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED} else None
+
+
+def _carry_over_from_stopped(deps, parent_task_id: str) -> dict[str, dict]:
+    """Where the stopped children of the previous run can continue (same rule as a research cycle retry: an
+    environment failure after an approved implementation re-runs Phase 4 only; a cut-off Phase 3 continues)."""
+    last = _stopped_parent(deps, parent_task_id)
+    if last is None:
+        return {}
+    from research_autopilot.research.orchestration import _carry_over
+    stopped = [t for t, st in _child_statuses(deps, last).items()
+               if st in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}]
+    return {t: c for t in stopped if (c := _carry_over(deps, last, t))}
+
+
 def _reset_stopped_children(deps, parent_task_id: str) -> None:
     """Run Autopilot on a parent that ended Blocked/Failed: its stopped children go back to Todo.
 
     The steps of a stopped parent say "fix the child, then Run Autopilot on the parent"; the children it left
     In Progress would otherwise fail DAG intake (task is already In Progress), a dead end. Only children whose
     last execution under that parent stopped are reset; completed ones keep Done (their artifacts are reused)."""
-    rows = deps.store.find(db.parent_runs, parent_task_id=parent_task_id)
-    if not rows:
-        return
-    last = ParentRun.model_validate(max(rows, key=lambda r: str(r["created_at"])))
-    if last.status not in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}:
+    last = _stopped_parent(deps, parent_task_id)
+    if last is None:
         return
     for task_id, status in _child_statuses(deps, last).items():
         if status not in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}:
