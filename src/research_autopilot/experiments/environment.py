@@ -154,6 +154,7 @@ def container_argv(container: dict, checkout: Path, argv: list[str], working_dir
         inner = ["python", *argv[3:]]
     else:
         raise EnvironmentError_(f"unsupported launcher for execution: {argv[:3]}")
+    checkout = Path(checkout).resolve()
     workdir = (Path(container.get("workdir", "/workspace")) / working_directory).as_posix().rstrip("/.") or "/"
     cmd = ["docker", "compose", "-f", str(checkout / container.get("compose_file", "compose.yaml")),
            "--project-directory", str(checkout), "-p", container["compose_project"], "run", "--rm", "-T",
@@ -168,6 +169,7 @@ def container_argv(container: dict, checkout: Path, argv: list[str], working_dir
 
 def container_provenance(container: dict, checkout: Path) -> dict[str, str]:
     """Image identity of the service (the environment is the image, not a dependency file)."""
+    checkout = Path(checkout).resolve()  # -f and --project-directory must not depend on the cwd (_run uses it)
     base = ["docker", "compose", "-f", str(checkout / container.get("compose_file", "compose.yaml")),
             "--project-directory", str(checkout), "-p", container["compose_project"]]
     try:

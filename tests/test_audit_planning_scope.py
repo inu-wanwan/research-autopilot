@@ -293,3 +293,16 @@ def test_claude_subscription_cost_is_not_counted_as_api_spend(tmp_path, monkeypa
         b = mod.ClaudeBackend()
         b._billing = billing
         assert b.run(req, lambda pid: None).cost_usd == expected
+
+
+def test_container_provenance_uses_absolute_paths_for_a_relative_checkout(tmp_path, monkeypatch):
+    from pathlib import Path
+    from research_autopilot.experiments import environment as env
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "job" / "src").mkdir(parents=True)
+    monkeypatch.setattr(env, "_run", lambda cmd, cwd, timeout: calls.append((cmd, cwd)) or "img\n")
+    env.container_provenance({"compose_project": "p", "service": "research"}, Path("job/src"))
+    cmd, cwd = calls[0]
+    assert cmd[cmd.index("-f") + 1] == str((tmp_path / "job/src/compose.yaml").resolve())
+    assert Path(cmd[cmd.index("--project-directory") + 1]).is_absolute() and Path(cwd).is_absolute()
