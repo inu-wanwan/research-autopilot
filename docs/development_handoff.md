@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-12 00:3x JST / Claude Code
+2026-10-12 12:4x JST / Claude Code
 
 ## Git Branch / Commit
 
@@ -119,6 +119,8 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - ユーザー決定（本番まで）：サブスク優先・API は不可能なときだけ。`RA_LLM_SUBSCRIPTION_FIRST=codex`（既定 off）で、`planning/agents.py` `_AgentsSdkBase._run` を通る全構造化呼び出し（Planner / Reviewer、Analyst、Scientific / Completion Reviewer、Dependency Planner、Adapter 生成、`PricedLlm` 経由の文献・Phase 10・外部 repo）が先に `llm_subscription.codex_structured`（`codex exec --json --ephemeral --ignore-user-config -s read-only --output-schema`、空の一時ディレクトリ、API キーなしの sanitized env、effort medium）を試し、usage limit / 認証 / プロセス異常 / timeout / 不正出力（1 回再試行）で従来の API 経路へ fallback。usage limit・認証・codex 不在はプロセス内で 15 分 codex を飛ばす。サブスク呼び出しは cost 0 USD（`billing="subscription"`、`LlmCall` / `LlmUsage` に記録）、API は従来どおり価格計算。価格未設定のモデルはサブスクでは実行し、API への fallback だけを `LlmBudgetError` で拒否。テストは fake codex（`tests/test_llm_subscription.py`）のみで、実 codex での確認は未実施（モデル ID がサブスクで使えるかも未確認、使えなければ毎回 process_error → API）。
 
 ### Exact Next Actions
+
+0. **（2026-10-12 12:4x JST）Phase A 相当の E2E（INU-324）を実行中**。サブスク優先（`RA_LLM_SUBSCRIPTION_FIRST=codex`）を実機確認のうえ `.env` で有効化（gpt-5.6-terra / sol とも codex exec で構造化出力 OK）。見つけた仕組みの不具合と修正：`6fc6cc8`（DAG 推定の根拠がラベル付き引用で弾かれる → 引用部分の照合、言い換えは除外）、`e1aeb09`（推定の検証失敗を「仕様を直せ」と案内しない）、`9fc8acd`（兄弟が動いている間に子が止まっても approvals に即通知）、`2853508`（catalog の content_hash を `sha256=` と表示していたため実装者がファイル SHA-256 と比べて DoD 不能と判断 → `file_sha256` を manifest に追加し表示を修正）、`98b48ce`（止まった親を Run Autopilot で再実行すると、止まった子が Linear In Progress のままで intake が拒否 → 止まった子を Todo に戻す）。E2E コピーの仕様補完（ユーザー許可「足りない情報は適当に補っていい」）：INU-325 に評価規則（optimum hit、1 kcal/mol、成功 0 件の扱い）、INU-326 に整合確認の代替（Phase 4 には fingerprint がない、D-067）、子 4 件の Allowed files 注記を「E2E で承認済み」に修正（旧注記「本番では未承認」を Reviewer が未承認と解釈して停止）。**運用上の注意**：Discord gateway（`discord run`）は起動時のコードで動く。2026-10-11 21:09 起動の gateway が UX 修正（02:35）後も旧コードのまま動いていたため 12:4x に再起動した。コード更新後は gateway も再起動すること（本番は compose の再起動）。
 
 0. **（2026-10-12 06:2x JST）OpenAI API のクレジット切れで LLM 段階がすべて停止中**（`credit_balance_exhausted`）。ユーザーに Discord 一般チャンネル（1558257920125308991）で補充を依頼済み。補充されるまで：INU-318 は Stop で一時停止（サイクル 2 の最終集約 INU-323 が codex_api の quota で止まった状態。補充後に `research resume INU-318` → サイクル内再試行）。Codex サブスクは 08:14 に回復。
 0. **Phase A 相当の E2E（ユーザー指示：08:15 以降に開始）**：Notion/Linear に `[E2E]` コピーを作成済み（親 INU-324、子 A1 INU-325 / A2 INU-326 / A3 INU-327 / A4 INU-328、元 INU-274〜278）。子には E2E 用の仮設定として Allowed files（`src/active_space_selection/phase_a/**`、`scripts/phase_a/**`、`tests/phase_a/**`）と Input artifacts（catalog 81 条件）を追記（本番 Phase A では未承認）。DAG dry-run は valid（依存は Dependency Planner が提案 → dev CLI で承認）。開始方法：INU-324 の Notion Run Requested を ON（または Run Autopilot）。承認は `research-agent research approve <task> --actor ...`（dev 限定）。
