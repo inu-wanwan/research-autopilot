@@ -566,3 +566,25 @@ def test_prose_required_artifacts_document_the_edge_and_ids_are_checked(tmp_path
     assert _validated_inputs(deps, parent, node(["81-condition reference table with E* and optimal subsets"]))
     assert _validated_inputs(deps, parent, node(["outputs/table.json"]))
     assert not _validated_inputs(deps, parent, node(["outputs/missing.json"]))
+
+
+def test_rerun_of_stopped_parent_adopts_completed_children_with_unchanged_specs(tmp_path):
+    from research_autopilot.autopilot.dag import ParentRun, TaskDAG
+    from research_autopilot.autopilot.dag_runtime import _adopt_completed_children, advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    schedule_ready(deps, parent)
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, "spec gap")
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
+    old = _parent(deps, parent.parent_run_id)
+    dag = TaskDAG.model_validate(deps.store.get(db.task_dags, old.dag_id))
+    new = ParentRun(parent_task_id="INU-900", parent_notion_page_id=old.parent_notion_page_id,
+                    parent_execution_run_id=old.parent_execution_run_id, dag_id=dag.dag_id, dag_hash=dag.dag_hash)
+    assert _adopt_completed_children(deps, new, dag) == ["INU-903"]
+    assert new.child_workflow_run_ids["INU-903"] == old.child_workflow_run_ids["INU-903"]
+    assert "INU-901" not in new.child_execution_run_ids  # the stopped child runs again
+    dag.nodes = [n.model_copy(update={"specification_hash": "changed"}) if n.task_id == "INU-903" else n for n in dag.nodes]
+    assert _adopt_completed_children(deps, ParentRun(parent_task_id="INU-900", parent_notion_page_id="p",
+                                                     parent_execution_run_id="e", dag_id=dag.dag_id,
+                                                     dag_hash="h"), dag) == []  # a changed spec runs again

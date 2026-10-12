@@ -73,6 +73,7 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     parent = ParentRun(parent_task_id=bundle.issue.identifier, parent_notion_page_id=page.page_id,
                        parent_execution_run_id=execution.execution_run_id, dag_id=provisional.dag_id,
                        dag_hash=provisional.dag_hash, carry_over=_carry_over_from_stopped(deps, bundle.issue.identifier))
+    _adopt_completed_children(deps, parent, provisional)
     _save_parent(deps, parent)
     deps.notion_writer.project_execution(page.page_id, status="Accepted", acknowledge=True)
     if provisional.status is DAGStatus.PENDING_APPROVAL:
@@ -353,6 +354,25 @@ def _stopped_parent(deps, parent_task_id: str) -> ParentRun | None:
         return None
     last = ParentRun.model_validate(max(rows, key=lambda r: str(r["created_at"])))
     return last if last.status in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED} else None
+
+
+def _adopt_completed_children(deps, parent: ParentRun, dag: TaskDAG) -> list[str]:
+    """Rerun of a stopped parent: children that completed in the previous run with the same specification are
+    taken over (their execution / workflow run, hence their validated outputs), not executed again."""
+    last = _stopped_parent(deps, parent.parent_task_id)
+    if last is None:
+        return []
+    raw = deps.store.get(db.task_dags, last.dag_id)
+    old_hash = {n.task_id: n.specification_hash for n in TaskDAG.model_validate(raw).nodes} if raw else {}
+    adopted = []
+    for node in dag.nodes:
+        if (_child_statuses(deps, last).get(node.task_id) is ExecutionStatus.COMPLETED
+                and old_hash.get(node.task_id) == node.specification_hash
+                and node.task_id in last.child_workflow_run_ids):
+            parent.child_execution_run_ids[node.task_id] = last.child_execution_run_ids[node.task_id]
+            parent.child_workflow_run_ids[node.task_id] = last.child_workflow_run_ids[node.task_id]
+            adopted.append(node.task_id)
+    return adopted
 
 
 def _carry_over_from_stopped(deps, parent_task_id: str) -> dict[str, dict]:
