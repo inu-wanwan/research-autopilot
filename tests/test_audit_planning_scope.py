@@ -306,3 +306,10 @@ def test_container_provenance_uses_absolute_paths_for_a_relative_checkout(tmp_pa
     cmd, cwd = calls[0]
     assert cmd[cmd.index("-f") + 1] == str((tmp_path / "job/src/compose.yaml").resolve())
     assert Path(cmd[cmd.index("--project-directory") + 1]).is_absolute() and Path(cwd).is_absolute()
+
+
+def test_claude_per_call_cap_is_not_applied_on_a_subscription():
+    from types import SimpleNamespace
+    from research_autopilot.implementation.orchestrator import _claude_billing
+    assert _claude_billing(SimpleNamespace(billing=lambda: "subscription")) == "subscription"
+    assert _claude_billing(SimpleNamespace()) == "unknown"  # fakes keep the cap

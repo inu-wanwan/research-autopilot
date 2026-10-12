@@ -482,6 +482,14 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
         requests = outcome.revision_requests
 
 
+def _claude_billing(backend) -> str:
+    """A claude.ai subscription reports a notional price; its per-call cap would only cut work short."""
+    try:
+        return backend.billing()
+    except Exception:  # a fake or older backend: keep the cap
+        return "unknown"
+
+
 def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask, wt: WorktreeManager,
                        attempt: AttemptRecord, requests: list[str], run_dir: Path, started,
                        rctx: RepairContext | None = None, repo: RepoConfig | None = None) -> ImplementationResult:
@@ -501,7 +509,7 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
             timeout_seconds=max(remaining, 30), log_path=run_dir / f"attempt-{attempt.number}-{choice.backend}.log",
             max_budget_usd=min(s.claude_max_budget_usd_per_call,
                                max(s.max_cost_usd_per_run - m.cost_usd_known - m.inherited_cost_usd, 0.01))
-            if choice.backend == "claude" else None,
+            if choice.backend == "claude" and _claude_billing(backend) != "subscription" else None,
             check_commands=[c for c in ((repo.test_command, repo.lint_command, repo.typecheck_command)
                                         if repo else ()) if c],
             on_progress=lambda message: _progress(
