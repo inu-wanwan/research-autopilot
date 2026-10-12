@@ -230,6 +230,9 @@ def _revalidate(spec: ExperimentSpec, repo) -> list[str]:
 
 def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: int) -> None:
     s = deps.settings
+    container = _container_mode(deps, m)
+    if container:
+        m.host = res.for_container(m.host, deps.extra.get("docker_memory") or res.docker_memory())
     rm = res.ResourceManager(s, m.host)
     done: dict[str, str] = {}  # experiment_id -> "validated" | "blocked"
     waiting_since: dict[str, float] = {}  # experiment_id -> when it started waiting for free memory
@@ -304,6 +307,8 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
         waiting = [e for e in waiting_since if e not in done]
         if waiting and not progressed:
             m.host = deps.detect_host()  # re-sample free memory while a job waits for it
+            if container:
+                m.host = res.for_container(m.host, deps.extra.get("docker_memory") or res.docker_memory())
             rm.host = m.host
         if not progressed and not waiting and not any(
                 j.handle and (j.status is None or not j.status.state.terminal) for j in m.jobs):
@@ -337,6 +342,20 @@ def _poll_interval(m: ExperimentManifest, s: Phase4Settings) -> float:
 def _last_job(m: ExperimentManifest, exp_id: str) -> JobRecord | None:
     jobs = [j for j in m.jobs if j.experiment_id == exp_id]
     return jobs[-1] if jobs else None
+
+
+def _container_mode(deps: ExpDeps, m: ExperimentManifest) -> bool:
+    """Jobs of this run execute in the repository's container image (Docker VM resources, not the host's)."""
+    if not deps.prepare_env:
+        return bool(deps.extra.get("docker_memory"))
+    try:
+        for spec in m.specs.values():
+            impl = deps.store.get_implementation(spec.identification.phase3_run_id)
+            if impl and getattr(_repo(deps, impl), "container", None) and not spec.external_code:
+                return True
+    except Exception:  # a missing record never changes the resource rule
+        return False
+    return False
 
 
 def _active_job(m: ExperimentManifest, exp_id: str) -> bool:

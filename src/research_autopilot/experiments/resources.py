@@ -1,6 +1,7 @@
 """Resource detection, estimation and reservation (oversubscription / OOM prevention)."""
 
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -86,6 +87,38 @@ def estimate(spec: ExperimentSpec, history: list[dict], settings: Phase4Settings
         rationale.append(f"history of {len(ok)} successful run(s): peak RSS {peak:.2f}GB, wall {wall_hist:.1f}min")
     return ResourceEstimate(cpu=cpu, memory_gb=round(mem, 3), gpu=int(round(r.gpu.value)),
                             walltime_minutes=round(wall, 2), basis=basis, confidence=conf, rationale=rationale)
+
+
+def docker_memory() -> tuple[float, float] | None:
+    """(total, free) GB of the Docker VM, where container-mode jobs run; None when docker is unavailable.
+
+    On macOS the VM's memory is reserved apart from the host's, so the host's free memory says nothing about
+    what a container job can use."""
+    try:
+        total = int(subprocess.run(["docker", "info", "--format", "{{.MemTotal}}"], capture_output=True, text=True,
+                                   timeout=30).stdout.strip() or 0)
+        used = 0.0
+        out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}"], capture_output=True,
+                             text=True, timeout=60).stdout
+        units = {"b": 1, "kib": 2**10, "mib": 2**20, "gib": 2**30, "kb": 1e3, "mb": 1e6, "gb": 1e9}
+        for line in out.splitlines():
+            m = re.match(r"\s*([\d.]+)\s*([KMG]i?B|B)", line.split("/")[0].strip(), re.I)
+            if m:
+                used += float(m.group(1)) * units.get(m.group(2).lower(), 1)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if total <= 0:
+        return None
+    return round(total / 2**30, 2), round(max(total - used, 0) / 2**30, 2)
+
+
+def for_container(host: HostResources, memory: tuple[float, float] | None) -> HostResources:
+    """The host as a container-mode job sees it: memory limit / free memory of the Docker VM."""
+    if memory is None:
+        return host
+    total, free = memory
+    return host.model_copy(update={"memory_limit_gb": total, "memory_available_gb": free,
+                                   "notes": [*host.notes, f"container mode: Docker VM memory {total:g}GB"]})
 
 
 class ResourceError(Exception):

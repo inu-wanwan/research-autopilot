@@ -449,3 +449,14 @@ def test_a_units_map_in_the_output_is_not_read_as_field_values():
     from research_autopilot.experiments.validator import _find_key
     doc = {"units": {"e_hartree": "Hartree"}, "results": [{"e_hartree": -1.1}, {"e_hartree": -1.0}]}
     assert [p for p, _ in _find_key(doc, "e_hartree")] == ["/results/0/e_hartree", "/results/1/e_hartree"]
+
+
+def test_container_jobs_use_the_docker_vm_memory_not_the_hosts(tmp_path):
+    from phase4_fakes import host
+    deps, runs, *_ = make_exp(tmp_path, compute=FakeComputeBackend([OK]))
+    deps.detect_host = lambda: host(avail=0.6)  # the Mac itself is nearly full
+    deps.extra["docker_memory"] = (8.0, 7.0)  # the Docker VM has room
+    m = run_experiment(deps, phase3_run_ids=runs)
+    assert m.state is ExperimentState.COMPLETED, m.block_reason
+    assert not any(e.kind == "waiting" for e in m.events)
+    assert m.host.memory_available_gb == 7.0 and any("Docker VM" in n for n in m.host.notes)
