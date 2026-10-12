@@ -65,7 +65,7 @@ Dependency Planner は `RA_DAG_INFERENCE_MODEL` を使用し、未設定時は `
 
 Notion / Linear に `[E2E]` コピー（親 INU-324、A1 INU-325 / A2 INU-326 / A3 INU-327 / A4 INU-328）を作り、承認は dev 限定 CLI（`research-agent research approve`、`cli-dev:claude-code`）で代行した。E2E コピーの仕様に足りない情報はユーザー許可のうえ補った（`Allowed files`、`Input artifacts`、評価規則・整合確認・tie 規則・optimum 定義。各節に「E2E 補完」と明記。本番 Phase A の仕様ではない）。
 
-結果（19:3x JST 時点）：A1・A2 は完了（A1：81 条件で oracle が Phase 4 cache を再生、A2：81 条件の reference table）。A3・A4 は実行中。
+結果（20:1x JST）：A1・A2 は完了（A1：81 条件で oracle が Phase 4 cache を再生、A2：81 条件の reference table）。A3 は科学的な理由で停止（承認済み cache に Greedy/Beam の途中評価と Entropy/NOON の参照がなく、新規 CASCI か仕様変更が必要。研究者判断待ち）。A4 は A3 待ち。
 
 見つけて直した仕組みの不具合（すべて commit・テスト済み）：
 

@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-12 15:3x JST / Claude Code
+2026-10-12 20:1x JST / Claude Code
 
 ## Git Branch / Commit
 
@@ -119,6 +119,14 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - ユーザー決定（本番まで）：サブスク優先・API は不可能なときだけ。`RA_LLM_SUBSCRIPTION_FIRST=codex`（既定 off）で、`planning/agents.py` `_AgentsSdkBase._run` を通る全構造化呼び出し（Planner / Reviewer、Analyst、Scientific / Completion Reviewer、Dependency Planner、Adapter 生成、`PricedLlm` 経由の文献・Phase 10・外部 repo）が先に `llm_subscription.codex_structured`（`codex exec --json --ephemeral --ignore-user-config -s read-only --output-schema`、空の一時ディレクトリ、API キーなしの sanitized env、effort medium）を試し、usage limit / 認証 / プロセス異常 / timeout / 不正出力（1 回再試行）で従来の API 経路へ fallback。usage limit・認証・codex 不在はプロセス内で 15 分 codex を飛ばす。サブスク呼び出しは cost 0 USD（`billing="subscription"`、`LlmCall` / `LlmUsage` に記録）、API は従来どおり価格計算。価格未設定のモデルはサブスクでは実行し、API への fallback だけを `LlmBudgetError` で拒否。テストは fake codex（`tests/test_llm_subscription.py`）のみで、実 codex での確認は未実施（モデル ID がサブスクで使えるかも未確認、使えなければ毎回 process_error → API）。
 
 ### Exact Next Actions
+
+0. **（2026-10-12 20:1x JST）Phase A 相当 E2E（INU-324）の到達点と本番投入の判断材料**。詳細と修正一覧は `docs/operations/phase6b_parent_dag.md`「Phase A 相当の E2E」。
+   - **A1（INU-325）・A2（INU-326）は完了**。
+   - **A3（INU-327）は科学的な理由で停止（正しい停止）**：Implementer が DoD を実現不能と報告し、1 回の再計画後も同じ報告。理由は 2 点。(1) Oracle Greedy / Beam は空集合から部分集合を育てながら評価するが、承認済みの catalog（81 条件）には k−1 / k の最大部分集合の評価しかなく、途中の energy や greedy の query 数がない。Phase 4D はそれらを承認外の cache で新規 CASCI として計算していた。(2) Entropy / NOON Top-k は全候補空間の FCI/DMRG 参照が必要で、catalog にない。N2 では 7300 万〜1.35 億 determinant で、計画の 4 GB 上限を超える。研究者の判断が必要：新規 CASCI 計算を認めるか（計算量・予算）、Greedy/Beam/Entropy/NOON の扱いを変えるか（仕様の変更）。RA 側では決めていない。
+   - **A4（INU-328）は A3 待ち**（DAG v15 で A3→A4）。親 INU-324 は Blocked。approvals に手順付きで通知済み。
+   - **本番投入までに人が決めること**：(a) 上の A3 の扱い。(b) 本番 Phase A（INU-274〜278）の Allowed files / Input artifacts（E2E では `src/active_space_selection/phase_a/**`・`scripts/phase_a/**`・`tests/phase_a/**` と catalog 81 条件を仮に使った）。(c) A2 / A4 の tie tolerance・optimum 定義（E2E では 1e-9 Hartree）、A1 の評価規則（optimum hit・1 kcal/mol・成功 0 件の扱い）。E2E コピーの「E2E 補完」節が叩き台になる。(d) main への merge / push（未実施。ブランチ `phase10/research-planning`）。
+   - **運用の前提**：`.env` の `RA_LLM_SUBSCRIPTION_FIRST=codex,claude`（Codex → Claude サブスク → API）。トークン上限は cache read を除いて数える（ユーザー決定）。Claude サブスクの費用は API 予算に計上せず、1 回あたりの上限もかけない（ユーザー確認済み）。Discord gateway はコード更新後に再起動すること。poll ループは scratchpad の `poll_loop4.sh`（INU-324、最長 12 時間、16:2x 開始）。
+   - テスト：`uv run pytest` 691 passed / 1 warning（既存 discord/audioop）。
 
 0. **（2026-10-12 12:4x JST）Phase A 相当の E2E（INU-324）を実行中**。サブスク優先（`RA_LLM_SUBSCRIPTION_FIRST=codex`）を実機確認のうえ `.env` で有効化（gpt-5.6-terra / sol とも codex exec で構造化出力 OK）。見つけた仕組みの不具合と修正：`6fc6cc8`（DAG 推定の根拠がラベル付き引用で弾かれる → 引用部分の照合、言い換えは除外）、`e1aeb09`（推定の検証失敗を「仕様を直せ」と案内しない）、`9fc8acd`（兄弟が動いている間に子が止まっても approvals に即通知）、`2853508`（catalog の content_hash を `sha256=` と表示していたため実装者がファイル SHA-256 と比べて DoD 不能と判断 → `file_sha256` を manifest に追加し表示を修正）、`98b48ce`（止まった親を Run Autopilot で再実行すると、止まった子が Linear In Progress のままで intake が拒否 → 止まった子を Todo に戻す）。E2E コピーの仕様補完（ユーザー許可「足りない情報は適当に補っていい」）：INU-325 に評価規則（optimum hit、1 kcal/mol、成功 0 件の扱い）、INU-326 に整合確認の代替（Phase 4 には fingerprint がない、D-067）、子 4 件の Allowed files 注記を「E2E で承認済み」に修正（旧注記「本番では未承認」を Reviewer が未承認と解釈して停止）。追加の修正（12:4x 以降）：`55e558b`（container 内でワークツリーの .git が見えず commit 由来のテストが落ちる → 主 repo の .git を ro マウント、Claude fallback が repo のテストコマンドを実行可能に）、`e363a16` / `039d0fa`（Claude サブスクの名目コストを API 予算に計上しない、サブスク時は 1 回あたりの上限をかけない）、`8740124` / `dbddbb6`（上限内だが今の空きメモリが足りないジョブは最大 30 分待つ、`RA_EXP_RESOURCE_WAIT_MIN`）、`d267f02`（container provenance の相対パス二重化）、`75367fb` / `9a40d2d`（止まった親の再実行で子を継続：Phase 3 の続き、実験だけ止まった子は Phase 4 を 1 回だけ再実行）、`db946af`（DoD の引用：複数箇所の引用を空行区切りで許可、和文と英字の間の空白の揺れを無視、失敗メッセージに見つからない箇所そのものを出す）、`73041b1`（構造化呼び出しを Codex → Claude サブスク → API の順に。`.env` は `RA_LLM_SUBSCRIPTION_FIRST=codex,claude`。実機確認済み）、`cded2a1`（container モードで runner が設定する RA_CATALOG_INPUTS をホストに要求して dead letter）、`42dbea4`（出力内の units 辞書を値として読んで単位検査が失敗）。Codex サブスクは 13:15 回復後 14:2x に再び上限（回復 18:18）：構造化呼び出しもサブスクにしたため消費が速い。**運用上の注意**：Discord gateway（`discord run`）は起動時のコードで動く。2026-10-11 21:09 起動の gateway が UX 修正（02:35）後も旧コードのまま動いていたため 12:4x に再起動した。コード更新後は gateway も再起動すること（本番は compose の再起動）。
 
