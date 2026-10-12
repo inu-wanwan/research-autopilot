@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-12 20:1x JST / Claude Code
+2026-10-13 04:3x JST / Claude Code
 
 ## Git Branch / Commit
 
@@ -120,7 +120,8 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ### Exact Next Actions
 
-0. **（2026-10-12 20:1x JST）Phase A 相当 E2E（INU-324）の到達点と本番投入の判断材料**。詳細と修正一覧は `docs/operations/phase6b_parent_dag.md`「Phase A 相当の E2E」。
+0. **（2026-10-12 20:1x JST）Phase A 相当 E2E（INU-324）の到達点と本番投入の判断材料**。
+   - **2026-10-13 03:25 JST：親 INU-324 は Done（E2E 完了）**。A1〜A4 すべて Completed。A3 は 1e-10 Eh 許容への修正（ユーザー承認）後に完了、A4 は units チェック修正 `a8a4f0f` 後に完了。子・親の completion review は CLI で代行承認（科学的結論は人の検証前、Phase B 方針は未承認）。Discord general に最終報告済み。ポーリングループ（`poll_loop4.sh`）は終了済み（親は runs に出ないため STAGE 判定が効かず 12 時間で終了した。次回は parent_runs を見ること）。Discord gateway（`discord run`）は稼働中。結果の要約と修正一覧は `docs/operations/phase6b_parent_dag.md`。本番前に人が決めること：本番 Allowed files / Input artifacts、評価規則と tie tolerance（A4 は 1e-12 を使ったが出典未確認）、本番 INU-274〜278 の Linear blocks（現在なし、付けるなら全 edge を明示）、Eagle での Entropy/NOON 参照計算、merge / push。詳細と修正一覧は `docs/operations/phase6b_parent_dag.md`「Phase A 相当の E2E」。
    - **A1（INU-325）・A2（INU-326）は完了**。
    - **A3（INU-327）は科学的な理由で停止（正しい停止）**：Implementer が DoD を実現不能と報告し、1 回の再計画後も同じ報告。理由は 2 点。(1) Oracle Greedy / Beam は空集合から部分集合を育てながら評価するが、承認済みの catalog（81 条件）には k−1 / k の最大部分集合の評価しかなく、途中の energy や greedy の query 数がない。Phase 4D はそれらを承認外の cache で新規 CASCI として計算していた。(2) Entropy / NOON Top-k は全候補空間の FCI/DMRG 参照が必要で、catalog にない。N2 では 7300 万〜1.35 億 determinant で、計画の 4 GB 上限を超える。研究者の判断が必要：新規 CASCI 計算を認めるか（計算量・予算）、Greedy/Beam/Entropy/NOON の扱いを変えるか（仕様の変更）。RA 側では決めていない。
    - **A3 のユーザー判断（Discord、2026-10-12 22:2x）**：新規 CASCI 計算を許可（承認済み cache と同条件、既存 cache は read-only、出力は `outputs/phase_a/` 配下）。Entropy / NOON Top-k はこの E2E では保留（全候補空間の参照は Phase 6.5D 実績でピーク 8–11 GB、Mac の Docker 上限 8 GB に載らない。既存 6.5D DMRG は energy のみで占有なし）。本番では Eagle で参照を計算してから入れる想定。INU-327 コピーに「A3 の計算範囲（E2E 補完）」節として追記し、22:23 に親 INU-324 を Run Requested で再実行。

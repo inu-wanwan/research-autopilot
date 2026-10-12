@@ -67,6 +67,10 @@ Notion / Linear に `[E2E]` コピー（親 INU-324、A1 INU-325 / A2 INU-326 / 
 
 結果（20:1x JST）：A1・A2 は完了（A1：81 条件で oracle が Phase 4 cache を再生、A2：81 条件の reference table）。A3 は科学的な理由で停止（承認済み cache に Greedy/Beam の途中評価と Entropy/NOON の参照がなく、新規 CASCI か仕様変更が必要。研究者判断待ち）。A4 は A3 待ち。
 
+結果（2026-10-13 03:25 JST、最終）：**親 INU-324 は Done**（A1〜A4 すべて Completed、親 Notes 作成、Linear Done）。A3・A4 はユーザー許可のもと新規 CASCI を使える条件で実行（実際の新規 CASCI は 0 件）、Entropy/NOON Top-k は Mac の Docker 上限 8 GB に参照計算が載らないためユーザー判断で保留。A3 の入力整合チェックは軌道エネルギーを完全一致で比べていて 1e-14 Eh の浮動小数点差で止まったため、ユーザー承認のうえ 1e-10 Eh 許容に変更（E2E コピーの仕様に追記）。A3：81 条件×8 手法、Greedy は Phase 4 と 81/81 一致、最適到達は Beam-8 74・BOCS 68・Beam-4 65・Greedy 52（query 予算が揃っていないので効率比較は未結論）。A4：数値チェック 14 件合格、beam 幅 2/4/8 の query 削減上限 0.146/0.307/0.443。科学的な結論は人が検証していない。親の Completion Gate は「Gate の判断材料を Notes に記録」を決定論的に確立できず COMPLETION_REVIEW に回り、CLI で承認した（親 Notes は子の状態と Gate 理由だけで、判断材料は各子の Notes にある）。
+
+DAG の edge に関する教訓：Linear に依存が 1 本でもあると推論しないため、edge を足すときは全部を Linear に明示する。DAG 承認前に edge を必ず確認する（v16 で推論から A3→A4 が落ちたのを見落として承認し、A4 が先に走った）。
+
 見つけて直した仕組みの不具合（すべて commit・テスト済み）：
 
 | 症状 | 修正 |
@@ -92,6 +96,9 @@ Notion / Linear に `[E2E]` コピー（親 INU-324、A1 INU-325 / A2 INU-326 / 
 | 仕様が実装に委ねた事項を Plan Reviewer が計画で要求 | `ccb37cb` |
 | トークン上限に cache read を含めて数える | `72e05f7`（ユーザー決定：cache read を除く、上限 3M は維持） |
 | 無視済みの noise パスの除外で `git add` が exit 1 | `d555d61` |
+| container モードで host の memory reserve を Docker VM に二重に課す／安全係数だけで上限超過して block | `5969ae8`：初回は推定が上限内なら上限を割り当てる |
+| 親の再実行で adopt した完了 child の成果物が schedule 判定より後に capture され「missing or stale」 | `18f4f3d`：schedule 前に capture、upstream 入力に `file_sha256` |
+| units チェックが `definitions` の説明文（文字列の辞書）を値として読む | `a8a4f0f` |
 
 運用上の注意：Discord gateway（`discord run`）は起動時のコードで動くので、コード更新後に再起動する。Codex サブスクは構造化呼び出しもサブスクに回すと 1〜2 時間で上限に達する（回復まで約 5 時間）。この間は Claude サブスクで進む。
 
