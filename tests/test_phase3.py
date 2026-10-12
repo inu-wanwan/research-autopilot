@@ -552,3 +552,19 @@ def test_token_budget_counts_new_input_and_output_not_cache_reads():
     from research_autopilot.implementation.models import Usage
     u = Usage(input_tokens=24_000_000, cached_input_tokens=23_000_000, output_tokens=200_000)
     assert u.budgeted == 1_200_000 and u.total == 24_200_000  # the total is still recorded
+
+
+def test_diff_includes_new_files_when_a_noise_dir_is_gitignored(tmp_path):
+    from types import SimpleNamespace
+    repo = tmp_path / "r"
+    repo.mkdir()
+    for args in (["init", "-q"], ["-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / ".gitignore").write_text(".ruff_cache/\n")
+    (repo / ".ruff_cache").mkdir()
+    (repo / ".ruff_cache" / "x").write_text("cache")
+    (repo / "new.py").write_text("print(1)\n")
+    wt = WorktreeManager(SimpleNamespace(path=str(repo), id="r", base_branch="main"), tmp_path / "wts")
+    d = wt.diff(repo, base)
+    assert "b/new.py" in d and "b/.ruff_cache" not in d

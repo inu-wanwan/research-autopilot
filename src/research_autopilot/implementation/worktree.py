@@ -85,6 +85,18 @@ class WorktreeManager:
             raise GitError(f"git {' '.join(args)} failed ({p.returncode}): {p.stderr.strip()[:300]}")
         return p.stdout
 
+    def _add(self, path: Path, *flags: str) -> None:
+        """``git add -A`` without noise paths. Git exits 1 when an excluded noise path (e.g. .ruff_cache) is also
+        gitignored, although everything else was added; only that case is tolerated."""
+        args = ("add", "-A", *flags, "--", ".", *_NOISE_PATHSPEC)
+        p = subprocess.run(["git", *args], cwd=path, capture_output=True, text=True,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        self._audit(GitAuditEntry(args=list(args), cwd=str(path), exit_code=p.returncode))
+        err = p.stderr.strip()
+        if p.returncode != 0 and not (p.returncode == 1 and "ignored by one of your .gitignore files" in err
+                                      and "fatal" not in err.lower()):
+            raise GitError(f"git {' '.join(args)} failed ({p.returncode}): {err[:300]}")
+
     # ---------------------------------------------------------------- repository checks
 
     def verify_repository(self) -> dict:
@@ -190,11 +202,11 @@ class WorktreeManager:
         return bool(self.git("status", "--porcelain", "--", ".", *_NOISE_PATHSPEC, cwd=path).strip())
 
     def diff(self, path: Path, base_commit: str) -> str:
-        self.git("add", "-A", "--intent-to-add", "--", ".", *_NOISE_PATHSPEC, cwd=path)  # include untracked files
+        self._add(path, "--intent-to-add")  # include untracked files
         return self.git("diff", base_commit, "--", ".", *_NOISE_PATHSPEC, cwd=path)
 
     def diff_stat(self, path: Path, base_commit: str) -> str:
-        self.git("add", "-A", "--intent-to-add", "--", ".", *_NOISE_PATHSPEC, cwd=path)
+        self._add(path, "--intent-to-add")
         return self.git("diff", "--stat", base_commit, "--", ".", *_NOISE_PATHSPEC, cwd=path)
 
     def commit_all(self, path: Path, message: str) -> str | None:
@@ -202,7 +214,7 @@ class WorktreeManager:
         branch = self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=path).strip()
         if branch in PROTECTED_BRANCHES:
             raise GitError(f"refusing to commit on protected branch {branch}")
-        self.git("add", "-A", "--", ".", *_NOISE_PATHSPEC, cwd=path)
+        self._add(path)
         if not self.git("diff", "--cached", "--name-only", cwd=path).strip():
             return None
         self.git("-c", "user.name=Research Autopilot", "-c", "user.email=research-autopilot@localhost",
