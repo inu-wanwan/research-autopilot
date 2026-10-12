@@ -160,7 +160,10 @@ reviewer will judge the implementation only against these items, so this is wher
 A Definition of Done item may be stated against a contract that the plan's early, bounded discovery step fixes
 (e.g. "every point reports the convergence status of the chosen PySCF solver as true, and the criterion used is
 recorded in the output") -- that is pass/fail checkable; do not require the plan to pick the API or exact
-schema layout up front. Approve when only minor issues remain.
+schema layout up front. Likewise, when the specification explicitly leaves a detail to the implementation
+(e.g. "decided at implementation time", "実装時に決める"), do not demand that the plan fix it: require only that
+the implementation records the values it chose (in its outputs / provenance); anything more is minor.
+Approve when only minor issues remain.
 
 Later iterations (PREVIOUS REVISION REQUESTS given): check whether each of your previous requests was
 addressed. Raise a new major or blocking request only if, without it, an acceptance criterion or a scientific

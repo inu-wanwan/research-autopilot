@@ -725,6 +725,7 @@ def test_planning_prompts_treat_bounded_api_discovery_as_implementation_work():
 
     assert "ordinary implementation discovery" in PLANNER_INSTRUCTIONS
     assert "Technical details that an implementer can determine" in REVIEWER_INSTRUCTIONS
+    assert "実装時に決める" in REVIEWER_INSTRUCTIONS  # a detail the spec defers is not demanded in the plan
 
 
 def test_a_human_resume_resets_the_no_progress_count(tmp_path):
