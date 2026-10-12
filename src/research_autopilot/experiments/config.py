@@ -46,6 +46,7 @@ def load_phase4_settings(env: dict[str, str] | None = None) -> Phase4Settings:
         "RA_EXP_RESERVE_CPU": ("reserve_cpu", float), "RA_EXP_RESERVE_MEMORY_GB": ("reserve_memory_gb", float),
         "RA_EXP_MAX_JOB_CPU": ("max_job_cpu_total", float), "RA_EXP_MAX_JOB_MEMORY_GB": ("max_job_memory_gb_total", float),
         "RA_EXP_MAX_PARALLEL": ("max_parallel_jobs", int), "RA_EXP_MAX_WALLTIME_MIN": ("max_walltime_minutes", float),
+        "RA_EXP_RESOURCE_WAIT_MIN": ("resource_wait_minutes", float),
         "RA_EXP_MAX_RETRIES": ("max_infra_retries", int), "RA_EXP_MAX_ROUNDTRIPS": ("max_roundtrips", int),
         "RA_ANALYST_MODEL": ("analyst_model", str), "RA_SCI_REVIEWER_MODEL": ("reviewer_model", str),
         "RA_EXP_MAX_LLM_COST_USD": ("max_llm_cost_usd_per_run", float),
