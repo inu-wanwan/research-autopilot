@@ -265,3 +265,20 @@ def test_linear_writer_assigns_created_issue_to_api_user():
     created = writer.create_issue("team-1", "Follow-up", "details", "state-todo", ["label-autopilot"])
     assert created == ("issue-1", "INU-999", "https://linear/INU-999")
     assert len(calls) == 2
+
+
+def test_tables_over_the_notion_child_limit_are_split_and_notes_keep_every_block():
+    from research_autopilot.tasks.notion_writer import NotionWriter, fit_blocks
+    row = lambda i: {"type": "table_row", "table_row": {"cells": [[{"type": "text", "text": {"content": str(i)}}]]}}
+    table = {"type": "table", "table": {"table_width": 1, "has_column_header": True,
+                                        "children": [row(i) for i in range(169)]}}
+    parts = fit_blocks([table])
+    assert [len(p["table"]["children"]) for p in parts] == [100, 70]
+    assert all(p["table"]["children"][0] == row(0) for p in parts)  # header repeated
+    calls = []
+    w = NotionWriter("t", "ds", "notes")
+    w._call = lambda method, path, **kw: calls.append((method, path, kw)) or {"id": "p", "url": "u"}
+    para = {"type": "paragraph", "paragraph": {"rich_text": []}}
+    w.create_note("t", [table] + [para] * 150)
+    sent = [b for _, _, kw in calls for b in kw["json"]["children"]]
+    assert len(sent) == 2 + 150 and all(len(kw["json"]["children"]) <= 100 for _, _, kw in calls)

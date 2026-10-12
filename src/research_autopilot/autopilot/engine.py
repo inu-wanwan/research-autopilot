@@ -574,10 +574,14 @@ def _continue(deps: AutopilotDeps, run: WorkflowRun) -> bool:
     run.plan_run_id, run.plan_id = c["plan_run_id"], c.get("plan_id")
     run.plan_version += 1
     run.event("planned", f"plan {str(run.plan_id)[:8]} reused: the previous run stopped on a non-task limit")
-    if c["stage"] == "experimenting":
+    if c["stage"] in ("experimenting", "completing"):
         run.phase3_run_ids, run.commits = [c["phase3_run_id"]], [c["commit"]]
         run.stage = WorkflowStage.EXPERIMENTING
         run.event("implemented", f"commit {c['commit'][:12]} reused (Phase 3 {c['phase3_run_id'][:8]})")
+        if c["stage"] == "completing":
+            run.experiment_run_ids = [c["experiment_run_id"]]
+            run.stage = WorkflowStage.COMPLETING
+            run.event("experimented", f"experiment {c['experiment_run_id'][:8]} reused (validated); completing again")
     else:
         run.stage = WorkflowStage.IMPLEMENTING
     return True

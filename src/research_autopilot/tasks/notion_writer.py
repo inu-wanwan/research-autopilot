@@ -60,6 +60,26 @@ def section(title: str, body: str | list[str]) -> list[dict]:
     return [heading(title), paragraph(body or "-")]
 
 
+
+MAX_CHILDREN = 100  # Notion: at most 100 children per block in one request (a table's rows are its children)
+
+
+def fit_blocks(blocks: list[dict]) -> list[dict]:
+    """Split a table with more than MAX_CHILDREN rows into consecutive tables (header row repeated)."""
+    out: list[dict] = []
+    for b in blocks:
+        table = b.get("table") if b.get("type") == "table" else None
+        rows = (table or {}).get("children") or []
+        if len(rows) <= MAX_CHILDREN:
+            out.append(b)
+            continue
+        header = rows[:1] if table.get("has_column_header") else []
+        body = rows[len(header):]
+        step = MAX_CHILDREN - len(header)
+        for k in range(0, len(body), step):
+            out.append({**b, "table": {**table, "children": header + body[k:k + step]}})
+    return out
+
 class NotionWriter:
     def __init__(self, token: str, tasks_data_source_id: str, notes_data_source_id: str, *,
                  transport: httpx.BaseTransport | None = None, retry: RetryPolicy | None = None,
@@ -91,17 +111,20 @@ class NotionWriter:
             props[PROP_CATEGORY] = {"select": {"name": category}}
         if parent_page_id:
             props[PROP_PARENT] = {"relation": [{"id": parent_page_id}]}
+        blocks = fit_blocks(blocks)
         page = self._call("POST", "/pages", json={"parent": {"type": "data_source_id", "data_source_id": self.tasks_ds},
                                                   "properties": props, "children": blocks[:100]})
         self.append_blocks(page["id"], blocks[100:])
         return page["id"], page.get("url", "")
 
     def append_blocks(self, block_id: str, blocks: list[dict]) -> None:
+        blocks = fit_blocks(blocks)
         for i in range(0, len(blocks), 100):
             self._call("PATCH", f"/blocks/{block_id}/children", json={"children": blocks[i:i + 100]})
 
     def create_subpage(self, parent_page_id: str, title: str, blocks: list[dict]) -> tuple[str, str]:
         """A plain page inside a task page (not a Tasks DB row): RA's versioned plan / change proposal record."""
+        blocks = fit_blocks(blocks)
         page = self._call("POST", "/pages", json={"parent": {"type": "page_id", "page_id": parent_page_id},
                                                   "properties": {"title": {"title": _rt(title)}},
                                                   "children": blocks[:100]})
@@ -148,8 +171,10 @@ class NotionWriter:
             NOTES_STATUS: {"status": {"name": NOTES_ADOPTED}},
             NOTES_CATEGORY: {"multi_select": [{"name": category}]},
         }
+        blocks = fit_blocks(blocks)
         page = self._call("POST", "/pages", json={"parent": {"type": "data_source_id", "data_source_id": self.notes_ds},
                                                   "properties": props, "children": blocks[:100]})
+        self.append_blocks(page["id"], blocks[100:])
         return page["id"], page.get("url", "")
 
     def page_url(self, page_id: str) -> str:

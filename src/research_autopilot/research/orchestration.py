@@ -242,6 +242,10 @@ def _carry_over(deps, old: ParentRun, task_id: str, any_experiment_block: bool =
         done = next((m for m in manifests if m.state is RunState.COMPLETED and m.implementation_commit), None)
         if done and raw.get("experiment_run_ids"):
             e = deps.store.get_experiment(raw["experiment_run_ids"][-1])
+            if any_experiment_block and e and e.state is ExperimentState.COMPLETED:
+                # the experiment validated and the run stopped while completing (e.g. a Notes write): finish it
+                return {**base, "stage": "completing", "phase3_run_id": done.phase3_run_id,
+                        "commit": done.implementation_commit, "experiment_run_id": e.experiment_run_id}
             # (a human rerun of a stopped parent may re-run Phase 4 once whatever stopped the experiment: the
             # environment, the data or the validator may have been fixed; a second stop is planned again)
             if e and e.state is ExperimentState.BLOCKED \
