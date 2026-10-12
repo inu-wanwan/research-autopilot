@@ -402,7 +402,7 @@ def test_rerun_of_stopped_parent_carries_over_where_stopped_children_can_continu
     schedule_ready(deps, parent)
     asked = []
     monkeypatch.setattr(orchestration, "_carry_over",
-                        lambda d, old, t: asked.append(t) or {"stage": "experimenting", "phase3_run_id": "p3"})
+                        lambda d, old, t, **kw: asked.append(t) or {"stage": "experimenting", "phase3_run_id": "p3"})
     assert _carry_over_from_stopped(deps, "INU-900") == {}  # parent still running
     _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, "environment preparation failed")
     _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)

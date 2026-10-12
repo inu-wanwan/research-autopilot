@@ -225,7 +225,7 @@ def _retry_blocked_cycle(deps, run: WorkflowRun, cycle: ResearchCycle, auth: Res
     return True
 
 
-def _carry_over(deps, old: ParentRun, task_id: str) -> dict | None:
+def _carry_over(deps, old: ParentRun, task_id: str, any_experiment_block: bool = False) -> dict | None:
     """Where can a failed child continue? A completed implementation whose experiment failed on environment
     setup re-runs Phase 4 only; a Phase 3 run cut off by a non-task limit (usage / rate limit, process or transient
     failure, wall time) continues in its worktree with the same plan. Anything else is planned again."""
@@ -242,7 +242,10 @@ def _carry_over(deps, old: ParentRun, task_id: str) -> dict | None:
         done = next((m for m in manifests if m.state is RunState.COMPLETED and m.implementation_commit), None)
         if done and raw.get("experiment_run_ids"):
             e = deps.store.get_experiment(raw["experiment_run_ids"][-1])
-            if e and e.state is ExperimentState.BLOCKED and ENVIRONMENT_FAILURE in (e.block_reason or "") \
+            # (a human rerun of a stopped parent may re-run Phase 4 once whatever stopped the experiment: the
+            # environment, the data or the validator may have been fixed; a second stop is planned again)
+            if e and e.state is ExperimentState.BLOCKED \
+                    and (any_experiment_block or ENVIRONMENT_FAILURE in (e.block_reason or "")) \
                     and not _phase4_rerun_used(deps, old, task_id):
                 return {**base, "stage": "experimenting", "phase3_run_id": done.phase3_run_id,
                         "commit": done.implementation_commit}

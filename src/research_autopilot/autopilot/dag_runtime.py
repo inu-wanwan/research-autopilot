@@ -357,14 +357,14 @@ def _stopped_parent(deps, parent_task_id: str) -> ParentRun | None:
 
 def _carry_over_from_stopped(deps, parent_task_id: str) -> dict[str, dict]:
     """Where the stopped children of the previous run can continue (same rule as a research cycle retry: an
-    environment failure after an approved implementation re-runs Phase 4 only; a cut-off Phase 3 continues)."""
+    approved implementation whose experiment stopped re-runs Phase 4 once; a cut-off Phase 3 continues)."""
     last = _stopped_parent(deps, parent_task_id)
     if last is None:
         return {}
     from research_autopilot.research.orchestration import _carry_over
     stopped = [t for t, st in _child_statuses(deps, last).items()
                if st in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}]
-    return {t: c for t in stopped if (c := _carry_over(deps, last, t))}
+    return {t: c for t in stopped if (c := _carry_over(deps, last, t, any_experiment_block=True))}
 
 
 def _reset_stopped_children(deps, parent_task_id: str) -> None:
