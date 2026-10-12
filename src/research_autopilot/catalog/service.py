@@ -292,6 +292,7 @@ def resolve(ctx: CatalogContext, queries: list[ArtifactQuery], *, verify: bool =
                 artifact_id=art.artifact_id, kind=art.kind, identity=art.identity, content_hash=art.content_hash,
                 path=str((root / loc.relative_path).resolve()),
                 files=[str((root / rel).resolve()) for rel in sorted(art.members_digest)],
+                file_sha256={str((root / rel).resolve()): digest for rel, digest in sorted(art.members_digest.items())},
                 repository_id=art.provenance.repository_id, adapter_id=art.provenance.adapter_id,
                 metadata=art.metadata, provenance=art.provenance.source))
         if q.expect_count is not None and len(by_identity) != q.expect_count:

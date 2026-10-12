@@ -90,6 +90,11 @@ def test_implementer_prompt_lists_catalog_artifacts_as_read_only_inputs(tmp_path
     block = _task_block(task)
     assert [a["identity"]["k"] for a in block["catalog_artifacts"]] == [2, 3]
     assert all(Path(f).is_file() for a in block["catalog_artifacts"] for f in a["files"])
+    # per-file SHA-256 is given; the artifact content_hash is a members digest, not any file's hash
+    import hashlib
+    for a in block["catalog_artifacts"]:
+        assert set(a["file_sha256"]) == set(a["files"])
+        assert all(hashlib.sha256(Path(f).read_bytes()).hexdigest() == h for f, h in a["file_sha256"].items())
     assert "read-only" in IMPLEMENTER_RULES and INPUTS_ENV in IMPLEMENTER_RULES
 
 

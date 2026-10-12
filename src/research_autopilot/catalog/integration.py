@@ -107,10 +107,12 @@ def ensure_repository(ctx: CatalogContext, repository_id: str) -> list[str]:
 def planner_context(res: Resolution) -> str:
     """Compact, deterministic text appended to Input artifacts for the planner (paths stay out of the LLM)."""
     lines = [f"Resolved catalog artifacts ({len(res.artifacts)}, environment {res.environment}, all verified, "
-             f"read-only; never modify or regenerate them):"]
+             f"read-only; never modify or regenerate them). content_hash is a digest of the sorted "
+             f"(member path, member file SHA-256) pairs, NOT a file SHA-256; per-file SHA-256 values are in the "
+             f"inputs manifest (file_sha256):"]
     for a in res.artifacts[:200]:
         lines.append(f"- {a.kind} {json.dumps(a.identity, sort_keys=True)} id={a.artifact_id} "
-                     f"sha256={a.content_hash[:12]}")
+                     f"content_hash={a.content_hash[:12]} files={len(a.files)}")
     if len(res.artifacts) > 200:
         lines.append(f"- ... {len(res.artifacts) - 200} more")
     return "\n".join(lines)
@@ -121,7 +123,7 @@ def implementer_view(resolution: dict | None) -> list[dict]:
         return []
     res = Resolution.model_validate(resolution)
     return [{"artifact_id": a.artifact_id, "kind": a.kind, "identity": a.identity, "content_hash": a.content_hash,
-             "files": a.files, "metadata": a.metadata, "provenance": a.provenance} for a in res.artifacts]
+             "files": a.files, "file_sha256": a.file_sha256, "metadata": a.metadata, "provenance": a.provenance} for a in res.artifacts]
 
 
 def recheck(ctx: CatalogContext, frozen: dict) -> tuple[Resolution, list[str]]:

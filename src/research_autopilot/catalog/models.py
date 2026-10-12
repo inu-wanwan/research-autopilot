@@ -219,6 +219,8 @@ class ResolvedArtifact(BaseModel):
     content_hash: str
     path: str  # absolute directory of the artifact on the requesting environment
     files: list[str] = Field(default_factory=list)  # absolute member paths (read-only inputs)
+    # absolute member path -> that file's SHA-256; content_hash is a digest over these, not a file hash
+    file_sha256: dict[str, str] = Field(default_factory=dict)
     repository_id: str
     adapter_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
