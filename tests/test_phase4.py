@@ -443,3 +443,9 @@ def test_job_waits_for_free_memory_instead_of_blocking(tmp_path):
     m = run_experiment(deps, phase3_run_ids=runs)
     assert m.state is ExperimentState.COMPLETED, m.block_reason
     assert any(e.kind == "waiting" for e in m.events)
+
+
+def test_a_units_map_in_the_output_is_not_read_as_field_values():
+    from research_autopilot.experiments.validator import _find_key
+    doc = {"units": {"e_hartree": "Hartree"}, "results": [{"e_hartree": -1.1}, {"e_hartree": -1.0}]}
+    assert [p for p, _ in _find_key(doc, "e_hartree")] == ["/results/0/e_hartree", "/results/1/e_hartree"]

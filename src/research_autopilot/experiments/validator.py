@@ -47,11 +47,16 @@ def _expand(doc, pointer: str) -> list[tuple[str, object]]:
     return out
 
 
+_UNIT_MAPS = {"units", "unit"}
+
+
 def _find_key(obj, key: str, path: str = "") -> list[tuple[str, object]]:
     """Every occurrence of a field name in nested records (e.g. units declared per record of a results list)."""
     hits = []
     if isinstance(obj, dict):
         for k, v in obj.items():
+            if k in _UNIT_MAPS and isinstance(v, dict):
+                continue  # {"units": {"e_hartree": "Hartree"}} documents the fields; it is not a value of them
             if k == key:
                 hits.append((f"{path}/{k}", v))
             hits += _find_key(v, key, f"{path}/{k}")
