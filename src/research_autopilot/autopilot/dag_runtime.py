@@ -155,6 +155,12 @@ def advance_parents(deps) -> list[WorkflowRun]:
     return created
 
 
+def checkable_artifacts(required) -> set[str]:
+    """Only identifier / path-like names are checkable against artifact ids; an inferred edge often describes what
+    the consumer needs in prose ("81-condition reference table ..."), which documents the edge."""
+    return {a for a in required or [] if a and not any(c.isspace() for c in a)}
+
+
 def validate_child_inputs(deps, run: WorkflowRun) -> str | None:
     """Revalidate immutable dependency artifacts immediately before work.
 
@@ -200,7 +206,8 @@ def validate_child_inputs(deps, run: WorkflowRun) -> str | None:
     by_producer = {p: [r for r in rows if r["producer_task_id"] == p and r.get("validation_status") == "validated"]
                    for p in node.dependencies}
     required_missing = {p for p, required in node.artifact_dependencies.items()
-                        if required and not set(required) <= {r["artifact_id"] for r in by_producer.get(p, [])}}
+                        if (ids := checkable_artifacts(required))
+                        and not ids <= {r["artifact_id"] for r in by_producer.get(p, [])}}
     missing = (set(node.dependencies) - valid) | stale | required_missing
     return f"validated dependency artifact is missing or stale for {sorted(missing)}" if missing else None
 
@@ -441,9 +448,7 @@ def _validated_inputs(deps, parent: ParentRun, node) -> bool:
         if not items or not all(r.get("validation_status") == "validated" and Path(r["path"]).is_file() and
                                 sha256_file(Path(r["path"])) == r["content_hash"] for r in items):
             return False
-        # Only identifier / path-like names are checkable against artifact ids; an inferred edge often describes
-        # what the consumer needs in prose ("81-condition reference table ..."), which documents the edge.
-        required = {a for a in node.artifact_dependencies.get(producer, []) if a and not any(c.isspace() for c in a)}
+        required = checkable_artifacts(node.artifact_dependencies.get(producer, []))
         if required and not required <= {r["artifact_id"] for r in items}:
             return False
     return True

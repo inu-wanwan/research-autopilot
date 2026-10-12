@@ -566,6 +566,8 @@ def test_prose_required_artifacts_document_the_edge_and_ids_are_checked(tmp_path
     assert _validated_inputs(deps, parent, node(["81-condition reference table with E* and optimal subsets"]))
     assert _validated_inputs(deps, parent, node(["outputs/table.json"]))
     assert not _validated_inputs(deps, parent, node(["outputs/missing.json"]))
+    from research_autopilot.autopilot.dag_runtime import checkable_artifacts  # shared with validate_child_inputs
+    assert checkable_artifacts(["a prose description", "outputs/x.json", ""]) == {"outputs/x.json"}
 
 
 def test_rerun_of_stopped_parent_adopts_completed_children_with_unchanged_specs(tmp_path):
