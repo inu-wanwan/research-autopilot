@@ -45,6 +45,13 @@ class ClaudeBackend:
 
     def __init__(self, executable: str = "claude") -> None:
         self.executable = executable
+        self._billing: str | None = None
+
+    def billing(self) -> str:
+        """``subscription`` / ``api`` / ``unknown`` from ``claude auth status`` (asked once per process)."""
+        if self._billing is None:
+            self._billing = self.status().billing
+        return self._billing
 
     def status(self) -> BackendStatus:
         if not shutil.which(self.executable):
@@ -84,7 +91,9 @@ class ClaudeBackend:
         usage = Usage(input_tokens=(u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
                                     + u.get("cache_creation_input_tokens", 0)),
                       cached_input_tokens=u.get("cache_read_input_tokens", 0), output_tokens=u.get("output_tokens", 0))
-        cost = r.get("total_cost_usd")
+        # On a claude.ai subscription total_cost_usd is a notional price, not a charge: like the Codex
+        # subscription it is not counted against the API budget.
+        cost = None if self.billing() == "subscription" else r.get("total_cost_usd")
         summary = r.get("structured_output") if json_schema and r.get("structured_output") is not None else r.get("result", "")
         res = dict(backend="claude", model=request.choice.model, exit_code=out.exit_code,
                    summary=(json.dumps(summary, ensure_ascii=False) if not isinstance(summary, str) else summary)[:20000],

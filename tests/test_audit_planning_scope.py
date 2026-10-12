@@ -276,3 +276,20 @@ def test_claude_implementer_may_run_the_repository_check_commands(tmp_path):
     assert tools.startswith(ALLOWED_TOOLS) and "Bash(docker compose -p proj run --rm -T research pytest -q:*)" in tools
     assert "Bash(docker:*)" not in tools and "Bash(docker compose:*)" not in tools  # only the configured command
     assert allowed_tools(SimpleNamespace(check_commands=[], task=req.task)) == ALLOWED_TOOLS
+
+
+def test_claude_subscription_cost_is_not_counted_as_api_spend(tmp_path, monkeypatch):
+    import json as _json
+    from types import SimpleNamespace
+    from research_autopilot.implementation.backends import claude as mod
+    from research_autopilot.implementation.backends.base import ProcessOutcome
+    out = _json.dumps({"subtype": "success", "result": "ok", "total_cost_usd": 1.98, "usage": {}})
+    monkeypatch.setattr(mod, "run_process", lambda *a, **k: ProcessOutcome(pid=1, exit_code=0, stdout=out, stderr="",
+                                                                          timed_out=False, duration=0.1))
+    req = SimpleNamespace(choice=SimpleNamespace(model="claude-opus-5-5"), check_commands=[], max_budget_usd=None,
+                          task=SimpleNamespace(worktree_path=str(tmp_path)), prompt="p", timeout_seconds=10,
+                          log_path=tmp_path / "log")
+    for billing, expected in (("subscription", None), ("api", 1.98)):
+        b = mod.ClaudeBackend()
+        b._billing = billing
+        assert b.run(req, lambda pid: None).cost_usd == expected
