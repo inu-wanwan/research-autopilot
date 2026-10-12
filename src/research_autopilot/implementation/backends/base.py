@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -48,6 +48,8 @@ class BackendRequest:
     timeout_seconds: int
     log_path: Path
     max_budget_usd: float | None = None
+    # the repository's configured check commands (tests / lint / typecheck): the implementer may run exactly these
+    check_commands: list[list[str]] = field(default_factory=list)
     # Safe, already-redacted progress summaries for operational logs. Raw CLI
     # output remains in log_path and must never be forwarded by this callback.
     on_progress: Callable[[str], None] | None = None

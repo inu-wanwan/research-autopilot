@@ -133,9 +133,22 @@ def scan_diff(diff: str) -> list[DangerFinding]:
     return findings
 
 
+def with_worktree_git(cmd: list[str], cwd: Path) -> list[str]:
+    """A ``docker compose run`` check in a worktree also mounts the main repository's .git (read-only)."""
+    if cmd[:2] != ["docker", "compose"] or "run" not in cmd:
+        return cmd
+    from research_autopilot.experiments.environment import git_mount_args
+    extra = git_mount_args(cwd)
+    if not extra:
+        return cmd
+    i = cmd.index("run") + 1
+    return [*cmd[:i], *extra, *cmd[i:]]
+
+
 def run_check(name: str, cmd: list[str] | None, cwd: Path, timeout: int) -> CheckResult:
     if not cmd:
         return CheckResult(name=name, command=None, ok=True, skipped=True, output_tail="not configured")
+    cmd = with_worktree_git(cmd, cwd)
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
                            env={**sanitized_env(), "PYTHONDONTWRITEBYTECODE": "1"})

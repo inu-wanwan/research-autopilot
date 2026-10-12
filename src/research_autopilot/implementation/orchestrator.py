@@ -464,7 +464,7 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
         _progress(deps, m, run_dir,
                   f"implementer attempt {number} started ({choice.backend}/{choice.model})")
 
-        attempt.result = _run_with_fallback(deps, m, task, wt, attempt, requests, run_dir, started, rctx)
+        attempt.result = _run_with_fallback(deps, m, task, wt, attempt, requests, run_dir, started, rctx, repo=repo)
         choice = attempt.choice  # may have switched backend
         if claim := _infeasibility_claim(attempt.result.summary, task):
             attempt.diff_path = str(_save_diff(wt, task, run_dir, number))
@@ -484,7 +484,7 @@ def _attempt_loop(deps: ImplDeps, m: ImplementationManifest, task: Implementatio
 
 def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask, wt: WorktreeManager,
                        attempt: AttemptRecord, requests: list[str], run_dir: Path, started,
-                       rctx: RepairContext | None = None) -> ImplementationResult:
+                       rctx: RepairContext | None = None, repo: RepoConfig | None = None) -> ImplementationResult:
     s = deps.settings
     transient_retry_used = False
     while True:
@@ -502,6 +502,8 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
             max_budget_usd=min(s.claude_max_budget_usd_per_call,
                                max(s.max_cost_usd_per_run - m.cost_usd_known - m.inherited_cost_usd, 0.01))
             if choice.backend == "claude" else None,
+            check_commands=[c for c in ((repo.test_command, repo.lint_command, repo.typecheck_command)
+                                        if repo else ()) if c],
             on_progress=lambda message: _progress(
                 deps, m, run_dir, f"implementer attempt {attempt.number}: {message}"
             ),

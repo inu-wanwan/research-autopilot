@@ -119,6 +119,30 @@ def resolve_argv(argv: list[str], python: str) -> list[str]:
 # ---------------------------------------------------------------- container mode (RepoConfig.container)
 
 
+def worktree_git_mounts(checkout: Path) -> list[Path]:
+    """Host git directories a worktree checkout needs inside a container.
+
+    A worktree's ``.git`` is a file pointing at ``<main>/.git/worktrees/<name>`` on the host; the compose file
+    mounts only the checkout, so ``git rev-parse`` (commit provenance) fails in the container unless the main
+    repository's ``.git`` is mounted at the same absolute path (read-only)."""
+    marker = Path(checkout) / ".git"
+    if not marker.is_file():
+        return []
+    text = marker.read_text(errors="replace").strip()
+    if not text.startswith("gitdir:"):
+        return []
+    gitdir = Path(text.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = (Path(checkout) / gitdir)
+    common = gitdir / "commondir"
+    main = (gitdir / common.read_text().strip()) if common.is_file() else gitdir.parent.parent
+    return [main.resolve()] if main.resolve().is_dir() else []
+
+
+def git_mount_args(checkout: Path) -> list[str]:
+    return [a for g in worktree_git_mounts(checkout) for a in ("-v", f"{g}:{g}:ro")]
+
+
 def container_argv(container: dict, checkout: Path, argv: list[str], working_directory: str, env: dict[str, str],
                    mounts: list[Path]) -> list[str]:
     """``docker compose run`` of the repository's service with the job checkout as its project directory (the
@@ -136,6 +160,7 @@ def container_argv(container: dict, checkout: Path, argv: list[str], working_dir
            "--no-deps", "-w", workdir]
     for m in sorted({str(Path(x).resolve()) for x in mounts}):
         cmd += ["-v", f"{m}:{m}"]
+    cmd += git_mount_args(checkout)
     for k, v in sorted(env.items()):
         cmd += ["-e", f"{k}={v}"]
     return cmd + [container["service"], *inner]

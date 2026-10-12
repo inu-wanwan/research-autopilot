@@ -1,6 +1,7 @@
 """Claude Code CLI backend (``claude -p --output-format json``)."""
 
 import json
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -26,6 +27,19 @@ DISALLOWED_TOOLS = ",".join([
 ])
 
 
+def allowed_tools(request: BackendRequest) -> str:
+    """Defaults plus the repository's own check commands (e.g. ``docker compose ... run research pytest``), in
+    the form the reviewer runs them, so the implementer can run the same tests (no other docker use)."""
+    from research_autopilot.implementation.reviewer import with_worktree_git
+    extra = []
+    for cmd in request.check_commands:
+        for form in (cmd, with_worktree_git(cmd, Path(request.task.worktree_path))):
+            rule = f"Bash({shlex.join(form)}:*)"
+            if rule not in extra:
+                extra.append(rule)
+    return ",".join([ALLOWED_TOOLS, *extra]) if extra else ALLOWED_TOOLS
+
+
 class ClaudeBackend:
     name = "claude"
 
@@ -49,7 +63,7 @@ class ClaudeBackend:
         cmd = [self.executable, "-p", "--output-format", "json", "--model", request.choice.model,
                "--no-session-persistence", "--strict-mcp-config",
                "--permission-mode", "default" if read_only else "acceptEdits",
-               "--allowedTools", "Read,Glob,Grep" if read_only else ALLOWED_TOOLS,
+               "--allowedTools", "Read,Glob,Grep" if read_only else allowed_tools(request),
                "--disallowedTools", DISALLOWED_TOOLS]
         if request.max_budget_usd is not None:
             cmd += ["--max-budget-usd", f"{request.max_budget_usd:.2f}"]

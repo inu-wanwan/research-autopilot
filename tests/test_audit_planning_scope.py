@@ -245,3 +245,34 @@ def test_container_repositories_run_experiments_in_their_own_image(tmp_path):
     assert argv.count("-v") == 1 and "RA_CATALOG_INPUTS=/jobs/1/inputs.json" in argv  # mounts deduplicated
     repo = RepoConfig(id="r", path=str(tmp_path), container=c)
     assert "docker compose run research" in container_contract(repo)
+
+
+def test_container_runs_in_a_worktree_mount_the_main_git_dir_read_only(tmp_path):
+    import subprocess
+    from research_autopilot.experiments.environment import container_argv, worktree_git_mounts
+    from research_autopilot.implementation.reviewer import with_worktree_git
+    main = tmp_path / "main"
+    main.mkdir()
+    for args in (["init", "-q"], ["-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"],
+                 ["worktree", "add", "-q", str(tmp_path / "wt")]):
+        subprocess.run(["git", *args], cwd=main, check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    assert worktree_git_mounts(main) == [] and worktree_git_mounts(wt) == [(main / ".git").resolve()]
+    g = str((main / ".git").resolve())
+    c = {"compose_project": "proj", "service": "research", "workdir": "/workspace"}
+    argv = container_argv(c, wt, ["python", "run.py"], ".", {}, [])
+    assert f"{g}:{g}:ro" in argv and argv[-3:] == ["research", "python", "run.py"]
+    check = with_worktree_git(["docker", "compose", "-p", "p", "run", "--rm", "research", "pytest"], wt)
+    assert check[check.index("run") + 1:check.index("run") + 3] == ["-v", f"{g}:{g}:ro"] and check[-2:] == ["research", "pytest"]
+    assert with_worktree_git(["pytest", "-q"], wt) == ["pytest", "-q"]
+
+
+def test_claude_implementer_may_run_the_repository_check_commands(tmp_path):
+    from types import SimpleNamespace
+    from research_autopilot.implementation.backends.claude import ALLOWED_TOOLS, allowed_tools
+    test = ["docker", "compose", "-p", "proj", "run", "--rm", "-T", "research", "pytest", "-q"]
+    req = SimpleNamespace(check_commands=[test], task=SimpleNamespace(worktree_path=str(tmp_path)))
+    tools = allowed_tools(req)
+    assert tools.startswith(ALLOWED_TOOLS) and "Bash(docker compose -p proj run --rm -T research pytest -q:*)" in tools
+    assert "Bash(docker:*)" not in tools and "Bash(docker compose:*)" not in tools  # only the configured command
+    assert allowed_tools(SimpleNamespace(check_commands=[], task=req.task)) == ALLOWED_TOOLS
