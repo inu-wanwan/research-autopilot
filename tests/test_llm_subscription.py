@@ -193,3 +193,34 @@ def test_missing_executable_falls_back(monkeypatch, api, tmp_path):
     api.output = Out(answer="api")
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).billing == "api"
     assert sub.cooldown_remaining() > 0
+
+
+def test_claude_subscription_is_tried_after_codex_before_the_api(fake_codex, api, tmp_path, monkeypatch):
+    (fake_codex.dir / "out").write_text(USAGE_LIMIT + "\n")
+    (fake_codex.dir / "rc").write_text("1")
+    cdir = tmp_path / "fakeclaude"
+    cdir.mkdir()
+    exe = tmp_path / "claude"
+    exe.write_text(FAKE.replace("FAKE_CODEX_DIR", "FAKE_CLAUDE_DIR"))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    (cdir / "out").write_text(json.dumps({"subtype": "success", "is_error": False, "result": "",
+                                          "structured_output": {"answer": "claude", "score": 4},
+                                          "usage": {"input_tokens": 10, "output_tokens": 2}}))
+    monkeypatch.setenv("FAKE_CLAUDE_DIR", str(cdir))
+    monkeypatch.setenv("RA_LLM_SUBSCRIPTION_CLAUDE", str(exe))
+    monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "codex,claude")
+    sub._claude["billing"] = "subscription"
+    run = _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out)
+    assert run.output.answer == "claude" and run.billing == "subscription" and api.calls == 0
+    assert "--json-schema" in (cdir / "args.1").read_text()
+    sub._claude["billing"] = "api"  # an API-billed claude login is never used
+    api.output = Out(answer="api")
+    run = _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out)
+    assert run.billing == "api" and api.calls == 1
+
+
+def test_provider_list_parsing(monkeypatch):
+    for v, want in (("codex", ["codex"]), ("true", ["codex"]), ("codex,claude", ["codex", "claude"]),
+                    ("", []), ("claude", ["claude"])):
+        monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", v)
+        assert sub.subscription_providers() == want

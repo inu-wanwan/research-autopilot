@@ -47,8 +47,16 @@ class SubscriptionCallError(Exception):
 
 def subscription_mode() -> str | None:
     """``"codex"`` when structured calls should try the subscription first, else ``None`` (default: off)."""
+    return "codex" if subscription_providers() else None
+
+
+def subscription_providers() -> list[str]:
+    """Subscriptions to try in order before the API: ``codex`` (default for truthy values) and/or ``claude``
+    (``RA_LLM_SUBSCRIPTION_FIRST=codex,claude``: the Claude subscription when Codex is at its limit)."""
     v = os.environ.get(ENV_FLAG, "").strip().lower()
-    return "codex" if v in ("codex", "1", "true", "yes", "on") else None
+    if v in ("1", "true", "yes", "on"):
+        return ["codex"]
+    return [p for p in (x.strip() for x in v.split(",")) if p in ("codex", "claude")]
 
 
 def strict_schema(output_type: type[BaseModel]) -> dict:
@@ -75,6 +83,7 @@ def reset() -> None:
     global _skip_until, _skip_reason
     with _lock:
         _skip_until, _skip_reason = 0.0, ""
+    _claude.update(skip_until=0.0, billing=None)
 
 
 def _executable() -> str:
@@ -121,6 +130,74 @@ def codex_structured(model: str, instructions: str, prompt: str, output_type: ty
         raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
 
 
+CLAUDE_MODEL_ENV = "RA_LLM_SUBSCRIPTION_CLAUDE_MODEL"
+_claude = {"skip_until": 0.0, "billing": None}
+
+
+def claude_structured(instructions: str, prompt: str, output_type: type[BaseModel],
+                      timeout: int = DEFAULT_TIMEOUT, executable: str | None = None) -> tuple[BaseModel, dict]:
+    """One ``claude -p --json-schema`` call on the claude.ai subscription (no tools, empty directory, sanitized
+    environment). Refuses (auth_error) when the login is API-billed, so it never adds pay-as-you-go cost."""
+    from research_autopilot.implementation.backends.base import classify_error_text, run_process, sanitized_env, tail
+    from research_autopilot.implementation.backends.claude import ClaudeBackend
+
+    exe = executable or os.environ.get("RA_LLM_SUBSCRIPTION_CLAUDE", "").strip() or "claude"
+    if not shutil.which(exe):
+        raise SubscriptionCallError("not_installed", f"{exe} not on PATH")
+    if _claude["billing"] is None:
+        _claude["billing"] = ClaudeBackend(exe).status().billing
+    if _claude["billing"] != "subscription":
+        raise SubscriptionCallError("auth_error", f"claude login is not a subscription ({_claude['billing']})")
+    model = os.environ.get(CLAUDE_MODEL_ENV, "").strip() or "claude-opus-5-5"
+    with tempfile.TemporaryDirectory(prefix="ra-llm-sub-claude-") as tmp:
+        root = Path(tmp)
+        cmd = [exe, "-p", "--output-format", "json", "--model", model, "--no-session-persistence",
+               "--strict-mcp-config", "--permission-mode", "default", "--tools", "",
+               "--json-schema", json.dumps(strict_schema(output_type))]
+        stdin = f"{instructions.strip()}\n\n---\nINPUT:\n{prompt}\n"
+        out = run_process(cmd, root, stdin, timeout, root / "claude.log", lambda pid: None, env=sanitized_env())
+    if out.timed_out:
+        raise SubscriptionCallError("timeout", f"timed out after {timeout}s")
+    try:
+        r = json.loads(out.stdout)
+    except ValueError:
+        r = {}
+    u = r.get("usage") or {}
+    usage = {"input_tokens": int(u.get("input_tokens", 0)) + int(u.get("cache_read_input_tokens", 0))
+             + int(u.get("cache_creation_input_tokens", 0)),
+             "cached_input_tokens": int(u.get("cache_read_input_tokens", 0)),
+             "output_tokens": int(u.get("output_tokens", 0)), "reasoning_tokens": 0}
+    if out.exit_code != 0 or not r or r.get("is_error"):
+        text = f"{r.get('result', '')} {r.get('subtype', '')} {tail(out.stderr, 2000)}"
+        raise SubscriptionCallError(classify_error_text(text) or "process_error", tail(text.strip(), 300))
+    data = r.get("structured_output")
+    try:
+        if data is None:
+            data = json.loads(r.get("result") or "")
+        return output_type.model_validate(data), usage
+    except (ValueError, ValidationError) as exc:
+        raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
+
+
+def _try_claude(instructions: str, prompt: str, output_type: type[BaseModel], timeout: int):
+    if _claude["skip_until"] > time.monotonic():
+        return None
+    for attempt in (1, 2):
+        try:
+            return claude_structured(instructions, prompt, output_type, timeout)
+        except SubscriptionCallError as exc:
+            if exc.status == "invalid_output" and attempt == 1:
+                continue
+            if exc.status in _STICKY:
+                _claude["skip_until"] = time.monotonic() + COOLDOWN_SECONDS
+            log.warning("claude subscription call failed (%s: %s)", exc.status, exc.detail[:200])
+            return None
+        except OSError as exc:
+            log.warning("claude subscription call could not start (%s)", exc)
+            return None
+    return None
+
+
 def try_structured(model: str, instructions: str, prompt: str, output_type: type[BaseModel],
                    timeout: int = DEFAULT_TIMEOUT, reasoning_effort: str | None = None
                    ) -> tuple[BaseModel, dict] | None:
@@ -129,10 +206,19 @@ def try_structured(model: str, instructions: str, prompt: str, output_type: type
     Invalid output is retried once; usage limits / auth problems are cached for COOLDOWN_SECONDS so later calls
     skip the subprocess. Never raises for a subscription failure.
     """
-    if subscription_mode() != "codex":
-        return None
+    providers = subscription_providers()
+    if "codex" in providers:
+        if (got := _try_codex(model, instructions, prompt, output_type, timeout, reasoning_effort)) is not None:
+            return got
+    if "claude" in providers:
+        if (got := _try_claude(instructions, prompt, output_type, timeout)) is not None:
+            return got
+    return None
+
+
+def _try_codex(model, instructions, prompt, output_type, timeout, reasoning_effort):
     if (left := cooldown_remaining()) > 0:
-        log.info("subscription skipped for %ds more (%s); using the API", int(left), _skip_reason)
+        log.info("codex subscription skipped for %ds more (%s)", int(left), _skip_reason)
         return None
     for attempt in (1, 2):
         try:
@@ -143,9 +229,9 @@ def try_structured(model: str, instructions: str, prompt: str, output_type: type
                 continue
             if exc.status in _STICKY:
                 mark_unavailable(exc.status)
-            log.warning("subscription call failed (%s: %s); falling back to the API", exc.status, exc.detail[:200])
+            log.warning("subscription call failed (%s: %s); falling back", exc.status, exc.detail[:200])
             return None
         except OSError as exc:  # could not start the CLI at all
-            log.warning("subscription call could not start (%s); falling back to the API", exc)
+            log.warning("subscription call could not start (%s); falling back", exc)
             return None
     return None
