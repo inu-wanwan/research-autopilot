@@ -55,8 +55,10 @@ def _find_key(obj, key: str, path: str = "") -> list[tuple[str, object]]:
     hits = []
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if k in _UNIT_MAPS and isinstance(v, dict):
-                continue  # {"units": {"e_hartree": "Hartree"}} documents the fields; it is not a value of them
+            if isinstance(v, dict) and (k in _UNIT_MAPS or (v and all(isinstance(x, str) for x in v.values()))):
+                # {"units": {"e_hartree": "Hartree"}} / {"definitions": {"f": "1 - |A|/|Q|"}} document the fields;
+                # they are not values of them (a record holding numbers is still checked)
+                continue
             if k == key:
                 hits.append((f"{path}/{k}", v))
             hits += _find_key(v, key, f"{path}/{k}")

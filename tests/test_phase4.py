@@ -449,6 +449,10 @@ def test_a_units_map_in_the_output_is_not_read_as_field_values():
     from research_autopilot.experiments.validator import _find_key
     doc = {"units": {"e_hartree": "Hartree"}, "results": [{"e_hartree": -1.1}, {"e_hartree": -1.0}]}
     assert [p for p, _ in _find_key(doc, "e_hartree")] == ["/results/0/e_hartree", "/results/1/e_hartree"]
+    doc["definitions"] = {"e_hartree": "CASCI total energy"}  # a documentation map, not a value
+    assert [p for p, _ in _find_key(doc, "e_hartree")] == ["/results/0/e_hartree", "/results/1/e_hartree"]
+    doc["results"].append({"e_hartree": "n/a", "label": "x"})  # a record with a string value is still checked
+    assert "/results/2/e_hartree" in [p for p, _ in _find_key(doc, "e_hartree")]
 
 
 def test_container_jobs_use_the_docker_vm_memory_not_the_hosts(tmp_path):
