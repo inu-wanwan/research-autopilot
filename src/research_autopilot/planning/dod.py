@@ -44,6 +44,23 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().strip("。.").strip()
 
 
+_PASSAGE_BREAK = re.compile(r"\n\s*\n|…|\.\.\.")
+
+
+def _missing_passage(source: str, text: str) -> str | None:
+    """The first passage of ``source`` that is not verbatim in ``text`` (None = all found).
+
+    A criterion may cite several places of the specification; the passages are separated by a blank line or
+    an ellipsis and each must be verbatim on its own."""
+    passages = [p for p in _PASSAGE_BREAK.split(source) if p.strip()] or [source]
+    compact = text.replace(" ", "")  # spacing between Latin and CJK text drifts in copies ("subset 集合" / "subset集合")
+    for passage in passages:
+        norm = _norm(passage)
+        if len(norm) < 4 or norm.replace(" ", "") not in compact:
+            return passage.strip()
+    return None
+
+
 def spec_text(spec: TaskSpec) -> str:
     fields = [spec.title, spec.preamble, spec.purpose, spec.background, spec.scientific_rationale,
               spec.specification, spec.acceptance_criteria, spec.dependencies_note, spec.scientific_invariants,
@@ -66,10 +83,9 @@ def problems(spec: TaskSpec, plan: ExecutionPlan) -> list[str]:
     for c in dod:
         if not re.fullmatch(r"D\d+", c.id):
             out.append(f"{c.id}: ids are D1, D2, ... (B ids are reserved for the system baseline)")
-        source = _norm(c.source)
-        if c.source.strip() != PHASE4_CONTRACT and (len(source) < 4 or source not in text):
+        if c.source.strip() != PHASE4_CONTRACT and (missing := _missing_passage(c.source, text)) is not None:
             out.append(f"{c.id}: source must quote the task specification verbatim (or be '{PHASE4_CONTRACT}'); "
-                       f"not found: {c.source[:120]!r}")
+                       f"several passages may be separated by a blank line or '…'; not found: {missing[:160]!r}")
         if _VAGUE.search(c.statement):
             out.append(f"{c.id}: statement is not pass/fail checkable (vague wording): {c.statement[:120]!r}")
     for m in plan.acceptance_mapping:

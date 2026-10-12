@@ -42,6 +42,16 @@ def test_a_grounded_checkable_definition_of_done_is_accepted():
     assert dod.problems(spec(), plan_with([item(source="- Record rhf.conv_tol  for every result")])) == []
 
 
+def test_a_source_may_cite_several_verbatim_passages():
+    two = "Record rhf.conv_tol for every result.\n\n- same basis"
+    assert dod.problems(spec(), plan_with([item(source=two)])) == []
+    assert dod.problems(spec(), plan_with([item(source="Record rhf.conv_tol … same basis")])) == []
+    jp = spec(specification="optimal subset 集合のいずれかと一致したら hit。")
+    assert dod.problems(jp, plan_with([item(source="optimal subset集合のいずれかと一致したら hit")])) == []
+    bad = dod.problems(spec(), plan_with([item(source="Record rhf.conv_tol for every result.\n\nUse a GPU.")]))
+    assert any("not found: 'Use a GPU.'" in p for p in bad)  # the missing passage itself is named
+
+
 def test_definition_of_done_problems_are_detected_deterministically():
     assert dod.problems(spec(), plan_with([], done=()))[0].startswith("definition_of_done is empty")
     invented = dod.problems(spec(), plan_with([item(source="Record the OS and the BLAS vendor.")]))
