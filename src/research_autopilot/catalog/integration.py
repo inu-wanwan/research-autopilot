@@ -171,6 +171,8 @@ def upstream_artifacts(store, task_id: str) -> list[dict]:
             continue
         out.append({"artifact_id": f"{producer}:{name}", "kind": "upstream", "identity": {"producer_task_id": producer,
                     "name": name}, "content_hash": row["content_hash"], "files": [str(path.resolve())],
+                    # same shape as catalog entries: one file, whose digest is the handoff's content hash
+                    "file_sha256": {str(path.resolve()): row["content_hash"]},
                     "metadata": row.get("scientific_metadata") or {},
                     "provenance": {"git_commit": row.get("git_commit"), "handoff_id": row.get("handoff_id")}})
     return out

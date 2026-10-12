@@ -531,6 +531,8 @@ def test_a_consumer_gets_the_validated_outputs_of_its_producer_in_phase3_and_pha
                            .read_text())
     assert {a["artifact_id"] for a in manifest["artifacts"]} >= {f"INU-901:{p}" for p in outputs}  # RA_CATALOG_INPUTS
     assert all(Path(f).is_absolute() for a in manifest["artifacts"] for f in a["files"])  # jobs run in their checkout
+    assert all(a["file_sha256"] == {a["files"][0]: a["content_hash"]}  # same shape as catalog entries
+               for a in manifest["artifacts"] if a["kind"] == "upstream")
 
 
 def test_parent_dag_children_build_on_the_latest_validated_sibling_implementation(tmp_path):
@@ -590,3 +592,30 @@ def test_rerun_of_stopped_parent_adopts_completed_children_with_unchanged_specs(
     assert _adopt_completed_children(deps, ParentRun(parent_task_id="INU-900", parent_notion_page_id="p",
                                                      parent_execution_run_id="e", dag_id=dag.dag_id,
                                                      dag_hash="h"), dag) == []  # a changed spec runs again
+
+
+def test_scheduling_captures_completed_producers_outputs_first(tmp_path, monkeypatch):
+    """Rerun of a stopped parent: an adopted, completed producer's outputs are handed over before its consumer is
+    judged ready (intake schedules in the same tick, before advance_parents captures anything)."""
+    from research_autopilot.autopilot import dag_runtime
+    from research_autopilot.autopilot.dag import ArtifactHandoff, sha256_file
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    dag_runtime.schedule_ready(deps, parent)
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.COMPLETED)
+    out = tmp_path / "table.json"
+    out.write_text("{}")
+
+    def capture(deps_, parent_, dag_, statuses):
+        if statuses.get("INU-901") is ExecutionStatus.COMPLETED:
+            h = ArtifactHandoff(parent_run_id=parent_.parent_run_id, producer_task_id="INU-901",
+                                producer_execution_run_id=parent_.child_execution_run_ids["INU-901"],
+                                consumer_task_id="INU-902", artifact_id="outputs/table.json", path=str(out),
+                                content_hash=sha256_file(out), validation_status="validated")
+            deps_.store.insert_new(db.artifact_handoffs, h.handoff_id, h.model_dump(mode="json"),
+                                   parent_run_id=parent_.parent_run_id, producer_task_id="INU-901",
+                                   consumer_task_id="INU-902", dedupe_key=h.dedupe_key)
+    monkeypatch.setattr(dag_runtime, "_capture_artifacts", capture)
+    started = dag_runtime.schedule_ready(deps, _parent(deps, parent.parent_run_id))
+    assert "INU-902" in [r.task_id for r in started]
+    assert not [r for r in _child_runs(deps, "INU-902") if r["status"] == ExecutionStatus.BLOCKED.value]

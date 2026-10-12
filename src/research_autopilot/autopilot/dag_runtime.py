@@ -223,6 +223,9 @@ def schedule_ready(deps, parent: ParentRun, research_run: WorkflowRun | None = N
         return []  # stopped / paused / cancelled / out of budget: nothing new starts, running children finish
     dag = TaskDAG.model_validate(deps.store.get(db.task_dags, parent.dag_id))
     statuses = _child_statuses(deps, parent)
+    # Completed children taken over from a stopped run hand over their outputs before anything is judged ready
+    # (intake schedules right away; idempotent).
+    _capture_artifacts(deps, parent, dag, statuses)
     active = sum(s in _ACTIVE for s in statuses.values())
     capacity = max(0, deps.settings.max_concurrent_tasks - active)
     if capacity == 0:
