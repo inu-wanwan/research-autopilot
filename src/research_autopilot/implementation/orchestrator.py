@@ -724,7 +724,7 @@ def _dod_infeasible(m: ImplementationManifest, criteria: list[str], evidence: st
 
 
 def _check_budget(s: Phase3Settings, m: ImplementationManifest, started) -> None:
-    tokens = m.usage.total + m.inherited_usage.total  # repairs never reset the budget
+    tokens = m.usage.budgeted + m.inherited_usage.budgeted  # repairs never reset the budget; cache reads excluded
     cost = m.cost_usd_known + m.inherited_cost_usd
     if tokens >= s.max_tokens_per_run:
         raise _Stop(RunState.BLOCKED, "budget_exceeded",

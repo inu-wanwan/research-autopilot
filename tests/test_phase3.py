@@ -546,3 +546,9 @@ def test_error_classification(text, status):
 def test_pid_alive_helper():
     p = subprocess.Popen(["true"]); p.wait()
     assert not pid_alive(p.pid) and pid_alive(__import__("os").getpid())
+
+
+def test_token_budget_counts_new_input_and_output_not_cache_reads():
+    from research_autopilot.implementation.models import Usage
+    u = Usage(input_tokens=24_000_000, cached_input_tokens=23_000_000, output_tokens=200_000)
+    assert u.budgeted == 1_200_000 and u.total == 24_200_000  # the total is still recorded

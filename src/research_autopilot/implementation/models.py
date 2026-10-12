@@ -112,6 +112,12 @@ class Usage(BaseModel):
     def total(self) -> int:
         return self.input_tokens + self.output_tokens
 
+    @property
+    def budgeted(self) -> int:
+        """Tokens counted against the token budget: new input + output, without cache reads (user decision
+        2026-10-12; a CLI that re-reads its context reports it as input every turn, ~10x the real work)."""
+        return max(self.input_tokens - self.cached_input_tokens, 0) + self.output_tokens
+
 
 class ImplementationResult(BaseModel):
     """Normalized backend outcome. Conversation text is NOT included; only a
