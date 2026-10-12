@@ -117,7 +117,7 @@ def for_container(host: HostResources, memory: tuple[float, float] | None) -> Ho
     if memory is None:
         return host
     total, free = memory
-    return host.model_copy(update={"memory_limit_gb": total, "memory_available_gb": free,
+    return host.model_copy(update={"memory_limit_gb": total, "memory_available_gb": free, "docker_vm": True,
                                    "notes": [*host.notes, f"container mode: Docker VM memory {total:g}GB"]})
 
 
@@ -136,9 +136,13 @@ class ResourceManager:
     reserved: dict[str, Allocation] = field(default_factory=dict)  # job_key -> allocation
 
     def static_capacity(self) -> tuple[float, float]:
-        """The configured caps (host limit minus reserve, capped by the per-job totals)."""
+        """The configured caps (host limit minus reserve, capped by the per-job totals).
+
+        The memory reserve keeps memory for the host OS; the Docker VM's memory is already set apart from the
+        host's, so a container-mode job is not charged the host reserve a second time."""
         cpu = max(self.host.cpu_limit - self.settings.reserve_cpu, 0)
-        mem = max(self.host.memory_limit_gb - self.settings.reserve_memory_gb, 0)
+        reserve_mem = 0.0 if self.host.docker_vm else self.settings.reserve_memory_gb
+        mem = max(self.host.memory_limit_gb - reserve_mem, 0)
         if self.settings.max_job_cpu_total is not None:
             cpu = min(cpu, self.settings.max_job_cpu_total)
         if self.settings.max_job_memory_gb_total is not None:
@@ -159,8 +163,12 @@ class ResourceManager:
         if cpu < 1:
             raise ResourceError(f"no CPU capacity left for jobs (cap {cap_cpu:g})")
         mem = round(est.memory_gb * self.settings.memory_safety_factor * scale, 3)
+        static_mem = self.static_capacity()[1]
+        if scale == 1.0 and est.memory_gb <= static_mem < mem:
+            # First attempt: the estimate itself fits the cap, only the safety margin does not. Give the job the
+            # cap rather than refusing it; an actual overrun is an OOM, whose scaled-up retry is then refused.
+            mem = round(static_mem, 3)
         if mem > cap_mem:
-            static_mem = self.static_capacity()[1]
             if mem <= static_mem:
                 raise ResourceBusy(f"job needs ~{mem:g}GB (incl. safety factor); only {cap_mem:g}GB is free now "
                                    f"(cap {static_mem:g}GB)")

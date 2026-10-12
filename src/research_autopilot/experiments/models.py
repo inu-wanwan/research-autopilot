@@ -29,6 +29,7 @@ class HostResources(BaseModel):
     container: str | None  # "docker" / "wsl" / None
     load_avg_1m: float
     notes: list[str]
+    docker_vm: bool = False  # limits are the Docker VM's (container-mode jobs), not the host's
 
 
 class ResourceEstimate(BaseModel):

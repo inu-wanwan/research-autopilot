@@ -432,8 +432,8 @@ def test_job_waits_for_free_memory_instead_of_blocking(tmp_path):
     est = res.ResourceEstimate(cpu=1, memory_gb=2.0, gpu=0, walltime_minutes=5, basis="default", confidence="low", rationale=[])
     with pytest.raises(res.ResourceBusy):  # fits the 4GB cap, but only 2GB is free now
         res.ResourceManager(s, host(avail=2.5)).plan(est)
-    with pytest.raises(res.ResourceError) as e:  # above the cap itself: a real block
-        res.ResourceManager(s, host(avail=12)).plan(res.ResourceEstimate(cpu=1, memory_gb=3.0, gpu=0,
+    with pytest.raises(res.ResourceError) as e:  # the estimate itself is above the cap: a real block
+        res.ResourceManager(s, host(avail=12)).plan(res.ResourceEstimate(cpu=1, memory_gb=4.5, gpu=0,
                                                                          walltime_minutes=5, basis="default", confidence="low", rationale=[]))
     assert not isinstance(e.value, res.ResourceBusy)
     # the scheduler re-samples the host and starts the job once memory is free
@@ -460,3 +460,22 @@ def test_container_jobs_use_the_docker_vm_memory_not_the_hosts(tmp_path):
     assert m.state is ExperimentState.COMPLETED, m.block_reason
     assert not any(e.kind == "waiting" for e in m.events)
     assert m.host.memory_available_gb == 7.0 and any("Docker VM" in n for n in m.host.notes)
+
+
+def test_only_the_safety_margin_over_the_cap_gets_the_cap_not_a_block(tmp_path):
+    from research_autopilot.experiments import resources as res
+    from phase4_fakes import host
+    s = Phase4Settings(artifact_root=tmp_path, env_cache_dir=tmp_path, reserve_memory_gb=4, max_job_memory_gb_total=4)
+    est = res.ResourceEstimate(cpu=1, memory_gb=3.0, gpu=0, walltime_minutes=5, basis="default", confidence="low", rationale=[])
+    assert res.ResourceManager(s, host(avail=12)).plan(est).memory_gb == 4  # 3GB x 1.5 = 4.5GB, capped at 4GB
+
+
+def test_container_mode_does_not_charge_the_host_reserve_to_the_docker_vm(tmp_path):
+    from research_autopilot.experiments import resources as res
+    from phase4_fakes import host
+    s = Phase4Settings(artifact_root=tmp_path, env_cache_dir=tmp_path, reserve_memory_gb=4, max_job_memory_gb_total=4)
+    vm = res.for_container(host(avail=0.6), (7.75, 7.3))
+    assert res.ResourceManager(s, vm).static_capacity()[1] == 4  # not 7.75 - 4 = 3.75
+    est = res.ResourceEstimate(cpu=1, memory_gb=4.0, gpu=0, walltime_minutes=5, basis="default", confidence="low", rationale=[])
+    assert res.ResourceManager(s, vm).plan(est).memory_gb == 4
+    assert res.ResourceManager(s, host(avail=12)).static_capacity()[1] <= 4  # the host itself keeps its reserve
