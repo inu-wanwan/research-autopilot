@@ -423,3 +423,23 @@ def test_nested_record_units_and_wildcard_metrics_and_checks(tmp_path):
     out.write_text(_json.dumps(doc))
     v = validate(spec, JobStatus(job_key="k", state=JobState.SUCCEEDED, exit_code=0), collected, tmp_path, {})
     assert v.status == "fail" and "failing ['/results/1/delta_e_hartree']" in v.failure_reason
+
+
+def test_job_waits_for_free_memory_instead_of_blocking(tmp_path):
+    from research_autopilot.experiments import resources as res
+    from phase4_fakes import host
+    s = Phase4Settings(artifact_root=tmp_path, env_cache_dir=tmp_path, reserve_memory_gb=4, max_job_memory_gb_total=4)
+    est = res.ResourceEstimate(cpu=1, memory_gb=2.0, gpu=0, walltime_minutes=5, basis="default", confidence="low", rationale=[])
+    with pytest.raises(res.ResourceBusy):  # fits the 4GB cap, but only 2GB is free now
+        res.ResourceManager(s, host(avail=2.5)).plan(est)
+    with pytest.raises(res.ResourceError) as e:  # above the cap itself: a real block
+        res.ResourceManager(s, host(avail=12)).plan(res.ResourceEstimate(cpu=1, memory_gb=3.0, gpu=0,
+                                                                         walltime_minutes=5, basis="default", confidence="low", rationale=[]))
+    assert not isinstance(e.value, res.ResourceBusy)
+    # the scheduler re-samples the host and starts the job once memory is free
+    deps, runs, *_ = make_exp(tmp_path, compute=FakeComputeBackend([OK]))
+    hosts = iter([host(avail=0.6), host(avail=0.6), host(avail=0.6)])
+    deps.detect_host = lambda: next(hosts, host())
+    m = run_experiment(deps, phase3_run_ids=runs)
+    assert m.state is ExperimentState.COMPLETED, m.block_reason
+    assert any(e.kind == "waiting" for e in m.events)

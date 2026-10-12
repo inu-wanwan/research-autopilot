@@ -22,6 +22,8 @@ class Phase4Settings(BaseModel):
     max_walltime_minutes: float = 120.0
     walltime_safety_factor: float = Field(default=2.0, ge=1.0)
     memory_safety_factor: float = Field(default=1.5, ge=1.0)
+    # a job that fits the configured caps but not the memory free right now waits this long before blocking
+    resource_wait_minutes: float = Field(default=30.0, ge=0)
     heartbeat_min_seconds: int = 5
     heartbeat_max_seconds: int = 600
     # Failure handling

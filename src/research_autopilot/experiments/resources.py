@@ -92,19 +92,28 @@ class ResourceError(Exception):
     """The job cannot fit within the configured caps / host capacity."""
 
 
+class ResourceBusy(ResourceError):
+    """The job fits the configured caps but not the memory free right now (other workloads): wait, do not block."""
+
+
 @dataclass
 class ResourceManager:
     settings: Phase4Settings
     host: HostResources
     reserved: dict[str, Allocation] = field(default_factory=dict)  # job_key -> allocation
 
-    def capacity(self) -> tuple[float, float]:
+    def static_capacity(self) -> tuple[float, float]:
+        """The configured caps (host limit minus reserve, capped by the per-job totals)."""
         cpu = max(self.host.cpu_limit - self.settings.reserve_cpu, 0)
         mem = max(self.host.memory_limit_gb - self.settings.reserve_memory_gb, 0)
         if self.settings.max_job_cpu_total is not None:
             cpu = min(cpu, self.settings.max_job_cpu_total)
         if self.settings.max_job_memory_gb_total is not None:
             mem = min(mem, self.settings.max_job_memory_gb_total)
+        return cpu, mem
+
+    def capacity(self) -> tuple[float, float]:
+        cpu, mem = self.static_capacity()
         # Never plan beyond what is currently free (other workloads keep running).
         mem = min(mem, max(self.host.memory_available_gb - 0.5, 0))
         return cpu, mem
@@ -118,6 +127,10 @@ class ResourceManager:
             raise ResourceError(f"no CPU capacity left for jobs (cap {cap_cpu:g})")
         mem = round(est.memory_gb * self.settings.memory_safety_factor * scale, 3)
         if mem > cap_mem:
+            static_mem = self.static_capacity()[1]
+            if mem <= static_mem:
+                raise ResourceBusy(f"job needs ~{mem:g}GB (incl. safety factor); only {cap_mem:g}GB is free now "
+                                   f"(cap {static_mem:g}GB)")
             raise ResourceError(f"job needs ~{mem:g}GB (incl. safety factor) but the job memory cap is {cap_mem:g}GB")
         wall_min = min(est.walltime_minutes * self.settings.walltime_safety_factor * scale,
                        self.settings.max_walltime_minutes)

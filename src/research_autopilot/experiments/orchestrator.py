@@ -232,6 +232,8 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
     s = deps.settings
     rm = res.ResourceManager(s, m.host)
     done: dict[str, str] = {}  # experiment_id -> "validated" | "blocked"
+    waiting_since: dict[str, float] = {}  # experiment_id -> when it started waiting for free memory
+    waited: set[str] = set()
     # Rebuild state from the manifest (resume)
     for exp_id in m.specs:
         last = _last_job(m, exp_id)
@@ -267,6 +269,16 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
             try:
                 est = res.estimate(spec, deps.store.ledger_history(exp_id), s)
                 alloc = rm.plan(est, scale=scale)
+            except res.ResourceBusy as exc:
+                since = waiting_since.setdefault(exp_id, time.monotonic())
+                if time.monotonic() - since <= s.resource_wait_minutes * 60:
+                    if exp_id not in waited:
+                        waited.add(exp_id)
+                        m.event("waiting", f"{exp_id}: {exc}; waiting up to {s.resource_wait_minutes:g} min")
+                    continue
+                done[exp_id] = "blocked"
+                m.event("blocked", f"{exp_id}: {exc} (still after {s.resource_wait_minutes:g} min)")
+                continue
             except res.ResourceError as exc:
                 done[exp_id] = "blocked"
                 m.event("blocked", f"{exp_id}: {exc}")
@@ -289,7 +301,12 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
         _save(deps, m, run_dir)
         if len(done) == len(m.specs):
             break
-        if not progressed and not any(j.handle and (j.status is None or not j.status.state.terminal) for j in m.jobs):
+        waiting = [e for e in waiting_since if e not in done]
+        if waiting and not progressed:
+            m.host = deps.detect_host()  # re-sample free memory while a job waits for it
+            rm.host = m.host
+        if not progressed and not waiting and not any(
+                j.handle and (j.status is None or not j.status.state.terminal) for j in m.jobs):
             stuck = [e for e in m.specs if e not in done]
             raise _Block(f"cannot schedule {stuck} within resource caps")
         if not progressed:
