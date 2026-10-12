@@ -9,6 +9,7 @@ from research_autopilot.autopilot.dag import (ArtifactHandoff, DAGProblem, DAGSt
                                               aggregate_parent_status, apply_dependency_proposal,
                                               discover_and_build, evidence_text, inference_payload, needs_dependency_inference,
                                               ready_nodes, sha256_file, specification_hash)
+from research_autopilot.autopilot.linear_ops import WriteRefused
 from research_autopilot.autopilot.execution import (ExecutionRequest, ExecutionRun, ExecutionStatus,
                                                     accept, record_blocked, request_key, transition)
 from research_autopilot.autopilot.models import ApprovalKind, OutboxItem, OutboxState, WorkflowRun
@@ -28,6 +29,7 @@ def intake_parent(deps, bundle, page, *, prefect_flow_run_id: str | None = None)
     # was lost, so never construct another DAG from it.
     if any(r.get("request_key") == request_key(page) for r in deps.store.find(db.execution_requests)):
         return None, []
+    _reset_stopped_children(deps, bundle.issue.identifier)
     provisional = discover_and_build(deps.plan.manager, bundle, "",
                                      registered_repositories=set(deps.impl.registry))
     history = deps.store.find(db.task_dags, parent_task_id=bundle.issue.identifier)
@@ -342,6 +344,29 @@ def _capture_artifacts(deps, parent: ParentRun, dag: TaskDAG, statuses: dict[str
                 deps.store.insert_new(db.artifact_handoffs, handoff.handoff_id, handoff.model_dump(mode="json"),
                                       parent_run_id=parent.parent_run_id, producer_task_id=producer,
                                       consumer_task_id=consumer, dedupe_key=handoff.dedupe_key)
+
+
+def _reset_stopped_children(deps, parent_task_id: str) -> None:
+    """Run Autopilot on a parent that ended Blocked/Failed: its stopped children go back to Todo.
+
+    The steps of a stopped parent say "fix the child, then Run Autopilot on the parent"; the children it left
+    In Progress would otherwise fail DAG intake (task is already In Progress), a dead end. Only children whose
+    last execution under that parent stopped are reset; completed ones keep Done (their artifacts are reused)."""
+    rows = deps.store.find(db.parent_runs, parent_task_id=parent_task_id)
+    if not rows:
+        return
+    last = ParentRun.model_validate(max(rows, key=lambda r: str(r["created_at"])))
+    if last.status not in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}:
+        return
+    for task_id, status in _child_statuses(deps, last).items():
+        if status not in {ExecutionStatus.BLOCKED, ExecutionStatus.FAILED}:
+            continue
+        issue = deps.plan.manager.load(task_id).issue
+        if issue.state_type == "started":
+            try:
+                deps.ops.set_state(issue, "Todo", f"parent {parent_task_id} rerun requested after the child stopped")
+            except WriteRefused:
+                pass  # intake then reports the state as before
 
 
 def _early_child_stop_notice(deps, parent: ParentRun, statuses: dict[str, ExecutionStatus]) -> None:

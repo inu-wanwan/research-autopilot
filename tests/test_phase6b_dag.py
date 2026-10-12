@@ -374,6 +374,25 @@ def test_failed_child_is_isolated_and_never_releases_its_dependents(tmp_path):
     assert linear.issues["INU-900"].state_name != "Done"
 
 
+def test_rerun_of_stopped_parent_returns_stopped_children_to_todo(tmp_path):
+    from research_autopilot.autopilot.dag_runtime import _reset_stopped_children, advance_parents, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, linear, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    schedule_ready(deps, parent)
+    for task_id in ("INU-901", "INU-903"):
+        i = linear.issues[task_id]
+        linear.issues[task_id] = i.model_copy(update={"state_name": "In Progress", "state_type": "started"})
+    _reset_stopped_children(deps, "INU-900")  # parent still running: nothing is touched
+    assert linear.issues["INU-901"].state_name == "In Progress"
+    _set_child(deps, parent.parent_run_id, "INU-901", ExecutionStatus.BLOCKED, "spec gap")
+    _set_child(deps, parent.parent_run_id, "INU-903", ExecutionStatus.COMPLETED)
+    advance_parents(deps)
+    assert _parent(deps, parent.parent_run_id).status is ExecutionStatus.BLOCKED
+    _reset_stopped_children(deps, "INU-900")
+    assert linear.issues["INU-901"].state_name == "Todo"  # the stopped child can start again
+    assert linear.issues["INU-903"].state_name == "In Progress"  # only stopped children are reset
+
+
 def test_independent_ready_child_still_starts_after_sibling_fails(tmp_path):
     from research_autopilot.autopilot.dag_runtime import advance_parents, schedule_ready
     repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
