@@ -61,6 +61,40 @@ Dependency Planner は `RA_DAG_INFERENCE_MODEL` を使用し、未設定時は `
 - 再 dry-run（registry 検証込み）：DAG `valid`、hash `30722d5c…3364`、4 node とも repo `active-space-research`、blocked-by 0 件のため Dependency Planner 対象。その後 intake に Allowed files 必須チェックを追加したため、Allowed files 設定までは `missing_allowed_files` で Blocked になる。
 - 未設定（人間の判断待ち）：各子の `Allowed files`（ページ上も「未確定・未承認」）と、A1〜A4 の Linear blocked-by（任意。未設定なら LLM 提案 + Discord 承認）。本番投入は全 Phase 完了後にユーザーが行う方針。
 
+## Phase A 相当の E2E（INU-324、2026-10-12 / Claude Code、ユーザー委任）
+
+Notion / Linear に `[E2E]` コピー（親 INU-324、A1 INU-325 / A2 INU-326 / A3 INU-327 / A4 INU-328）を作り、承認は dev 限定 CLI（`research-agent research approve`、`cli-dev:claude-code`）で代行した。E2E コピーの仕様に足りない情報はユーザー許可のうえ補った（`Allowed files`、`Input artifacts`、評価規則・整合確認・tie 規則・optimum 定義。各節に「E2E 補完」と明記。本番 Phase A の仕様ではない）。
+
+結果（19:3x JST 時点）：A1・A2 は完了（A1：81 条件で oracle が Phase 4 cache を再生、A2：81 条件の reference table）。A3・A4 は実行中。
+
+見つけて直した仕組みの不具合（すべて commit・テスト済み）：
+
+| 症状 | 修正 |
+|---|---|
+| DAG 推定の根拠がラベル付き引用・JSON エスケープで照合失敗 | `6fc6cc8`：生の文字列で照合、引用部分を検証、言い換えは除外 |
+| 推定失敗を「Notion を直せ」と案内 | `e1aeb09` |
+| 兄弟が動いている間に止まった子が approvals に出ない | `9fc8acd` |
+| catalog の members digest を `sha256=` と表示し実装者が誤解 | `2853508`：`file_sha256` を manifest に追加 |
+| 止まった親の再実行で子が In Progress のまま intake 拒否 | `98b48ce` |
+| container 内でワークツリーの .git が見えない／Claude がテストを実行できない | `55e558b` |
+| Claude サブスクの名目費用を API 予算に計上・1 回 $2 で停止 | `e363a16` / `039d0fa`（ユーザー確認済み） |
+| 一時的な空きメモリ不足で即停止 | `8740124` / `dbddbb6`：最大 30 分待つ |
+| container の provenance で相対パスが二重化 | `d267f02` |
+| 親の再実行で止まった子を最初からやり直す | `75367fb` / `9a40d2d` / `1df9241`：Phase 3 の続き、Phase 4 だけ 1 回、completing から再開 |
+| DoD の引用（複数箇所・和欧間の空白） | `db946af` |
+| Codex 上限時に構造化呼び出しが API へ | `73041b1`：Codex → Claude サブスク → API |
+| container モードで RA_CATALOG_INPUTS をホストに要求 | `cded2a1` |
+| 出力内の units 辞書を値として読む | `42dbea4` |
+| container ジョブなのにホストの空きメモリで判定 | `ff9b4a6`：Docker VM のメモリで判定 |
+| 推定 edge の説明文を artifact id として照合（2 か所） | `afc3655` / `9458d92` |
+| 親の再実行で完了済みの子も再実行（手順の「再利用」と矛盾） | `a037b68`：仕様が同じなら引き継ぐ |
+| Notes の表が 100 行超で Notion 400、101 ブロック目以降が黙って欠落 | `1df9241` |
+| 仕様が実装に委ねた事項を Plan Reviewer が計画で要求 | `ccb37cb` |
+| トークン上限に cache read を含めて数える | `72e05f7`（ユーザー決定：cache read を除く、上限 3M は維持） |
+| 無視済みの noise パスの除外で `git add` が exit 1 | `d555d61` |
+
+運用上の注意：Discord gateway（`discord run`）は起動時のコードで動くので、コード更新後に再起動する。Codex サブスクは構造化呼び出しもサブスクに回すと 1〜2 時間で上限に達する（回復まで約 5 時間）。この間は Claude サブスクで進む。
+
 ## 検証
 
 Fake integration は親 request、DAG intake、4 child の既存 Phase 2〜5、順次 dependency release、artifact handoff、parent Completion Gate、Research Notes、Linear Done、Notion Completed を通す。追加単体テストでは inference proposal、Discord 承認前の実行禁止、承認後の開始、source spec 変更による stale rejection、unknown task、cycle、根拠なし edge を検証する。
