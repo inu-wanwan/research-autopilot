@@ -421,7 +421,9 @@ def _validated_inputs(deps, parent: ParentRun, node) -> bool:
         if not items or not all(r.get("validation_status") == "validated" and Path(r["path"]).is_file() and
                                 sha256_file(Path(r["path"])) == r["content_hash"] for r in items):
             return False
-        required = set(node.artifact_dependencies.get(producer, []))
+        # Only identifier / path-like names are checkable against artifact ids; an inferred edge often describes
+        # what the consumer needs in prose ("81-condition reference table ..."), which documents the edge.
+        required = {a for a in node.artifact_dependencies.get(producer, []) if a and not any(c.isspace() for c in a)}
         if required and not required <= {r["artifact_id"] for r in items}:
             return False
     return True

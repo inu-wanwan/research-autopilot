@@ -545,3 +545,24 @@ def test_parent_dag_children_build_on_the_latest_validated_sibling_implementatio
     produced = deps.store.get_implementation(first["phase3_run_ids"][-1]).implementation_commit
     task = deps.store.get_implementation(second["phase3_run_ids"][-1]).task
     assert task.based_on and task.based_on["task_id"] == "INU-901" and task.base_commit == produced
+
+
+def test_prose_required_artifacts_document_the_edge_and_ids_are_checked(tmp_path):
+    from types import SimpleNamespace
+    from research_autopilot.autopilot.dag import ArtifactHandoff, sha256_file
+    from research_autopilot.autopilot.dag_runtime import _validated_inputs, schedule_ready
+    repos = {"INU-901": "repo-a", "INU-902": "repo-b", "INU-903": "repo-c"}
+    deps, _, _, parent = _seed_parent(tmp_path, {"INU-902": ["INU-901"]}, repos, slots=2)
+    schedule_ready(deps, parent)
+    out = tmp_path / "table.json"
+    out.write_text("{}")
+    h = ArtifactHandoff(parent_run_id=parent.parent_run_id, producer_task_id="INU-901",
+                        producer_execution_run_id=parent.child_execution_run_ids["INU-901"], consumer_task_id="INU-902",
+                        artifact_id="outputs/table.json", path=str(out), content_hash=sha256_file(out),
+                        validation_status="validated")
+    deps.store.insert_new(db.artifact_handoffs, h.handoff_id, h.model_dump(mode="json"), parent_run_id=parent.parent_run_id,
+                          producer_task_id="INU-901", consumer_task_id="INU-902", dedupe_key=h.dedupe_key)
+    node = lambda req: SimpleNamespace(task_id="INU-902", dependencies=["INU-901"], artifact_dependencies={"INU-901": req})
+    assert _validated_inputs(deps, parent, node(["81-condition reference table with E* and optimal subsets"]))
+    assert _validated_inputs(deps, parent, node(["outputs/table.json"]))
+    assert not _validated_inputs(deps, parent, node(["outputs/missing.json"]))
