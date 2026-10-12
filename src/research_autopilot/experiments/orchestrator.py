@@ -389,6 +389,7 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
         env[INPUTS_ENV] = str(Path(manifest_path).resolve())  # the job runs in its checkout: never a relative path
     (jdir / "home").mkdir(parents=True, exist_ok=True)
     (jdir / "tmp").mkdir(parents=True, exist_ok=True)
+    set_by_runner = set(env)  # e.g. RA_CATALOG_INPUTS: never required from the host environment
     if spec.external_code:  # Phase 9: only inside the approved container, after the grant check
         argv = _external_argv(deps, m, spec, alloc, checkout, env, key)
     elif deps.prepare_env and repo_cfg.container:
@@ -409,7 +410,7 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
         env = {}  # passed into the container with -e; the docker CLI itself keeps the host HOME / context
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
                   commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,
-                  env=env, secret_env_names=[n for n in spec.execution.env_var_names if n not in env],
+                  env=env, secret_env_names=[n for n in spec.execution.env_var_names if n not in set_by_runner],
                   allocation=alloc, run_dir=str(jdir), checkout_dir=str(checkout), outputs=[o.path for o in spec.outputs],
                   heartbeat_seconds=res.heartbeat_seconds(alloc, deps.settings))
     rec = JobRecord(experiment_id=spec.experiment_id, spec_id=spec.spec_id, commit=spec.identification.commit,
