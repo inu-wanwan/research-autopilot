@@ -158,6 +158,12 @@ artifact_handoffs = _record_table("autopilot_artifact_handoffs", "handoff_id",
                                   sa.Column("consumer_task_id", sa.String(64), index=True, nullable=False),
                                   sa.Column("dedupe_key", sa.String(200), unique=True, nullable=False))
 notifications_sent = _record_table("autopilot_notifications", "dedupe_key")
+# Watchdog (user request 2026-10-13): poll heartbeat, alerts posted to the report channel, mention-driven fixes,
+# and small cursors (last seen Discord message per channel).
+heartbeats = _record_table("autopilot_heartbeats", "name")
+watchdog_alerts = _record_table("autopilot_watchdog_alerts", "alert_key")
+watchdog_fixes = _record_table("autopilot_watchdog_fixes", "fix_id")
+watchdog_state = _record_table("autopilot_watchdog_state", "name")
 # Phase 7A artifact catalog.  Identity lookups use identity_key (kind + repository + identity hash).
 catalog_adapters = _record_table("catalog_adapters", "adapter_id",
                                  sa.Column("name", sa.String(120), index=True, nullable=False),

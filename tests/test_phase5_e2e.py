@@ -268,6 +268,16 @@ def test_concurrent_pollers_do_not_double_start(tmp_path):
     assert deps.store.acquire_lease("phase5:poll", "other", 600)
     assert poll(deps) == {"skipped": "another poll is running"}
     assert runs(deps) == {}
+    from research_autopilot.storage import db
+    assert deps.store.get(db.heartbeats, "autopilot_poll") is None  # a skipped tick is not a completed one
+
+
+def test_completed_poll_leaves_a_heartbeat_for_the_watchdog(tmp_path):
+    from research_autopilot.storage import db
+    deps, linear, *_ = build(tmp_path)
+    onboard(deps, linear)
+    poll(deps)
+    assert deps.store.get(db.heartbeats, "autopilot_poll")["at"]
 
 
 def test_crash_mid_workflow_resumes_from_stage(tmp_path):

@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-13 04:3x JST / Claude Code
+2026-10-13 05:xx JST / Claude Code
 
 ## Git Branch / Commit
 
@@ -120,6 +120,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ### Exact Next Actions
 
+0a. **（2026-10-13）Watchdog（`research-agent autopilot watch`）を追加**（ユーザー依頼）。停止・停滞を Discord #report（`RA_DISCORD_REPORT_CHANNEL_ID=1559474403400491088`、`.env` に設定済み）に 1 回ずつ投稿し、error にはサブスクで読み取り専用の見立てをスレッドに付ける。詳細は `docs/operations/monitoring.md`「Watchdog」。#report への初回投稿（baseline、既存の停止 1 件＝旧 INU-292 は通知しない）と、実データでの見立て 1 回（Codex、印字のみ）を確認済み。**メンションでの自己修正は未導入**（auto mode の安全判定で拒否、ユーザー判断待ち）。研究室サーバーでの常駐方法（ホスト cron か compose か）は未決定。
 0. **（2026-10-12 20:1x JST）Phase A 相当 E2E（INU-324）の到達点と本番投入の判断材料**。
    - **2026-10-13 03:25 JST：親 INU-324 は Done（E2E 完了）**。A1〜A4 すべて Completed。A3 は 1e-10 Eh 許容への修正（ユーザー承認）後に完了、A4 は units チェック修正 `a8a4f0f` 後に完了。子・親の completion review は CLI で代行承認（科学的結論は人の検証前、Phase B 方針は未承認）。Discord general に最終報告済み。ポーリングループ（`poll_loop4.sh`）は終了済み（親は runs に出ないため STAGE 判定が効かず 12 時間で終了した。次回は parent_runs を見ること）。Discord gateway（`discord run`）は稼働中。結果の要約と修正一覧は `docs/operations/phase6b_parent_dag.md`。本番前に人が決めること：本番 Allowed files / Input artifacts、評価規則と tie tolerance（A4 は 1e-12 を使ったが出典未確認）、本番 INU-274〜278 の Linear blocks（現在なし、付けるなら全 edge を明示）、Eagle での Entropy/NOON 参照計算、merge / push。詳細と修正一覧は `docs/operations/phase6b_parent_dag.md`「Phase A 相当の E2E」。
    - **A1（INU-325）・A2（INU-326）は完了**。

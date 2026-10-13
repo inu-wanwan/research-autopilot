@@ -101,3 +101,14 @@ uv run prefect flow-run logs <flow-run-id>      # run のログ（DB に保存�
 
 - コンテナのログは json-file で 10MB × 5 世代にローテーションされる。run のログの正本は PostgreSQL（UI / API で参照）。
 - healthcheck の意味：server は `/api/health` の応答、worker は poll 活動（`--with-healthcheck` の `/health`）。**どちらも flow の成功を意味しない。**
+
+## Watchdog（`research-agent autopilot watch`、2026-10-13 / Claude Code、ユーザー依頼）
+
+止まった・進まないタスクを Discord の報告チャンネル（`RA_DISCORD_REPORT_CHANNEL_ID`、現在 #report）に投稿する常駐監視。正常な間は LLM を使わない。
+
+- **検知（LLM なし、DB だけを読む）**：各タスクの最新 workflow run の blocked / dead_letter、active stage のまま `RA_WATCH_STALL_HOURS`（既定 6）時間更新なし、親 DAG の Blocked / Failed（停止した子が既に報告されていれば親は省く）、承認待ちが `RA_WATCH_APPROVAL_HOURS`（既定 24）時間超、outbox の dead、Discord 通知が `RA_WATCH_DISCORD_BACKLOG_MINUTES`（既定 15）分以上送られていない（gateway 停止）、poll の完了が `RA_WATCH_POLL_STALE_MINUTES`（既定 180）分ない（`autopilot poll` が tick 完了ごとに `autopilot_heartbeats` を更新）。
+- **投稿**：Discord REST で直接送る（gateway が落ちていても届く）。同じアラートは 1 回だけ（`autopilot_watchdog_alerts`）。送信失敗は次の回に再試行（最大 5 回）。初回は既存の停止を記録するだけで、開始メッセージを 1 件送る。
+- **見立て（triage）**：error のアラートだけ、スレッドに読み取り専用の見立てを 1 回投稿する。サブスク（Codex → Claude）のみで従量 API は使わない。1 日 `RA_WATCH_TRIAGE_DAILY_MAX`（既定 10）回まで。入力はアラート文とそのタスクの直近 5 run の停止理由だけで、ツールなし・何も変更しない。実測：Codex gpt-5.6-terra で入力約 1.5 万 / 出力約 300 tokens（大半は CLI 側の固定プロンプト）。コードは読めないので見立ては推測を含む。
+- 起動：`uv run research-agent autopilot watch`（既定 300 秒ごと）、cron なら `--once`。確認だけなら `--dry-run`（投稿しない）。見立てなしは `--no-triage`。
+- 未実施：研究室サーバー（compose）での常駐。compose のコンテナには codex / claude CLI のログインがないため、見立てを使うならホストで動かすか、CLI を入れる必要がある（未決定）。
+- **メンションによる自己修正は未導入**：ユーザー依頼（「メンションしたメッセージからの指示で自己修正」）で実装したが、Claude Code の auto mode の安全判定（Discord のメッセージからコーディングエージェントを起動する構成）で常駐ループへの組み込みが拒否されたため、リポジトリには入れていない。下書きは作業セッションの scratchpad にのみある。導入するかはユーザーの判断待ち。

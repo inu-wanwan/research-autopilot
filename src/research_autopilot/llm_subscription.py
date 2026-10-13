@@ -135,7 +135,8 @@ _claude = {"skip_until": 0.0, "billing": None}
 
 
 def claude_structured(instructions: str, prompt: str, output_type: type[BaseModel],
-                      timeout: int = DEFAULT_TIMEOUT, executable: str | None = None) -> tuple[BaseModel, dict]:
+                      timeout: int = DEFAULT_TIMEOUT, executable: str | None = None,
+                      model: str | None = None) -> tuple[BaseModel, dict]:
     """One ``claude -p --json-schema`` call on the claude.ai subscription (no tools, empty directory, sanitized
     environment). Refuses (auth_error) when the login is API-billed, so it never adds pay-as-you-go cost."""
     from research_autopilot.implementation.backends.base import classify_error_text, run_process, sanitized_env, tail
@@ -148,7 +149,7 @@ def claude_structured(instructions: str, prompt: str, output_type: type[BaseMode
         _claude["billing"] = ClaudeBackend(exe).status().billing
     if _claude["billing"] != "subscription":
         raise SubscriptionCallError("auth_error", f"claude login is not a subscription ({_claude['billing']})")
-    model = os.environ.get(CLAUDE_MODEL_ENV, "").strip() or "claude-opus-5-5"
+    model = model or os.environ.get(CLAUDE_MODEL_ENV, "").strip() or "claude-opus-5-5"
     with tempfile.TemporaryDirectory(prefix="ra-llm-sub-claude-") as tmp:
         root = Path(tmp)
         cmd = [exe, "-p", "--output-format", "json", "--model", model, "--no-session-persistence",

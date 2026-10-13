@@ -199,6 +199,8 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
         # Capture completed child artifacts and project the derived parent
         # status in the same tick. Newly-ready work starts on the next tick.
         advance_parents(deps)
+        if not deps.settings.dry_run:  # the watchdog reports a poller that stopped completing ticks
+            store.put(db.heartbeats, "autopilot_poll", {"name": "autopilot_poll", "at": utcnow().isoformat()})
     finally:
         store.release_lease(POLL_LEASE, "poller")
     return summary
