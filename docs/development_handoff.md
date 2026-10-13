@@ -587,5 +587,6 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
-2. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。今回は deploy しない。
+2. Eagle へのデプロイは `docs/operations/eagle_wsl_setup.md`（2026-10-13 作成、手順は Eagle で未実行）に従う。判断待ち：(a) 既存 volume `research-autopilot_pgdata`（2026-10-09 作成）と現在の `.env` の `POSTGRES_PASSWORD` が一致するか、(b) Phase 3 以降を worker コンテナ拡張で動かすか WSL ホストのプロセスで動かすか（同文書 §9）。
+2b. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。今回は deploy しない。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
