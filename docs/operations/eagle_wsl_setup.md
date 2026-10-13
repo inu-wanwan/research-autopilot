@@ -66,7 +66,12 @@ EOF
 
 Windows の PowerShell で `wsl --shutdown` を実行し、WSL を開き直す。**WSL 上のプロセスはすべて止まる**ので、作業中のものがないときに行う。
 
-確認：`ps -p 1 -o comm=` が `systemd` になる。`docker ps` が引き続き使える（Docker Desktop の連携が残っている）。
+`wsl --shutdown` を実行すると、Docker Desktop のエンジン（WSL の `docker-desktop` ディストリ）も止まり、自動では戻らない（2026-10-13 に Eagle で発生）。そのため、続けて Docker Desktop をトレイの Quit Docker Desktop で終了し、起動し直す。
+
+確認：
+- `ps -p 1 -o comm=` が `systemd` になる。
+- PowerShell の `wsl -l -v` で `docker-desktop` が Running になる。
+- WSL で `docker ps` が使える。
 
 ### H3. 専用ユーザー `ra` を作る（sudo）
 
