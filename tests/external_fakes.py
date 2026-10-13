@@ -94,7 +94,7 @@ class FakeDocker(Docker):
     """Records every call; runs nothing.  ``fail`` names test runs that exit non-zero."""
 
     def __init__(self, fail: set[str] = frozenset(), unavailable: set[str] = frozenset()):
-        super().__init__(binary="/usr/local/bin/docker")
+        super().__init__(binary="/usr/local/bin/docker", rootless=False)
         self.fail, self.unavailable = set(fail), set(unavailable)
         self.images: set[str] = set()
         self.runs: list[dict] = []

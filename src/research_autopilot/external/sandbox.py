@@ -7,6 +7,9 @@
   the code is mounted read-only and copied into a size-limited tmpfs; CPU / memory / PIDs / time are limited;
   all capabilities dropped, no-new-privileges, read-only root filesystem, unprivileged user.
 * Research runs (``research_argv``) mount only what the grant allows.
+* Rootless Docker (e.g. the dedicated ``ra`` user on Eagle): containers that write to bind mounts run as the
+  container's root, which is the calling host user there -- the host uid would map to an unprivileged subuid
+  that cannot write the host directories.
 """
 
 from __future__ import annotations
@@ -32,9 +35,10 @@ class DockerError(RuntimeError):
 
 
 class Docker:
-    def __init__(self, run=subprocess.run, binary: str | None = None) -> None:
+    def __init__(self, run=subprocess.run, binary: str | None = None, rootless: bool | None = None) -> None:
         self._run = run
         self.binary = binary or shutil.which("docker") or "docker"
+        self._rootless = rootless
 
     def _call(self, args: list[str], *, timeout: float = 600, check: bool = True):
         p = self._run([self.binary, *args], capture_output=True, text=True, timeout=timeout,
@@ -42,6 +46,20 @@ class Docker:
         if check and p.returncode != 0:
             raise DockerError(f"docker {args[0]} failed ({p.returncode}): {(p.stderr or p.stdout)[-400:]}")
         return p
+
+    def rootless(self) -> bool:
+        """Whether the daemon runs rootless (asked once; an unreachable daemon counts as rootful)."""
+        if self._rootless is None:
+            try:
+                p = self._call(["info", "--format", "{{json .SecurityOptions}}"], timeout=30, check=False)
+                self._rootless = p.returncode == 0 and "name=rootless" in p.stdout
+            except (OSError, subprocess.SubprocessError):
+                self._rootless = False
+        return self._rootless
+
+    def _writer_user(self) -> str:
+        """User for containers that write to bind mounts: the host user's own files stay its own."""
+        return "0:0" if self.rootless() else _host_user()
 
     def architecture(self) -> str:
         return self._call(["info", "--format", "{{.Architecture}}"], timeout=30).stdout.strip()
@@ -75,7 +93,7 @@ class Docker:
         return wheels, failed
 
     def _pip_download(self, base: str, reqs: list[str], dest: Path, limits: SandboxLimits) -> bool:
-        p = self._call(["run", "--rm", "--network", "bridge", *self._limits(limits), "--user", _host_user(),
+        p = self._call(["run", "--rm", "--network", "bridge", *self._limits(limits), "--user", self._writer_user(),
                         "-e", "HOME=/tmp", "-e", "PIP_DISABLE_PIP_VERSION_CHECK=1", "-v", f"{dest}:/wheels:rw",
                         base, "python", "-m", "pip", "download", "--only-binary=:all:", "--no-cache-dir",
                         "--index-url", "https://pypi.org/simple", "-d", "/wheels", *reqs],
@@ -144,7 +162,7 @@ class Docker:
                "--network", "none" if network == "none" else "bridge",
                "--cpus", f"{cpus:g}", "--memory", f"{int(memory_gb * 1024)}m",
                "--memory-swap", f"{int(memory_gb * 1024)}m", "--pids-limit", "512", *self._hardening(),
-               "--user", _host_user(), "-e", "HOME=/tmp", "-e", f"PYTHONPATH={pythonpath}",
+               "--user", self._writer_user(), "-e", "HOME=/tmp", "-e", f"PYTHONPATH={pythonpath}",
                "-v", f"{code_dir}:{ext}:ro", "-v", f"{checkout}:/work:{checkout_mode}"]
         for i, d in enumerate(data_paths):
             out += ["-v", f"{d}:/data/{i}:ro"]

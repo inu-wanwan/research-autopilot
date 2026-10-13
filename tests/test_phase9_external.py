@@ -1,5 +1,7 @@
 """Phase 9: trusted onboarding of external repositories (offline: mock GitHub, scripted Docker and planner)."""
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,7 @@ from research_autopilot.external import deps as deps_mod
 from research_autopilot.external import github, grants, integration, registry, service
 from research_autopilot.external import license as lic
 from research_autopilot.external.models import (EntryState, ExecutionRequest, ExecutionScope, FileAccess,
-                                                GrantStatus, PaperRef, Provider)
+                                                GrantStatus, PaperRef, Provider, SandboxLimits)
 from research_autopilot.notifications import LoggingNotifier
 from research_autopilot.storage import db
 from research_autopilot.storage.db import Store
@@ -383,6 +385,48 @@ def test_research_container_gets_no_secrets_and_only_granted_mounts(tmp_path, mo
     assert "sk-should-never-leak" not in joined and "PYTHONPATH=/ext/bocs/BOCSpy" in joined
     from research_autopilot.external.sandbox import _clean_env
     assert "OPENAI_API_KEY" not in _clean_env()
+
+
+def _docker_with_info(info_stdout: str, returncode: int = 0):
+    from research_autopilot.external.sandbox import Docker
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout=info_stdout, stderr="")
+    return Docker(run=run, binary="docker"), calls
+
+
+def _user_of(argv):
+    return argv[argv.index("--user") + 1]
+
+
+def _research_argv(docker, tmp_path):
+    return docker.research_argv(image="i", name="n", code_dir=tmp_path, mount_as="x", checkout=tmp_path / "job",
+                                checkout_mode="rw", data_paths=[], network="none", cpus=1, memory_gb=1,
+                                workdir=".", env={}, python_dirs=[], argv=["true"])
+
+
+def test_rootless_docker_runs_writing_containers_as_container_root(tmp_path):
+    """Rootless: container root is the host user, so bind-mounted results stay writable and owned by it."""
+    docker, calls = _docker_with_info('["name=seccomp,profile=builtin","name=rootless","name=cgroupns"]')
+    argv = _research_argv(docker, tmp_path)
+    assert _user_of(argv) == "0:0" and "ALL" in argv and "no-new-privileges" in argv
+    docker._pip_download("py", ["numpy"], tmp_path, SandboxLimits())
+    assert _user_of(calls[-1]) == "0:0"
+    assert sum(1 for c in calls if c[1] == "info") == 1  # asked once
+
+
+@pytest.mark.parametrize("stdout, rc", [('["name=seccomp,profile=builtin"]', 0), ("", 1)])
+def test_rootful_or_unknown_docker_keeps_the_host_uid(tmp_path, stdout, rc):
+    docker, _ = _docker_with_info(stdout, rc)
+    assert _user_of(_research_argv(docker, tmp_path)) == f"{os.getuid()}:{os.getgid()}"
+
+
+def test_verification_runs_stay_nobody_even_on_rootless_docker(tmp_path):
+    docker, calls = _docker_with_info('["name=rootless"]')
+    docker.run_isolated("i", tmp_path, ["true"], limits=SandboxLimits())
+    assert _user_of(calls[-1]) == "65534:65534"
 
 
 # ---------------------------------------------------------------- Phase 8 -> 9 and Planner context
