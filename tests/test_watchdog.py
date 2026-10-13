@@ -8,9 +8,9 @@ from research_autopilot.autopilot.watchdog import (
     detect,
     detection_tick,
     load_watch_settings,
-    run_watch,
     split_message,
 )
+from research_autopilot.autopilot.watchdog_fix import run_watch
 from research_autopilot.models import utcnow
 from research_autopilot.storage import db
 from research_autopilot.storage.db import Store
@@ -177,6 +177,9 @@ def test_the_loop_survives_a_failing_round(tmp_path):
     class Broken(FakeREST):
         def post(self, channel_id, text):
             raise RuntimeError("boom")
+
+        def me(self):
+            raise RuntimeError("discord down")
     slept = []
 
     def sleep(n):
@@ -184,7 +187,7 @@ def test_the_loop_survives_a_failing_round(tmp_path):
         if len(slept) == 2:
             raise KeyboardInterrupt
     try:
-        run_watch(store, _settings(), Broken(), interval=5, sleep=sleep)
+        run_watch(store, _settings(), Broken(), interval=5, mention_interval=7, sleep=sleep)
     except KeyboardInterrupt:
         pass
-    assert slept == [5, 5]
+    assert slept == [7, 7]

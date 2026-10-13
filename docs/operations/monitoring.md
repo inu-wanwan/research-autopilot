@@ -111,4 +111,9 @@ uv run prefect flow-run logs <flow-run-id>      # run のログ（DB に保存�
 - **見立て（triage）**：error のアラートだけ、スレッドに読み取り専用の見立てを 1 回投稿する。サブスク（Codex → Claude）のみで従量 API は使わない。1 日 `RA_WATCH_TRIAGE_DAILY_MAX`（既定 10）回まで。入力はアラート文とそのタスクの直近 5 run の停止理由だけで、ツールなし・何も変更しない。実測：Codex gpt-5.6-terra で入力約 1.5 万 / 出力約 300 tokens（大半は CLI 側の固定プロンプト）。コードは読めないので見立ては推測を含む。
 - 起動：`uv run research-agent autopilot watch`（既定 300 秒ごと）、cron なら `--once`。確認だけなら `--dry-run`（投稿しない）。見立てなしは `--no-triage`。
 - 未実施：研究室サーバー（compose）での常駐。compose のコンテナには codex / claude CLI のログインがないため、見立てを使うならホストで動かすか、CLI を入れる必要がある（未決定）。
-- **メンションによる自己修正は未導入**：ユーザー依頼（「メンションしたメッセージからの指示で自己修正」）で実装したが、Claude Code の auto mode の安全判定（Discord のメッセージからコーディングエージェントを起動する構成）で常駐ループへの組み込みが拒否されたため、リポジトリには入れていない。下書きは作業セッションの scratchpad にのみある。導入するかはユーザーの判断待ち。
+- **メンションによる修正**（ユーザー承認 2026-10-13）：`RA_DISCORD_AUTHORIZED_USER_IDS` のユーザーが #report かその下のスレッド（アラート／修正スレッド、直近 7 日・最大 20）で bot をメンションしたときだけ反応する（30 秒ごとに REST で確認、初めて見るチャンネルは過去のメッセージに反応しない）。
+  - `@bot <指示>`：作業ブランチの HEAD から `autofix/<日時>-<id>` を切り、`RA_WATCH_FIX_DIR`（既定 `<RA_STATE_DIR>/autofix`）に git worktree を作って、コーディングエージェント（Codex `workspace-write` sandbox → Claude（Phase 3 の implementer と同じツール許可リスト）、サブスクのみ）に直させる。エージェントには秘密情報を除いた環境を渡し、commit / push / merge はさせない。終わったら watchdog がテスト（`RA_WATCH_FIX_TEST_COMMAND`、既定 `uv run pytest -q -x -p no:cacheprovider`）を走らせ、結果に関わらず commit してスレッドに要約・diff stat・テスト結果を投稿する。アラートのスレッドなら、そのアラートと見立てを文脈として渡す。同じスレッドで続けて指示すると同じブランチで続ける。
+  - `@bot 適用`：テスト合格のときだけ、作業ツリーが修正の起点ブランチにあり、未 commit の変更がなく、そのブランチが main / master でない場合に限り、fast-forward（できなければ cherry-pick、衝突なら中止）で取り込む。push はしない。poll ループは次の tick から新しいコードを使うが、Discord gateway と watchdog 自身は再起動が必要。研究室サーバーには反映されない。
+  - `@bot 破棄`：その修正の worktree とブランチを削除する。`@bot 状態`：現在のアラート一覧。
+  - 修正は 1 件ずつ実行する。実行中に watchdog が止まった修正は、次の起動時に「中断」としてスレッドに報告する（自動再開しない）。
+  - 検証：一時 git リポジトリと偽のエージェントでのテスト（`tests/test_watchdog_fix.py`）のみ。実際の Codex / Claude による修正はまだ通していない。

@@ -11,6 +11,9 @@ while things are healthy.
 - Error alerts get one read-only triage on a subscription (Codex, then Claude; never the pay-as-you-go API), at
   most ``RA_WATCH_TRIAGE_DAILY_MAX`` per day, posted in a thread under the alert. The triage only reads the alert
   text and the task's recent run history; it has no tools and changes nothing.
+- Mentions of the bot by an authorized user in the report channel or its threads are fix requests
+  (``watchdog_fix``, user approval 2026-10-13): the fix runs in its own git worktree / branch, is tested and
+  committed there, and is applied to the working branch only on an explicit "適用". Never main, never push.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -53,6 +57,13 @@ class WatchSettings:
     triage: bool = True
     triage_daily_max: int = 10
     triage_providers: list[str] = field(default_factory=lambda: ["codex", "claude"])
+    fix: bool = True
+    fix_providers: list[str] = field(default_factory=lambda: ["codex", "claude"])
+    fix_timeout: int = 2400
+    fix_test_command: str = "uv run pytest -q -x -p no:cacheprovider"
+    fix_test_timeout: int = 1800
+    fix_repo: Path = Path(".")
+    fix_dir: Path = Path(".prefect/research-autopilot-state/autofix")
 
 
 def load_watch_settings(env: dict[str, str] | None = None) -> WatchSettings:
@@ -85,13 +96,21 @@ def load_watch_settings(env: dict[str, str] | None = None) -> WatchSettings:
         discord_backlog_minutes=num("RA_WATCH_DISCORD_BACKLOG_MINUTES", 15),
         triage=flag("RA_WATCH_TRIAGE", True), triage_daily_max=int(num("RA_WATCH_TRIAGE_DAILY_MAX", 10)),
         triage_providers=providers("RA_WATCH_TRIAGE_PROVIDERS"),
+        fix=flag("RA_WATCH_FIX", True), fix_providers=providers("RA_WATCH_FIX_PROVIDERS"),
+        fix_timeout=int(num("RA_WATCH_FIX_TIMEOUT", 2400)),
+        fix_test_command=env.get("RA_WATCH_FIX_TEST_COMMAND", "").strip() or "uv run pytest -q -x -p no:cacheprovider",
+        fix_test_timeout=int(num("RA_WATCH_FIX_TEST_TIMEOUT", 1800)),
+        fix_repo=Path(env.get("RA_WATCH_FIX_REPO", "").strip() or ".").resolve(),
+        fix_dir=Path(env.get("RA_WATCH_FIX_DIR", "").strip()
+                     or Path(env.get("RA_STATE_DIR", "").strip() or ".prefect/research-autopilot-state") / "autofix"
+                     ).resolve(),
     )
 
 
 # ---------------------------------------------------------------- Discord REST
 
 class DiscordREST:
-    """The few REST calls the watchdog needs (bot token)."""
+    """The few REST calls the watchdog needs (bot token; mentions are readable without the content intent)."""
 
     def __init__(self, token: str, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(base_url=API, timeout=30,
@@ -127,6 +146,13 @@ class DiscordREST:
         t = self._call("POST", f"/channels/{channel_id}/messages/{message_id}/threads",
                        json={"name": name[:90] or "thread", "auto_archive_duration": 4320})
         return str(t["id"])
+
+    def messages(self, channel_id: str, after: str | None = None, limit: int = 50) -> list[dict]:
+        params: dict = {"limit": limit}
+        if after:
+            params["after"] = after
+        got = self._call("GET", f"/channels/{channel_id}/messages", params=params)
+        return sorted(got if isinstance(got, list) else [], key=lambda m: int(m["id"]))
 
 
 def split_message(text: str, size: int = 1900) -> list[str]:
@@ -302,7 +328,7 @@ def format_triage(t: WatchTriage, provider: str, usage: dict) -> str:
     return (f"🔎 **見立て**（{provider}、{tokens}、確度 {t.confidence}）\n"
             f"分類: {CATEGORY_JA.get(t.category, t.category)}　人の判断: {'必要' if t.needs_human_decision else '不要の見込み'}\n"
             f"要約: {t.summary}\n原因の見込み: {t.likely_cause}\n次の一手: {t.next_action}\n"
-            "-# 読み取り専用の見立てです（何も変更していません）。")
+            "-# 読み取り専用の見立てです（何も変更していません）。直す場合はこのスレッドで bot をメンションして指示してください。")
 
 
 # ---------------------------------------------------------------- one detection tick
@@ -378,6 +404,23 @@ def detection_tick(store: Store, s: WatchSettings, rest: DiscordREST, triage: Tr
     return {"alerts": [a.key for a in alerts], "posted": posted}
 
 
+def alert_for_thread(store: Store, thread_id: str) -> dict | None:
+    for rec in store.find(db.watchdog_alerts):
+        if rec.get("thread_id") == thread_id:
+            return rec
+    return None
+
+
+def recent_threads(store: Store, now: datetime, days: int = 7, cap: int = 20) -> list[str]:
+    """Threads followed for mentions: alert threads and fix threads updated in the last ``days``."""
+    since = now - timedelta(days=days)
+    ids = [rec["thread_id"] for rec, _c, updated in _rows(store, db.watchdog_alerts)
+           if rec.get("thread_id") and updated > since]
+    ids += [rec["thread_id"] for rec, _c, updated in _rows(store, db.watchdog_fixes)
+            if rec.get("thread_id") and updated > since]
+    return list(dict.fromkeys(reversed(ids)))[:cap]
+
+
 def status_text(store: Store, s: WatchSettings) -> str:
     alerts = detect(store, s)
     if not alerts:
@@ -385,31 +428,16 @@ def status_text(store: Store, s: WatchSettings) -> str:
     return "現在の状態:\n" + "\n".join(f"{_ICON[a.severity]} {a.title}" for a in alerts[:20])
 
 
-def run_watch(store: Store, s: WatchSettings, rest: DiscordREST, *, once: bool = False, interval: int = 300,
-              dry_run: bool = False, triage: TriageFn | None = None,
-              sleep: Callable[[float], None] = time.sleep) -> dict:
-    """The resident loop: one detection round every ``interval`` seconds (``once``: a single round, for cron)."""
-    store.init_schema()
-    while True:
-        try:
-            summary = detection_tick(store, s, rest, triage, dry_run=dry_run)
-        except Exception as exc:
-            log.exception("watchdog detection round failed")
-            summary = {"error": str(exc)[:300]}
-        if once or dry_run:
-            return summary
-        sleep(interval)
-
-
 __all__ = [
     "Alert",
     "DiscordREST",
     "WatchSettings",
     "WatchTriage",
+    "alert_for_thread",
     "detect",
     "detection_tick",
     "load_watch_settings",
-    "run_watch",
+    "recent_threads",
     "split_message",
     "status_text",
     "subscription_triage",

@@ -283,19 +283,23 @@ def autopilot_status() -> None:
 
 
 @ap_app.command("watch")
-def autopilot_watch(once: bool = typer.Option(False, "--once", help="One detection round (for cron)"),
+def autopilot_watch(once: bool = typer.Option(False, "--once", help="One round (for cron); waits for a started fix"),
                     interval: int = typer.Option(300, "--interval", help="Seconds between detection rounds"),
+                    mention_interval: int = typer.Option(30, "--mention-interval", help="Seconds between mention checks"),
                     dry_run: bool = typer.Option(False, "--dry-run", help="Print current alerts; post nothing"),
                     no_triage: bool = typer.Option(False, "--no-triage", help="Do not ask a subscription for a triage")) -> None:
-    """Watchdog: report new stops / stalls to RA_DISCORD_REPORT_CHANNEL_ID and add a read-only triage
-    (subscription only) to error alerts. Detection itself uses no LLM."""
-    from research_autopilot.autopilot.watchdog import DiscordREST, load_watch_settings, run_watch, subscription_triage
+    """Watchdog: report new stops / stalls to RA_DISCORD_REPORT_CHANNEL_ID with a read-only subscription triage,
+    and take fix requests by mention from authorized users (own worktree / branch; applied to the working branch
+    only on "適用"; never main, never push). Detection itself uses no LLM."""
+    from research_autopilot.autopilot.watchdog import DiscordREST, load_watch_settings, subscription_triage
+    from research_autopilot.autopilot.watchdog_fix import run_watch
 
     s = load_watch_settings()
     store = Store(load_settings().resolved_database_url())
     triage = None if no_triage or not s.triage else subscription_triage(s.triage_providers)
-    typer.echo(json.dumps(run_watch(store, s, DiscordREST(s.token), once=once, interval=interval, dry_run=dry_run,
-                                    triage=triage), ensure_ascii=False, indent=2, default=str))
+    typer.echo(json.dumps(run_watch(store, s, DiscordREST(s.token), once=once, interval=interval,
+                                    mention_interval=mention_interval, dry_run=dry_run, triage=triage),
+                          ensure_ascii=False, indent=2, default=str))
 
 
 @discord_app.command("run")
