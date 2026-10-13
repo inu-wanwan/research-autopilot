@@ -14,7 +14,7 @@ Codex / Claude Code が作業を再開するときに最初に読む引き継ぎ
 
 ## Current Phase
 
-Phase 10（Autonomous Research Planning & Orchestration、10A / 10B）を実装中・実データ E2E 実施中（ブランチ `phase10/research-planning`、main 未 merge・未 push）。Phase 9 は main に merge 済み（push は未実施）。Eagle と TSUBAME は未実施。Phase A 本番実行は全 Phase 実装完了後の方針。
+Phase 10（Autonomous Research Planning & Orchestration、10A / 10B）と watchdog まで実装済み。**2026-10-13 ユーザー指示で `phase10/research-planning` を main に fast-forward し、main とブランチを origin に push 済み（`5c7da88`）**。研究室サーバーへのデプロイは未実施（ユーザーが行う予定、手順は `docs/operations/deployment.md`）。Eagle と TSUBAME は未実施。
 
 ## Current Task
 
