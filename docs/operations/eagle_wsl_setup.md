@@ -1,189 +1,215 @@
 # Eagle（Windows + WSL2）セットアップ手順
 
-研究室サーバー Eagle に、Docker Compose のスタック（PostgreSQL / Prefect Server / Prefect Worker / Discord Bot）を WSL2 から構築する手順。
-共通の内容（バージョン固定、MacBook の profile、更新手順）は `deployment.md` にある。この文書では **Eagle 固有の差分**と、実行する順番をまとめる。
+研究室サーバー Eagle に Research Autopilot を構築する手順。**人間が行う操作**（sudo、Windows の設定、専用ユーザーでの作業、ログイン、判断）を中心に書く。
+エージェント（Claude Code / Codex、WSL の通常ユーザー `rixyt` で動く）ができる作業は §3 に短くまとめる。
 
-> 検証状況（2026-10-13 / Claude Code）：下記「Eagle の現状」の各項目は Eagle 上のコマンドで確認した。**この文書の手順そのものは、まだ Eagle で通しで実行していない。**
-> 対象は Phase 1〜2（compose で動く範囲）。Phase 3 以降を Eagle で動かす構成は未決定（§9）。
+> 検証状況（2026-10-13 / Claude Code）
+> - Eagle 上で確認したこと（§0）：Docker Desktop、Windows 側の Tailscale Serve、cgroup v2、WSL から Docker Desktop の `127.0.0.1` の publish ポートに届くこと。
+> - `infra/compose.host.yaml` は `docker compose config` で、起動対象が postgres / prefect-server だけになることを確認した。
+> - systemd unit は `systemd-analyze verify` を通した。`infra/host/with_dotenv.py` は手元で動作を確認した。
+> - rootless Docker 用のユーザー対応（`external/sandbox.py`）は pytest で確認した。
+> - **この手順の通し実行、`ra` ユーザーでの rootless Docker、Phase 9 の実 E2E は Eagle で未実施。**
+
+## 構成
+
+```text
+Windows：Docker Desktop（rixyt が操作）              Tailscale（Windows 版）
+  └ compose: postgres (127.0.0.1:5432)                 └ Serve: https://eagle.tail5877f8.ts.net → 127.0.0.1:4200
+             prefect-server (127.0.0.1:4200)
+WSL2 Ubuntu（systemd 有効）
+  └ ユーザー ra（docker / sudo グループに入れない）
+       ├ rootless Docker（ra 専用。Phase 9 のサンドボックス）
+       ├ systemd --user：ra-prefect-worker / ra-discord-bot / ra-watchdog
+       ├ /opt/research-autopilot（コードと .env。deployment がここで実行される）
+       └ Codex / Claude CLI（ra でログイン）、研究リポジトリ、worktree
+```
+
+構成をこう分けた理由：
+
+- `rixyt` は `docker` グループに入っている（root 相当）。LLM が書いたコード（Phase 3 のテスト、Phase 4 のジョブ）を `rixyt` で動かすと、Phase 1 仕様 §3「Docker socket や host root を LLM エージェントに公開しない」に反する。
+- 専用ユーザー `ra` の rootless Docker は、中で root になってもホスト上では `ra` の権限しかない。
 
 ## 0. Eagle の現状（2026-10-13 確認）
 
-| 項目 | 状態 | 確認方法 |
-|---|---|---|
-| WSL ディストリビューション | Ubuntu 24.04.1 LTS、x86_64、32 CPU、メモリ 31 GiB（WSL から見た値） | `/etc/os-release`、`nproc`、`free -g` |
-| systemd | 無効（PID 1 は `init(Ubuntu)`） | `ps -p 1 -o comm=` |
-| `.wslconfig` | なし（WSL の既定の上限を使っている） | `ls /mnt/c/Users/<user>/.wslconfig` |
-| Docker | **Docker Desktop**（WSL integration、Engine 29.7.2、Compose v5.4.0） | `docker info --format '{{.OperatingSystem}}'` |
-| Tailscale | **Windows 側**で稼働（machine `eagle`）。WSL 内の `tailscaled` は動いていない | `tailscale.exe status` |
-| Tailscale Serve | 設定済み：`https://eagle.tail5877f8.ts.net` → `http://127.0.0.1:4200`（tailnet のみ） | `tailscale.exe serve status` |
-| 既存の volume | `research-autopilot_pgdata`、`research-autopilot_worker-state`（2026-10-09 作成） | `docker volume ls` |
-| 既存のイメージ | `research-autopilot-worker:5f6ad8b`、`:e623fcb` | `docker images` |
-| 稼働中のコンテナ | なし | `docker compose ls` |
-| uv（WSL 内） | 未インストール | `which uv` |
-| 現在のチェックアウト | `/mnt/c/Users/rixyt/workspace_eagle/dev/ResearchAutopilot`（Windows 側のファイルシステム、CRLF） | `file infra/compose.yaml` |
+| 項目 | 状態 |
+|---|---|
+| WSL | Ubuntu 24.04.1、x86_64、32 CPU、31 GiB。systemd は**無効**。`.wslconfig` はない |
+| cgroup | v2（cpu / memory / pids などが使える）。`rixyt` の subuid は設定済み |
+| Docker | Docker Desktop（WSL integration）。WSL から `127.0.0.1` の publish ポートに届く |
+| Tailscale | Windows 側。Serve `https://eagle.tail5877f8.ts.net` → `127.0.0.1:4200` は設定済み |
+| 既存の volume | `research-autopilot_pgdata` / `_worker-state`（2026-10-09 作成）。`.env` のパスワードは作成時と同じ（ユーザー回答） |
+| GitHub | `inu-wanwan/research-autopilot` は public（認証なしで clone できる） |
 
-## 1. 前提（Windows 側）
+---
 
-1. Docker Desktop
-   - Settings > Resources > WSL integration で、Ubuntu の integration を有効にする（済み）。
-   - Settings > General の「Start Docker Desktop when you sign in」を有効にする。Docker Desktop が起動すれば、`restart: unless-stopped` のコンテナは自動で再開する。**Windows にログインしていない間は Docker Desktop が起動しない**ので、再起動後の自動ログインまたは手動ログインの運用を決めておく（未決定）。
-2. Windows の電源設定で、スリープ・休止状態に入らないようにする。
-3. Tailscale：Windows 版を使う（今の構成）。WSL 内には入れなくてよい。Serve は Windows 側の `127.0.0.1:4200` を見ている。Docker Desktop が publish したポートは Windows の localhost に出るので、このままつながる想定（**未確認**。§7 で確認する）。
+## 1. 人間が行う操作
 
-## 2. リポジトリを WSL のファイルシステムに置き直す
+順番に行う。各ステップの「確認」が通ってから次へ進む。
 
-今のチェックアウトは `/mnt/c`（Windows 側）にある。ここでは次の 2 つの問題がある。
+### H1. Windows の設定
 
-- `chmod 600` が効かず、`.env` が誰でも読める権限（777）のままになる。
-- Windows の Git で checkout したため、全ファイルが CRLF になっている（`git status` の 200 件以上の変更は改行コードだけの差分）。Dockerfile やシェルスクリプトが壊れる原因になる。
+1. Docker Desktop：Settings > General の「Start Docker Desktop when you sign in」を ON にする。
+2. 電源設定：スリープと休止状態を「なし」にする。
+3. Windows にログインしていない間は Docker Desktop（PostgreSQL / Prefect Server）が動かない。再起動後の自動ログインをどうするか決める（**判断待ち**）。
 
-WSL 側（ext4）に clone し直す：
+### H2. WSL の systemd を有効にする
+
+WSL（rixyt）で `/etc/wsl.conf` に追記する（既存の `[automount]` は残す）：
 
 ```bash
-mkdir -p ~/workspace && cd ~/workspace
-git clone https://github.com/inu-wanwan/research-autopilot.git ResearchAutopilot   # GitHub の認証が必要（gh auth login か SSH 鍵）
-cd ResearchAutopilot
-git switch main && git log --oneline -1
+sudo tee -a /etc/wsl.conf >/dev/null <<'EOF'
 
-# 改行コードの確認：CRLF が出ないこと
-file infra/compose.yaml infra/Dockerfile .env.example    # "ASCII text" のみ（"with CRLF" が付かない）
+[boot]
+systemd=true
+EOF
 ```
 
-CRLF になっていたら、WSL 内の Git に `git config --global core.autocrlf input` を設定してから clone し直す。
+Windows の PowerShell で `wsl --shutdown` を実行し、WSL を開き直す。**WSL 上のプロセスはすべて止まる**ので、作業中のものがないときに行う。
 
-`.env` を移して権限を絞る（中身は表示しない）：
+確認：`ps -p 1 -o comm=` が `systemd` になる。`docker ps` が引き続き使える（Docker Desktop の連携が残っている）。
+
+### H3. 専用ユーザー `ra` を作る（sudo）
 
 ```bash
-install -m 600 /mnt/c/Users/rixyt/workspace_eagle/dev/ResearchAutopilot/.env .env
-sed -i 's/\r$//' .env          # Windows で編集した場合に備えて CRLF を除く
-ls -l .env                     # -rw------- であること
+sudo apt-get update && sudo apt-get install -y uidmap dbus-user-session systemd-container
+sudo adduser --disabled-password --gecos "" ra
+id ra                                  # groups に docker / sudo が「ない」こと
+grep '^ra:' /etc/subuid /etc/subgid    # 両方に 1 行ずつあること（adduser が自動で追加する）
+sudo loginctl enable-linger ra         # ログアウト中も ra のサービスを動かす
+
+# rootless Docker で --cpus を使うため、ユーザーサービスに cpu / cpuset / io も委譲する
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null <<'EOF'
+[Service]
+Delegate=cpu cpuset io memory pids
+EOF
+sudo systemctl daemon-reload
+
+sudo install -d -o ra -g ra /opt/research-autopilot
 ```
 
-移したあと、`/mnt/c` 側の `.env` は削除するかどうかを決める（秘密情報が Windows 側にも残るため）。古いチェックアウトは、`git status` の差分が改行コードだけであることを確認してから片付ける（`git diff --ignore-cr-at-eol --stat` が空なら改行コードだけ）。
+### H4. `ra` で rootless Docker を入れる
 
-> compose のプロジェクト名は `infra/compose.yaml` の `name: research-autopilot` で固定されている。置き場所を変えても、既存の volume（`research-autopilot_pgdata` など）がそのまま使われる。
-
-## 3. uv を入れる（WSL 内）
-
-automation の登録と `prefect deploy` に使う。イメージ内と同じバージョンにそろえる：
+`ra` には `machinectl` でログインする。`sudo -u ra` や `su` では systemd のユーザーセッション（`XDG_RUNTIME_DIR`）ができず、rootless Docker のインストールが止まる。
 
 ```bash
+sudo machinectl shell ra@
+# ---- ここから ra ----
+curl -fsSL https://get.docker.com/rootless | sh        # ~/bin に入る。2026-10-13 時点の版は 29.9.0
+systemctl --user enable --now docker
+export PATH=$HOME/bin:$PATH DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
+
+# 確認
+docker info --format '{{json .SecurityOptions}}'       # "name=rootless" を含むこと
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers   # cpu memory pids を含むこと
+docker run --rm --network none --cpus 1 --memory 512m --memory-swap 512m --pids-limit 64 \
+  --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,size=64m \
+  python:3.12-slim python -c 'print("sandbox ok")'      # Phase 9 と同じ制限で動くこと
+```
+
+最後のコマンドが失敗したら、出力をそのままエージェントに渡す（Phase 9 の制限が Eagle で使えない可能性があるため）。
+
+### H5. `ra` でコード・CLI・設定を用意する
+
+続けて `ra` のシェルで行う。
+
+```bash
+# uv（イメージと同じ版）
 curl -LsSf https://astral.sh/uv/0.12.18/install.sh | sh
 exec $SHELL -l
-uv --version            # 0.12.18
-uv sync                 # リポジトリ直下で。.venv を作る
+
+# コード（deployment は /opt/research-autopilot で実行される）
+git clone https://github.com/inu-wanwan/research-autopilot.git /opt/research-autopilot
+cd /opt/research-autopilot && uv sync --frozen --no-dev
+
+# Codex CLI（Node が必要）と Claude Code CLI
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+exec $SHELL -l
+nvm install --lts
+ln -sfn "$(dirname "$(nvm which default)")" ~/.local/node-bin   # systemd unit の PATH に入っている場所
+npm install -g @openai/codex
+curl -fsSL https://claude.ai/install.sh | bash
+codex login            # ChatGPT のサブスクリプションでログイン（ブラウザが開けなければ codex login --device-auth）
+claude                 # 起動して /login。claude.ai のサブスクリプションでログインする（API 課金のログインにしない）
 ```
 
-（MacBook から Tailscale 経由で行う場合は不要。`deployment.md` §3。）
-
-## 4. `.env` の確認
-
-値の入れ方は `.env.example` と `deployment.md` §2。Eagle では次の点を確認する。
-
-| 変数 | Eagle での値 |
-|---|---|
-| `GIT_SHA` | `$(git rev-parse --short HEAD)`。**手で古い値を残さない**（下のコマンドで更新） |
-| `PREFECT_SERVER_UI_API_URL` | `https://eagle.tail5877f8.ts.net/api` |
-| `PREFECT_UI_URL` | `https://eagle.tail5877f8.ts.net` |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | **既存の volume を作ったときと同じ値**（下の注意） |
-| `RA_CATALOG_ENVIRONMENT` | `eagle`（`config/research_repos.toml` の `locations` と名前を合わせる） |
-| `RA_EXP_*` | Mac 用の安全な値のままでよい（Phase 4 は §9 が決まるまで動かさない） |
-| `RA_AUTOPILOT_WRITE` / `RA_AUTOPILOT_TEST_ONLY` | `false` / `true` のまま |
-| `RA_LINEAR_WRITE_ENABLED` | `false` のまま（Phase 2 の apply を試すときだけ `true`） |
+**`.env`**：rixyt 側の `.env` をコピーする。この操作は rixyt のシェルで行う（sudo が必要）。
 
 ```bash
-sed -i "s/^GIT_SHA=.*/GIT_SHA=$(git rev-parse --short HEAD)/" .env
-grep '^GIT_SHA=' .env
+sudo install -o ra -g ra -m 600 /home/rixyt/workspace/ResearchAutopilot/.env /opt/research-autopilot/.env
 ```
 
-**既存の PostgreSQL volume についての注意**：PostgreSQL は、volume が空のときだけ `POSTGRES_PASSWORD` を使ってユーザーを作る。`research-autopilot_pgdata` は 2026-10-09 に作られているので、そのときと違うパスワードを `.env` に入れると、Prefect Server が DB に接続できなくなる（認証エラー）。
+`ra` のシェルに戻り、`/opt/research-autopilot/.env` を編集する。
 
-- 同じ値を使う → そのまま進む。
-- 値を変えた、または分からない → どちらにするかを決める。
-  - (a) 中のデータ（Phase 1 の試験 run の履歴）が要らない：`recovery.md` §5 でバックアップを取ってから volume を作り直す。
-  - (b) 要る：古いパスワードで起動し、`ALTER USER` でパスワードを変える。
-  - **volume の削除は取り消せないので、実行する前に必ず確認する。**
+- 追記するもの（`.env.example` の「Eagle host processes」の節）：
+  - `PREFECT_API_URL=http://127.0.0.1:4200/api`
+  - `PREFECT_API_AUTH_STRING`（`PREFECT_AUTH_STRING` と同じ値）
+  - `RA_DATABASE_URL=postgresql+psycopg://prefect:<POSTGRES_PASSWORD>@127.0.0.1:5432/research_autopilot`
+  - `RA_STATE_DIR=/home/ra/.local/state/research-autopilot`
+- 変更するもの：
+  - `RA_CATALOG_ENVIRONMENT=eagle`
+  - `RA_WORKTREES_DIR=/home/ra/worktrees`
+- `RA_EXP_*`：Eagle の資源に合わせる（`phase4_experiments.md` §2。予約分を残す）。決めるまでは Mac 用の値のままでよい。
 
-## 5. ビルドと起動
+**研究リポジトリ**：`~/research-repos/` に clone する。`config/research_repos.example.toml` をもとに `/opt/research-autopilot/config/research_repos.toml` を作る（path は `/home/ra/research-repos/...`）。どのリポジトリを入れるかは人間が決める。
+
+**常駐サービスの有効化**：§3 の A1（エージェントの作業）が終わってから行う。
 
 ```bash
-alias ra-compose='docker compose --env-file .env -f infra/compose.yaml'
-ra-compose config --quiet && echo OK     # 必須の変数が足りなければここでエラーになる
-ra-compose build
-ra-compose up -d
-ra-compose ps                            # postgres / prefect-server / prefect-worker / discord-bot が healthy（discord-bot は healthcheck なし、Up であること）
-ra-compose logs --tail=50 prefect-server
+mkdir -p ~/.config/systemd/user
+cp /opt/research-autopilot/infra/host/systemd/*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ra-prefect-worker ra-discord-bot ra-watchdog
+systemctl --user status ra-prefect-worker ra-discord-bot ra-watchdog --no-pager
+journalctl --user -u ra-prefect-worker -n 50 --no-pager
 ```
 
-## 6. DB の初期化（初回のみ）
+### H6. 判断すること（運用開始時）
+
+| 項目 | 既定 | 変えるとき |
+|---|---|---|
+| `autopilot-poll/scheduled` のスケジュール | inactive | Prefect UI で active にすると自律ポーリングが始まる（`phase5_autopilot.md` §7） |
+| `RA_AUTOPILOT_WRITE` / `RA_AUTOPILOT_TEST_ONLY` | `false` / `true` | まず [TEST] タスクで動作を確認してから変える |
+| `RA_LINEAR_WRITE_ENABLED` | `false` | Phase 2 の apply を使うとき |
+| `RA_ZOTERO_ENABLED` | `true` | Linux で未検証。調査が失敗するなら `false` |
+
+`/opt/research-autopilot/.env` を変えたら、`systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog` で反映する。
+
+---
+
+## 2. コードを更新するとき（人間、ra で）
 
 ```bash
-ra-compose exec postgres sh -c 'createdb -U "$POSTGRES_USER" research_autopilot'   # 既にあればエラーになるだけ
-ra-compose exec prefect-worker research-agent db init
-ra-compose exec prefect-worker research-agent discord check
-ra-compose exec prefect-worker research-agent discord check --send-test   # 各チャンネルにテスト投稿を 1 件ずつ送る
+sudo machinectl shell ra@
+cd /opt/research-autopilot && git pull && uv sync --frozen --no-dev
+systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog   # 実行中の run がないことを確かめてから
 ```
 
-## 7. ネットワークの確認
+続けて、エージェント（または rixyt）が同じ commit で `prefect deploy --all` を行う（§3 A2）。
 
-Docker Desktop のポートは Windows 側に出るので、WSL の `ss` では見えない。Windows 側で確認する：
+## 3. エージェントが行う操作（rixyt で実行できるもの）
 
-```bash
-curl -s http://127.0.0.1:4200/api/health; echo                      # WSL から
-powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort 4200,5432 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort"
-```
+人間はエージェントに「Eagle の A1 を実行して」と依頼すればよい。
 
-- 4200 は `127.0.0.1` だけ、5432 は出ていないこと。
-- `0.0.0.0` や LAN の IP で 4200 が見えたら、作業を止めて報告する（全 interface に公開されている）。
-- Windows Defender Firewall の受信規則は変更しない。
+- **A1**（H3 のあと、H5 のサービス有効化より前）
+  1. `~/workspace/ResearchAutopilot` に clone し、`.env` を `chmod 600` で置く。
+  2. `docker compose --env-file .env -f infra/compose.yaml -f infra/compose.host.yaml up -d` で postgres と prefect-server だけを起動する。
+  3. `research_autopilot` DB を作り、`research-agent db init` を実行する。
+  4. ポートを確認する：4200 と 5432 が Windows 側でも `127.0.0.1` だけで待ち受けていること。
+- **A2**（H5 のあと）
+  1. zombie run 検出の automation を登録する（初回のみ）。
+  2. `GIT_SHA=$(git rev-parse --short HEAD) uv run prefect deploy --all --no-prompt` を実行する。
+  3. `smoke-success/manual` を実行し、ra の worker が処理することを確認する。
+  4. `research-agent discord check` を実行する。
+  5. tailnet 経由で `/api/health` が 200、認証なしが 401 になることを確認する。
 
-tailnet 経由の確認（MacBook かスマートフォンから）：
+## 4. 判断待ち・未検証
 
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://eagle.tail5877f8.ts.net/api/health          # 200
-curl -s -o /dev/null -w '%{http_code}\n' https://eagle.tail5877f8.ts.net/api/admin/version   # 401（認証なし）
-```
-
-ブラウザで `https://eagle.tail5877f8.ts.net` を開き、Basic 認証（`PREFECT_AUTH_STRING`）でログインできることを確認する。`tailscale.exe funnel status` で Funnel が無効であることも確認する。
-
-## 8. automation と deployment の登録
-
-```bash
-set -a; . ./.env; set +a
-export PREFECT_API_URL=http://127.0.0.1:4200/api PREFECT_API_AUTH_STRING="$PREFECT_AUTH_STRING"
-uv run prefect work-pool ls                         # research-local が見えること
-uv run prefect automation create --from-file infra/automations/crash-zombie-flow-runs.yaml   # 初回のみ
-GIT_SHA=$(git rev-parse --short HEAD) uv run prefect deploy --all --no-prompt
-uv run prefect deployment run smoke-success/manual --watch
-```
-
-- `.env` を shell に読み込むと、そのシェルに秘密情報が残る。作業が終わったら、そのシェルを閉じる。
-- `--all` では Phase 3 以降の deployment（`implement-task`、`run-experiment`、`autopilot-poll` など）も登録される。ただし §9 が決まるまで、worker コンテナの中では正しく動かない。**実行しないこと。** `autopilot-poll` のスケジュールは `prefect.yaml` で inactive になっているので、そのままにする。
-- Phase 2 の確認は `phase2_planning.md` §5（`plan-task/manual` の dry-run）。
-
-## 9. Phase 3 以降（未決定・未実施）
-
-今の compose では、次のものが足りない。このため Phase 3〜10 と watchdog は Eagle ではまだ動かない。
-
-- worker に渡している環境変数が Phase 2 までしかない。次の変数は `.env` に書いてもコンテナに届かない：
-  - `RA_REPOS_FILE`、`RA_EXP_*`、`RA_IMPL_*`
-  - `RA_AUTOPILOT_*`、`NOTION_NOTES_DATA_SOURCE_ID`、`RA_APPROVAL_MODE`
-  - `RA_CATALOG_*`、`RA_LITERATURE_*`、`RA_EXTERNAL_*`
-  - `RA_DISCORD_REPORT_CHANNEL_ID`
-- worker イメージに Codex CLI と Claude Code CLI が入っておらず、ログイン方法も Eagle では検証していない（`phase3_implementation.md` §8）。
-- 研究リポジトリの clone、`config/research_repos.toml`、`RA_WORKTREES_DIR`、成果物置き場の volume がない。
-- Phase 9 は Docker を使うが、worker は docker.sock を持たない設計になっている。
-- Phase 8 の Zotero Connector は Windows / Linux で未検証。
-- watchdog（`research-agent autopilot watch`）を常駐させる方法が決まっていない（`monitoring.md`）。
-
-構成の候補：
-
-- (a) worker コンテナを拡張する：CLI、volume、環境変数を足す。
-- (b) Phase 3〜5 と watchdog を WSL ホスト上のプロセスで動かす：CLI のログイン、研究リポジトリ、Docker をそのまま使える。長時間の計算向けに `phase4_experiments.md` §7 でも挙げている案。WSL では systemd が無効なので、常駐の方法も決める必要がある。
-
-**どちらにするかは人間が決める。** 決まるまでは、次の設定にしておくのが安全：`RA_EXTERNAL_ENABLED=false`、`RA_ZOTERO_ENABLED=false`、`RA_AUTOPILOT_WRITE=false`。
-
-## 10. 再起動・更新
-
-- Windows を再起動したとき：ログインする → Docker Desktop が起動する → コンテナが自動で再開する。WSL の中で `ra-compose ps` を実行して確認する。
-- コードを更新するとき：`deployment.md` §4 と同じ手順。リポジトリは §2 の WSL 側の場所で `git pull` する。
+- Windows 再起動後の自動ログイン（H1）。
+- 研究リポジトリの選定と `RA_EXP_*` の値（H5）。
+- Eagle では未確認のもの：
+  - `ra` での Codex / Claude のログイン（特に headless）
+  - rootless Docker 上の Phase 9 の通し E2E
+  - Zotero Connector（Linux）
+- 古い container worker の state volume（`research-autopilot_worker-state`、Phase 1 の試験データ）は移行しない。消すかどうかは人間が決める（消すと元に戻せない）。
+- `infra/compose.yaml` の `prefect-worker` / `discord-bot` は profile `container-worker` に入れて止めている。ra のサービスと**同時に動かさない**（worker が二重に poll し、Discord gateway が二重に接続される）。

@@ -1,0 +1,18 @@
+# Prefect process worker for the research-local pool, run as the unprivileged `ra` user on Eagle.
+# Install: docs/operations/eagle_wsl_setup.md. Deployments chdir to /opt/research-autopilot (prefect.yaml).
+[Unit]
+Description=Research Autopilot Prefect worker (research-local)
+After=network-online.target docker.service
+
+[Service]
+WorkingDirectory=/opt/research-autopilot
+Environment=PATH=%h/bin:%h/.local/bin:%h/.local/node-bin:/usr/local/bin:/usr/bin:/bin
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=%h/.local/bin/uv run --frozen --no-dev python infra/host/with_dotenv.py prefect worker start --pool research-local --type process --name eagle-host --limit 1
+Restart=on-failure
+RestartSec=10
+# Let a running flow finish its current step before the worker is stopped.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

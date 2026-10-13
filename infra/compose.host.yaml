@@ -1,0 +1,15 @@
+# Eagle host-process mode (docs/operations/eagle_wsl_setup.md): compose runs only PostgreSQL and the Prefect
+# server; the worker, Discord bot and watchdog run on the WSL host as the unprivileged `ra` user.
+# Usage: docker compose --env-file .env -f infra/compose.yaml -f infra/compose.host.yaml up -d
+
+services:
+  postgres:
+    ports:
+      # Localhost only, for the host processes (RA_DATABASE_URL). Never publish without a host IP.
+      - "127.0.0.1:${RA_PG_HOST_PORT:-5432}:5432"
+
+  # Container worker / bot are not started in this mode (two workers or two gateways would compete).
+  prefect-worker:
+    profiles: ["container-worker"]
+  discord-bot:
+    profiles: ["container-worker"]

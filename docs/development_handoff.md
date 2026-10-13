@@ -41,6 +41,28 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Completed Work
 
+### Eagle デプロイ構成：WSL ホスト実行（2026-10-13 / Claude Code、ユーザー決定）
+
+- ユーザー決定（2026-10-13）：Phase 3 以降は WSL ホスト上のプロセスで動かす。Phase 9 は無効にしない。
+- 理由：Eagle の `rixyt` は docker グループ（root 相当）。LLM 生成コードを rixyt で動かすと Phase 1 仕様 §3 に反する。そこで次の構成にした。
+  - 専用ユーザー `ra`（docker / sudo なし）を作る。
+  - `ra` 専用の rootless Docker で Phase 9 を動かす。
+  - systemd --user で worker / Discord bot / watchdog を常駐させる。
+  - compose は postgres / prefect-server だけを動かす。
+- 追加したもの：
+  - `infra/compose.host.yaml`：postgres を `127.0.0.1:5432` に publish し、container worker / bot を profile `container-worker` に入れる。
+  - `infra/host/systemd/*.service`、`infra/host/with_dotenv.py`、`.env.example` の host 節。
+  - `docs/operations/eagle_wsl_setup.md`：人間の操作に絞った手順。
+- `external/sandbox.py`：rootless Docker を検出したら、bind mount に書く container（wheel 取得・承認済み研究実行）を `--user 0:0` で動かす。rootless では host uid が subuid に写り、書けなくなるため。検証用の実行は nobody のまま。
+- 検証済み（Eagle 上）：
+  - WSL から Docker Desktop の `127.0.0.1` の publish ポートに届く（使い捨て postgres コンテナで確認）。
+  - compose override の `config --services` が postgres / prefect-server だけになる。
+  - `systemd-analyze verify` が通る。
+  - with_dotenv で JSON 値の読み込みと、既存の環境変数を優先することを確認した。
+  - `tests/test_phase9_external.py` 42 passed。
+- 未検証：H2〜H5 の通し実行、ra の rootless Docker で Phase 9 の制限オプションが通るか、ra での Codex / Claude ログイン。
+- WSL の rixyt に uv 0.12.18 を `~/.local/bin` に入れた（テスト実行のため）。
+
 ### Phase 10 Research Planning / Orchestration（2026-10-11 / Claude Code）
 
 - 実装：`src/research_autopilot/research/`（models / scope / evidence / planner / workflow / evaluator / orchestration / cli）。既存 Phase 5 engine の拡張（`_authorize_research`、`WorkflowStage.RESEARCHING / PAUSED`、`ApprovalKind.RESEARCH_SCOPE`）、6B ParentRun を研究サイクルに再利用（`ParentRun.research_cycle_id`）、Discord Stop / Resume（`DiscordControlInput`）、Notion `Origin` / `Approval Status`、Linear blocked-by（`create_relation`）。
@@ -587,6 +609,10 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
-2. Eagle へのデプロイは `docs/operations/eagle_wsl_setup.md`（2026-10-13 作成、手順は Eagle で未実行）に従う。判断待ち：(a) 既存 volume `research-autopilot_pgdata`（2026-10-09 作成）と現在の `.env` の `POSTGRES_PASSWORD` が一致するか、(b) Phase 3 以降を worker コンテナ拡張で動かすか WSL ホストのプロセスで動かすか（同文書 §9）。
-2b. Eagle への一括反映（Phase 2〜5 と TSUBAME）を始めるときは、`phase5_autopilot.md` §7 の手順に従い、ユーザーの承認を得てから行う。今回は deploy しない。
+2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
+   - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
+   - 次に人間が H5、そのあとエージェントが A2 を実行する。
+   - H4 最後の `docker run` が失敗したら、Phase 9 の制限オプション（`external/sandbox.py` の `_limits` / `_hardening`）を rootless 用に見直す。
+   - ブランチ `docs/wsl-setup` は未 push。main への merge はユーザーの指示を待つ。
+2b. TSUBAME と Phase 5 の本番化（schedule active、TEST_ONLY=false）は `phase5_autopilot.md` §7 に従い、ユーザーの承認を得てから行う。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。

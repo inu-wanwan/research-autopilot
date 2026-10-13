@@ -1,0 +1,14 @@
+# Watchdog: reports stops / stalls to the Discord report channel (docs/operations/monitoring.md), run as `ra`.
+[Unit]
+Description=Research Autopilot watchdog
+After=network-online.target ra-discord-bot.service
+
+[Service]
+WorkingDirectory=/opt/research-autopilot
+Environment=PATH=%h/bin:%h/.local/bin:%h/.local/node-bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run --frozen --no-dev research-agent autopilot watch
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

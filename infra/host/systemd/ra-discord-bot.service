@@ -1,0 +1,14 @@
+# Discord gateway (approvals, Stop / Resume, notification outbox), run as `ra` on Eagle.
+[Unit]
+Description=Research Autopilot Discord bot
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/research-autopilot
+Environment=PATH=%h/bin:%h/.local/bin:%h/.local/node-bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run --frozen --no-dev research-agent discord run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

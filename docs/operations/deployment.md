@@ -2,6 +2,8 @@
 
 研究室サーバーに Prefect Server / Worker / PostgreSQL を構築し、MacBook から deployment を登録・起動する手順。設計の根拠は `docs/phase1_technical_design.md`。
 
+> Eagle（Windows + WSL2）では worker / Discord bot / watchdog を WSL ホストの専用ユーザー `ra` で動かす構成にした（2026-10-13 ユーザー決定）。Eagle の手順は `eagle_wsl_setup.md`。この文書のコンテナ worker 構成は Mac のローカル検証用。
+>
 > 検証状況（2026-10-10）：本手順は **MacBook (arm64, Docker 29.8) 上でローカル模擬として実行・確認済み**。研究室サーバー上では未実施。サーバーの OS / CPU architecture は未確認（使用イメージは linux/amd64 と linux/arm64 の両方を提供していることを確認済み）。
 
 ## 1. 構成とバージョン
