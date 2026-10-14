@@ -72,7 +72,19 @@ echo "git=$(git rev-parse --short HEAD) prefect=3.8.8 postgres=16.15" > "$BACKUP
 ```
 
 - パスワードはコマンドラインに出ない（コンテナ内の環境変数とローカルソケット認証を使う）。
-- 定期実行（cron 等）、保持世代、別媒体へのコピー、暗号化は **未決定**（保存先が決まり次第ここに追記）。名前付きボリュームがあることはバックアップの代わりにならない。
+- 名前付きボリュームがあることはバックアップの代わりにならない。
+
+### Eagle の定期バックアップ（2026-10-14、ユーザーが「適当に決めてよい」と委任）
+
+- `infra/host/backup-db.sh` を rixyt の cron で毎日 4:30 に実行する。
+  - 対象：Prefect の DB と `research_autopilot`。
+  - `pg_dump -Fc` の結果を `pg_restore --list` で検査してから保存する。
+- 保存先：`~/backups/research-autopilot`（700）。14 日分を残す（`RA_BACKUP_KEEP_DAYS`）。ログは同じディレクトリの `backup.log`。
+  ```
+  30 4 * * * $HOME/workspace/ResearchAutopilot/infra/host/backup-db.sh >> $HOME/backups/research-autopilot/backup.log 2>&1
+  ```
+- 前提：Docker Desktop が動いていること（Windows にログインしている）。
+- 未決定：別媒体へのコピー（`RA_BACKUP_COPY_DIR` で 2 か所目を指定できる。今の保存先は WSL と同じディスク）と暗号化。
 
 ### リストアのリハーサル（本番 DB に触れない）
 

@@ -224,3 +224,23 @@ def test_provider_list_parsing(monkeypatch):
                     ("", []), ("claude", ["claude"])):
         monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", v)
         assert sub.subscription_providers() == want
+
+
+def test_claude_first_order_never_starts_codex_when_claude_answers(fake_codex, api, tmp_path, monkeypatch):
+    """RA_LLM_SUBSCRIPTION_FIRST=claude,codex (planned for production, 2026-10-14): the written order is the try order."""
+    cdir = tmp_path / "fakeclaude"
+    cdir.mkdir()
+    exe = tmp_path / "claude"
+    exe.write_text(FAKE.replace("FAKE_CODEX_DIR", "FAKE_CLAUDE_DIR"))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    (cdir / "out").write_text(json.dumps({"subtype": "success", "is_error": False, "result": "",
+                                          "structured_output": {"answer": "claude", "score": 4},
+                                          "usage": {"input_tokens": 10, "output_tokens": 2}}))
+    monkeypatch.setenv("FAKE_CLAUDE_DIR", str(cdir))
+    monkeypatch.setenv("RA_LLM_SUBSCRIPTION_CLAUDE", str(exe))
+    monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "claude,codex")
+    sub._claude["billing"] = "subscription"
+    assert sub.subscription_providers() == ["claude", "codex"]
+    run = _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out)
+    assert run.output.answer == "claude" and run.billing == "subscription" and api.calls == 0
+    assert not (fake_codex.dir / "args.1").exists()  # codex was never started
