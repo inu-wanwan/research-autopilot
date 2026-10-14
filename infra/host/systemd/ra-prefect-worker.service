@@ -8,6 +8,8 @@ After=network-online.target docker.service
 WorkingDirectory=/opt/research-autopilot
 Environment=PATH=%h/bin:%h/.local/bin:%h/.local/node-bin:/usr/local/bin:/usr/bin:/bin
 Environment=DOCKER_HOST=unix://%t/docker.sock
+# Flow-run heartbeats for infra/automations/crash-zombie-flow-runs.yaml (540 s window = 3 missed beats)
+Environment=PREFECT_FLOWS_HEARTBEAT_FREQUENCY=180
 ExecStart=%h/.local/bin/uv run --frozen --no-dev python infra/host/with_dotenv.py prefect worker start --pool research-local --type process --name eagle-host --limit 1
 Restart=on-failure
 RestartSec=10
