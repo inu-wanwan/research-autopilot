@@ -258,7 +258,7 @@ def _new_run(deps: AutopilotDeps, task_id: str, execution: ExecutionRun | None =
         deps.notion_writer.project_execution(execution.notion_task_id, status="Running",
             run_url=_prefect_url(deps, prefect_flow_run_id))
     _notify(deps, run, EventKind.TASK_STARTED, f"started:{run.run_id}",
-            [f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
+            ["実行を開始しました", f"Root task: {run.root_task_id}", f"Chain depth: {run.chain_depth}"])
     return run
 
 
@@ -308,8 +308,8 @@ def advance(deps: AutopilotDeps, run: WorkflowRun, max_steps: int = 12) -> Workf
             else:
                 _notify(deps, run, EventKind.AUTOMATIC_RETRY,
                         f"retry:{run.run_id}:{before.value}:{run.attempts}",
-                        [f"Stage: {before.value}", f"Attempt: {run.attempts}/{deps.settings.max_stage_attempts}",
-                         f"Error type: {type(exc).__name__}"])
+                        [f"{before.value} で失敗したため自動で再試行します（{run.attempts}/{deps.settings.max_stage_attempts} 回目）",
+                         f"エラーの種類: {type(exc).__name__}"])
             _save(deps, run)
             break
         _save(deps, run)
@@ -683,7 +683,7 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
         run.stage = WorkflowStage.PROPOSING
         run.event("experimented", f"experiment {m.experiment_run_id[:8]} validated; {len(m.reviewed_proposals)} proposal(s)")
         _notify(deps, run, EventKind.EXPERIMENT_COMPLETED, f"experiment:{m.experiment_run_id}",
-                [f"Experiment run: {m.experiment_run_id}", f"Validated proposals: {len(m.reviewed_proposals)}"])
+                [f"実験が完了しました（検証済みの提案 {len(m.reviewed_proposals)} 件）", f"Experiment run: {m.experiment_run_id}"])
     else:
         _block(deps, run, f"Phase 4 {m.state.value}: {m.block_reason}")
 
@@ -736,7 +736,7 @@ def _propose(deps: AutopilotDeps, run: WorkflowRun) -> None:
         if item.state is not OutboxState.DONE:
             raise RuntimeError(f"outbox {item.key} not completed: {item.last_error}")
         _notify(deps, run, EventKind.PROPOSAL_GENERATED, f"proposal:{pid}",
-                [f"Proposal: {d.title}", f"Policy: {decision.outcome}", *decision.reasons[:3]])
+                [f"提案: {d.title}", f"判定: {decision.outcome}", *decision.reasons[:3]])
         if decision.outcome == "human":
             child = deps.linear.get_issue(item.linear_identifier)
             child_spec = _load_spec(deps, item.linear_identifier).spec
@@ -780,7 +780,7 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     exp = deps.store.get_experiment(run.experiment_run_ids[-1])
     if exp.analysis is not None:
         _notify(deps, run, EventKind.ANALYSIS_COMPLETED, f"analysis:{exp.experiment_run_id}",
-                [f"Experiment run: {exp.experiment_run_id}", f"Outcome: {exp.analysis.hypothesis_evaluation}"])
+                [f"結果: {exp.analysis.hypothesis_evaluation}", f"Experiment run: {exp.experiment_run_id}"])
     bundle = _load_spec(deps, run.task_id)
     acceptance = spec_lines(bundle.spec.acceptance_criteria)
     impl = deps.store.get_implementation(run.phase3_run_ids[-1])
@@ -840,8 +840,9 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     except Exception as exc:  # Done stands; this task is just not offered for publication
         run.event("publish_request_failed", f"{type(exc).__name__}: {exc}"[:300])
     _notify(deps, run, EventKind.TASK_COMPLETED, f"done:{run.run_id}",
-            [f"Notes: {deps.notion_writer.page_url(notes.notion_page_id)}", f"Linear: {links['linear']}",
-             f"Result: {a.hypothesis_outcome}; " + (exp.analysis.summary[:200] if exp.analysis else "")])
+            ["タスクが完了しました",
+             f"結果: {a.hypothesis_outcome}" + (f" — {exp.analysis.summary[:200]}" if exp.analysis else ""),
+             f"Notes: {deps.notion_writer.page_url(notes.notion_page_id)}", f"Linear: {links['linear']}"])
 
 
 # ---------------------------------------------------------------- approvals

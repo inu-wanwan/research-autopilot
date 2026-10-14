@@ -44,7 +44,7 @@ _KIND_JA = {
 _LINK_LABELS = {
     "Notion plan": "Notion 計画", "Notion Notes": "Notion 結果", "Notes": "Notion 結果", "Notion": "Notion",
     "Task": "Notion タスク", "Linear": "Linear", "Pull Request": "Pull Request", "Prefect": "Prefect",
-    "Approval form": "承認フォーム",
+    "Approval form": "承認フォーム", "Plan": "Notion 計画",
 }
 
 # detail prefix -> section (checked in order; the prefix is removed from the shown text)

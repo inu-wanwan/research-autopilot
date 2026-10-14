@@ -110,7 +110,7 @@ def test_revision_of_a_scope_change_re_evaluates_with_the_comment(tmp_path):
     assert cs[0].evaluations == 2 and cs[0].decision.action == "continue"
     assert cs[1].tasks[0].parameters == {"bond_length_r": ["1.5"]}
     # the re-evaluation is reported again (a per-evaluation key, not swallowed by the first message)
-    assert len([e for e in _sent(deps, kind="analysis_completed") if "Cycle 1 evaluated" in e["details"][0]]) == 2
+    assert len([e for e in _sent(deps, kind="analysis_completed") if "サイクル 1 の評価" in e["details"][0]]) == 2
 
 
 def test_an_expired_scope_change_stops_with_resume_steps_instead_of_idling(tmp_path):
@@ -279,8 +279,8 @@ def test_each_resume_after_a_pause_sends_its_own_message(tmp_path):
         assert _run(deps).stage is WorkflowStage.PAUSED
         orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
         poll(deps)
-    resumed = [e for e in _sent(deps) if "Research resumed" in " ".join(e["details"])]
-    paused = [e for e in _sent(deps) if "paused" in " ".join(e["details"])]
+    resumed = [e for e in _sent(deps) if "研究を再開しました" in " ".join(e["details"])]
+    paused = [e for e in _sent(deps) if "一時停止" in " ".join(e["details"])]
     assert len(resumed) == 2 and len(paused) == 2
     assert all(e["control_actions"] == ["resume", "cancel"] and e["needs_human"] and e["steps"] for e in paused)
 
@@ -341,8 +341,8 @@ def test_budget_stop_message_gives_numbered_steps_and_no_new_children_start(tmp_
     assert run.stage is WorkflowStage.BLOCKED and "budget exhausted" in run.blocked_reason
     [msg] = _sent(deps, kind="budget_exceeded")
     assert msg["control_actions"] == ["resume", "cancel"] and msg["needs_human"]
-    assert any("Budget / Authorization" in s for s in msg["steps"]) and any("number" in s for s in msg["steps"])
-    assert any(x.startswith("Budget used:") for x in msg["details"])
+    assert any("Budget / Authorization" in s for s in msg["steps"]) and any("数値" in s for s in msg["steps"])
+    assert any(x.startswith("費用:") for x in msg["details"])
 
 
 def test_a_stopped_research_starts_no_new_children(tmp_path):
