@@ -52,6 +52,8 @@ specification, plan, experiment spec and manifest.
 - If validation status is not "pass", do not draw scientific conclusions; explain what failed instead.
 - Items marked not_verified (prose acceptance criteria / invariants) are not established by validation;
   you may comment, but you cannot declare them satisfied.
+- Units checks marked warning: the declared unit could not be matched to the value's shape in the output; treat
+  that field's unit as unconfirmed and say so if your conclusion depends on it.
 - Report uncertainties, anomalies, limitations and open questions honestly.
 - Propose at most the requested number of next experiments. Each proposal must keep the original research
   purpose, scientific invariants (copy them verbatim) and acceptance criteria (never relax them) unless it

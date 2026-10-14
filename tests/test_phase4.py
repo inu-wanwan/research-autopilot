@@ -453,7 +453,32 @@ def test_units_declared_with_wildcard_pointers_are_checked_per_record(tmp_path):
     assert check({"/results/*/fci/missing_hartree": "hartree"}).status == "fail"
     doc["results"][1]["delta_e_hartree"] = None
     out.write_text(_json.dumps(doc))
-    assert check({"/results/*/delta_e_hartree": "hartree"}).status == "fail"
+    v = check({"/results/*/delta_e_hartree": "hartree"})  # present but not a number: a warning, the run goes on
+    assert v.status == "pass" and not v.fully_verified
+    assert [c.status for c in v.checks if c.kind == "units"] == ["warning"]
+
+
+def test_units_mismatch_is_a_warning_but_a_missing_declared_field_is_repaired():
+    """2026-10-14 user decision: experiments run unattended; a units declaration that does not match a value that
+    is in the output is a warning (reported afterwards), a declared field nowhere in the output goes to repair."""
+    from research_autopilot.experiments.models import JobState, JobStatus, ValidationCheck, ValidationResult
+    from research_autopilot.experiments.triage import classify
+    from research_autopilot.experiments.validator import _unit_status
+    doc = {"results": [{"geometry": [["H", [0.0, 0.0, 0.0]], ["H", [0.0, 0.0, 0.7]]], "e": -1.13}]}
+    assert _unit_status(False, doc, "/results/*/e") == "warning"
+    assert _unit_status(False, doc, "e") == "warning"
+    assert _unit_status(False, doc, "/results/*/e_rhf") == "fail"
+    assert _unit_status(True, doc, "nothing") == "pass"
+    ok = JobStatus(job_key="k", state=JobState.SUCCEEDED, exit_code=0)
+
+    def v(*checks):
+        return ValidationResult(experiment_id="x", job_key="k", status="fail", fully_verified=False,
+                                checks=list(checks), metrics={}, failure_reason="r")
+    missing = ValidationCheck(name="units:res.json:/results/*/e_rhf", kind="units", status="fail", detail="missing")
+    t = classify(ok, v(missing), "", [])
+    assert t.action == "phase3_repair" and "e_rhf" in t.reason
+    bad_metric = ValidationCheck(name="dE", kind="numeric_check", status="fail", detail="ge 0 failed")
+    assert classify(ok, v(missing, bad_metric), "", []).action == "blocked"  # science failures still stop
 
 
 def test_job_waits_for_free_memory_instead_of_blocking(tmp_path):

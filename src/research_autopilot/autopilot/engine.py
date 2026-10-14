@@ -667,6 +667,7 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
     deps.exp.extra["chain_depth"] = run.chain_depth
     m = run_experiment(deps.exp, phase3_run_ids=[run.phase3_run_ids[-1]])
     run.experiment_run_ids.append(m.experiment_run_id)
+    _report_self_corrections(deps, run, m)
     for sp in m.specs.values():
         if sp.identification.commit not in run.commits:
             run.commits.append(sp.identification.commit)
@@ -686,6 +687,28 @@ def _experiment(deps: AutopilotDeps, run: WorkflowRun) -> None:
                 [f"実験が完了しました（検証済みの提案 {len(m.reviewed_proposals)} 件）", f"Experiment run: {m.experiment_run_id}"])
     else:
         _block(deps, run, f"Phase 4 {m.state.value}: {m.block_reason}")
+
+
+def _report_self_corrections(deps: AutopilotDeps, run: WorkflowRun, m) -> None:
+    """Post-hoc report (user decision 2026-10-14: experiments keep running unattended, a human is told afterwards):
+    units declarations that did not match the output (warning, the run went on) and declared fields missing from
+    the output (sent to an automatic Phase 3 repair)."""
+    warned = sorted({c.name.split(":", 2)[-1] for j in m.jobs if j.validation for c in j.validation.checks
+                     if c.kind == "units" and c.status == "warning"})
+    repaired = [j.experiment_id for j in m.jobs
+                if j.triage and j.triage.action == "phase3_repair" and "declared output fields" in (j.triage.reason or "")]
+    if warned:
+        run.event("validation_warning", f"units declarations not matching the output: {', '.join(warned[:8])}")
+        _notify(deps, run, EventKind.PHASE_TRANSITION, f"units-warning:{m.experiment_run_id}", [
+            f"単位の宣言が出力の形と合わない項目を警告として記録し、実験を続けました（{len(warned)} 項目）",
+            *[f"・{w}" for w in warned[:5]], *([f"ほか {len(warned) - 5} 件"] if len(warned) > 5 else []),
+            "値は出力にあり、数値チェック・指標・NaN の検査はこれまでどおり行っています",
+            f"Experiment run: {m.experiment_run_id}"])
+    if repaired:
+        run.event("auto_repair", f"declared output fields missing -> Phase 3 repair: {', '.join(repaired)}")
+        _notify(deps, run, EventKind.PHASE_TRANSITION, f"missing-fields-repair:{m.experiment_run_id}", [
+            "宣言された結果の項目が出力に無かったため、自動修正（Phase 3 で出力するよう直して再実行）に回しました",
+            *[f"・{e}" for e in repaired[:5]], f"Experiment run: {m.experiment_run_id}"])
 
 
 def _propose(deps: AutopilotDeps, run: WorkflowRun) -> None:

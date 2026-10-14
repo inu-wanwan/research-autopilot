@@ -47,6 +47,22 @@ def _expand(doc, pointer: str) -> list[tuple[str, object]]:
     return out
 
 
+def _field_name(field: str) -> str:
+    """The record field a units declaration names: its last pointer segment ("/results/*/fci/e" -> "e")."""
+    last = field.rstrip("/").rsplit("/", 1)[-1] if field.startswith("/") else field
+    return last.replace("~1", "/").replace("~0", "~")
+
+
+def _unit_status(ok: bool, doc, field: str) -> str:
+    """pass; warning when the declaration does not match the shape of a value that IS in the output (format only,
+    the experiment goes on and the mismatch is reported); fail when the declared field is nowhere in the output
+    (a promised value is missing: routed to an automatic Phase 3 repair like a missing output file)."""
+    if ok:
+        return "pass"
+    name = _field_name(field)
+    return "warning" if name and name != "*" and _find_key(doc, name) else "fail"
+
+
 _UNIT_MAPS = {"units", "unit"}
 
 
@@ -168,7 +184,7 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
                         hits = []
                     ok = bool(hits) and all(_quantity(v) for _, v in hits)
                     checks.append(ValidationCheck(
-                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
+                        name=f"units:{out.path}:{field}", kind="units", status=_unit_status(ok, doc, field),
                         detail=(f"{len(hits)} numeric finite value(s) at {field}; declared unit {unit}" if ok else
                                 f"field with declared unit {unit} missing" if not hits else
                                 f"a value at {field} is not a finite number; declared unit {unit}")))
@@ -178,7 +194,7 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
                     numeric = _finite_number(raw)
                     ok = _quantity(raw)
                     checks.append(ValidationCheck(
-                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
+                        name=f"units:{out.path}:{field}", kind="units", status=_unit_status(ok, doc, field),
                         detail=(f"numeric finite field; declared unit {unit}" if numeric else
                                 f"finite numeric values ({type(raw).__name__}); declared unit {unit}" if ok else
                                 f"field is not a finite number; declared unit {unit}"),
@@ -189,7 +205,7 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
                     hits = _find_key(doc, field) if not field.startswith("/") else []
                     ok = bool(hits) and all(_quantity(v) for _, v in hits)
                     checks.append(ValidationCheck(
-                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
+                        name=f"units:{out.path}:{field}", kind="units", status=_unit_status(ok, doc, field),
                         detail=(f"{len(hits)} nested numeric finite occurrence(s); declared unit {unit}" if ok else
                                 f"field with declared unit {unit} missing" if not hits else
                                 f"nested field is not always a finite number; declared unit {unit}")))

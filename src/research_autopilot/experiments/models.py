@@ -133,7 +133,9 @@ class CollectResult(BaseModel):
 # ---------------------------------------------------------------- validation
 
 
-CheckStatus = Literal["pass", "fail", "not_verified"]
+# warning: recorded and reported, does not stop the experiment (a units declaration that does not match the shape of a
+# value that is present in the output; 2026-10-14 user decision)
+CheckStatus = Literal["pass", "fail", "not_verified", "warning"]
 
 
 class ValidationCheck(BaseModel):

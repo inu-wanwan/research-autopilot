@@ -36,6 +36,14 @@ def classify(status: JobStatus, validation: ValidationResult | None, stderr: str
                 return TriageDecision(error_class=ErrorClass.IMPLEMENTATION, action="phase3_repair",
                                       reason="exit 0 but required outputs missing / unparsable",
                                       evidence=ev + [c.detail for c in missing_out])
+            missing_fields = [c for c in validation.checks if c.kind == "units" and c.status == "fail"]
+            hard = [c for c in validation.checks if c.status == "fail" and c.kind != "units"]
+            if missing_fields and not hard:
+                # a declared result field is nowhere in the output: the code must write it (repair, then re-run)
+                return TriageDecision(error_class=ErrorClass.IMPLEMENTATION, action="phase3_repair",
+                                      reason="exit 0 but declared output fields are missing: "
+                                             + ", ".join(c.name.split(":", 2)[-1] for c in missing_fields[:8]),
+                                      evidence=ev + [c.detail for c in missing_fields[:5]])
             nonfinite = [c for c in validation.checks if c.kind == "finite" and c.status == "fail"]
             if nonfinite:
                 return TriageDecision(error_class=ErrorClass.NUMERICAL, action="blocked",
