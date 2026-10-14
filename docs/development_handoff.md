@@ -60,6 +60,34 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - 実際の Discord での表示は未確認。
   - 承認依頼そのものの `what_changes` などの英語は残っている（承認記録や Linear にも使われるため）。
 
+### Phase A を Phase 10 研究タスクとして再作成（INU-344、2026-10-14 / Claude Code、ユーザー決定）
+
+- ユーザーの決定：
+  - Phase A は親の研究タスク 1 件だけを作り、子タスクは RA が計画する。`[TEST]` は付けない。
+  - Entropy / NOON Top-k を含める。参照は DMRG（block2）。設定は既存の DMRG 設定を基に RA が決めてよい。
+  - 入力の整合確認に MO fingerprint を含める。RHF を再計算して fingerprint を作り、Phase 4 の軌道と照合する。
+  - 成功条件に閾値を置く。自律実行の裁量を広げる。
+  - 予算はエージェントが決めてよい。
+  - 新しい CASCI には実時間を記録する。
+  - 旧 INU-274〜278 は Canceled にする（実施済み）。
+- 作成したもの：Notion https://www.notion.so/3f969893cf8f814eb592f11edeaa8bc8 、Linear INU-344（`autopilot`、Todo、担当者なし）。相互リンク済み。gate 0 件、research objective として読まれることを確認した。Run はまだ押していない。
+- エージェントが決めた値（ユーザーの確認が必要）：
+  - 予算：600 CPU 時間、30 USD、1 ジョブあたり 14 GB・8 コア。
+  - 閾値：Beam-8 の optimum hit rate − 5 ポイント以上、かつ unique query の平均が Beam-8 の 70% 以下。
+  - 自律実行の裁量：10 サイクル、1 サイクルあたり新規 5 タスク、再試行 3 回、進展なし 3 サイクルで停止。
+- 本文の下書き：scratchpad の `phase_a/research_task_final.md`（元の Phase A からの変更点は `changes.md`）。
+- 実行の前提（人間の作業）：
+  - Windows 側の clone `/mnt/c/Users/rixyt/workspace_eagle/sekijima_lab_local/active_space_research/outputs/phase4_orbital_diagnostics/` から、`supervisor_6c0d1dd`（約 70 MB、81 件）と `main_6c0d1dd/cache`（約 216 MB）を、ra の clone に sudo でコピーし、持ち主を ra にする。
+    - ファイルは `-rw-------`（uid 1001）なので、sudo でないと読めない。
+  - ra で、Catalog の adapter を register / validate / activate / bind / scan する（Eagle の DB には未登録）。resolve で 81 件になることを確認する。
+  - `RA_AUTOPILOT_TEST_ONLY=false` にしてサービスを再起動する（INU-331 が終わってから）。
+- 同日の検証の修正（すべて push 済み、ra に pull 済み、`55b2359`）：
+  - 単位の検査：原子記号入りのリスト（`a5f5d19`）、ワイルドカード（`40277f9`）に対応した。
+  - A/B（`9f6b5b1`）：単位の宣言のずれは警告にして続行し、宣言した項目が出力にない場合は Phase 3 の自動修正に回す。どちらも #logs に事後報告する（ユーザー決定）。
+  - Implementer のログを、実装とレビューの開始・終了だけにした（`55b2359`）。
+  - 文献調査で 429 / 503 を再試行するようにした（`60ce279`）。
+  - INU-331 は Resume 済みで、サイクル 4 の INU-341 を再試行中。
+
 ### test-only 初回 [TEST]（INU-331、2026-10-14 / Claude Code）
 
 - Phase 10 の [TEST] タスク INU-331 を投入した（H2/STO-3G、3 点の RHF–FCI）。
