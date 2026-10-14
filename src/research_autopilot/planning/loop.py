@@ -47,9 +47,12 @@ class LoopOutcome:
 
 def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings: Settings,
                  record: PlanRunRecord, sleep: Callable[[float], None] = time.sleep,
-                 seed: tuple[ExecutionPlan, list[RevisionRequest]] | None = None) -> LoopOutcome:
+                 seed: tuple[ExecutionPlan, list[RevisionRequest]] | None = None,
+                 on_transition: Callable[[str], None] | None = None) -> LoopOutcome:
     """``seed``: re-plan from an earlier plan with feedback (e.g. Phase 3 reported a Definition of Done item
-    infeasible) instead of planning from scratch."""
+    infeasible) instead of planning from scratch.  ``on_transition`` is told each hand-over between the planner
+    and the plan reviewer (Discord #logs; user request 2026-10-14)."""
+    tell = on_transition or (lambda message: None)
     if settings.review_policy is not ReviewPolicy.ALWAYS:  # pragma: no cover - only ALWAYS exists in Phase 2
         raise NotImplementedError(settings.review_policy)
 
@@ -63,11 +66,14 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
     dod_problems: list[str] = []
     iteration = 0
     while iteration <= settings.max_replans:
+        tell(f"planner round {iteration + 1} started ({planner.model})")
         try:
             plan_run = _call(record, settings, "planner", planner.model, iteration, sleep,
                              lambda: planner.plan(spec, previous, feedback))
         except _Stop as stop:
+            tell(f"planner round {iteration + 1} stopped: {stop.outcome.status.value}")
             return stop.outcome
+        tell(f"planner round {iteration + 1} finished")
         attempt = PlanAttempt(plan_id=new_id(), iteration=iteration, plan=plan_run.output)
         record.plans.append(attempt)
 
@@ -75,6 +81,8 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
         # rejection re-plans without consuming a review iteration (capped separately).
         if dod_problems := dod.problems(spec, attempt.plan):
             dod_rejections += 1
+            tell(f"planner round {iteration + 1}: Definition of Done check rejected the plan ({len(dod_problems)} "
+                 f"problem(s)); re-planning")
             record.events.append(RunEvent(kind="replan", message=(
                 f"iteration {iteration}: definition of done rejected ({len(dod_problems)} problem(s), "
                 f"rejection {dod_rejections}/{dod.MAX_DOD_REJECTIONS})")))
@@ -87,11 +95,13 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
                 break
             continue
 
+        tell(f"plan review round {iteration + 1} started ({reviewer.model})")
         try:
             review_run = _call(record, settings, "reviewer", reviewer.model, iteration, sleep,
                                lambda: reviewer.review(spec, attempt.plan, reviewer_requests or None))
         except _Stop as stop:
             stop.outcome.plan = attempt
+            tell(f"plan review round {iteration + 1} stopped: {stop.outcome.status.value}")
             return stop.outcome
         last_review = ReviewAttempt(plan_id=attempt.plan_id, iteration=iteration, review=review_run.output)
         record.reviews.append(last_review)
@@ -100,6 +110,9 @@ def run_planning(spec: TaskSpec, planner: Planner, reviewer: Reviewer, settings:
             verdict = "approved"  # only minor suggestions remain (they stay recorded in the review)
             record.events.append(RunEvent(kind="review", message=f"iteration {iteration}: only minor requests; approved"))
 
+        n_req = len(review_run.output.revision_requests)
+        tell(f"plan review round {iteration + 1} finished: {verdict}"
+             + (f" ({n_req} revision request(s))" if verdict == "revision_required" else ""))
         if verdict == "approved":
             return LoopOutcome(DecisionStatus.READY, plan=attempt, review=last_review)
         if verdict == "blocked":

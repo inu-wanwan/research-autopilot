@@ -41,6 +41,7 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     channel = PrefectConfirmationChannel(s5.confirm_deployment, s5.prefect_ui_url)
     notifier = get_notifier(store=plan.store)
     impl.notifier = notifier
+    plan.notifier = notifier  # planner / plan-reviewer hand-overs to #logs
     def notify(req, msg):
         # Real Notion page / Linear issue URLs of the task (not a hard-coded workspace URL).
         notion_url, linear_url = task_urls(plan.manager, req.task_id) if req.status.value == "pending" else (None, None)

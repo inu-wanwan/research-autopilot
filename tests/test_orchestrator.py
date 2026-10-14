@@ -455,3 +455,27 @@ def test_old_handoff_without_phase3_fields_still_loads():
            "approvals_needed": [], "open_questions": []}
     h = ExecutionHandoff.model_validate(old)
     assert h.phase2_mode is None and h.repository is None
+
+
+def test_planner_and_plan_reviewer_hand_overs_go_to_logs(tmp_path):
+    """User request 2026-10-14: #logs shows every agent hand-over in planning (planner <-> plan reviewer)."""
+    class Recorder:
+        persistent = True
+
+        def __init__(self):
+            self.events = []
+
+        def send(self, event):
+            self.events.append(event)
+    linear = FakeLinear(make_issue())
+    deps = make_deps(tmp_path, FakeNotion(make_page()), linear, [make_plan(), make_plan()],
+                     [review("revision_required"), review("approved")])
+    deps.notifier = Recorder()
+    rec = run(deps)
+    assert rec.decision.status is DecisionStatus.READY
+    msgs = [e.details[0].split(" (")[0] for e in deps.notifier.events]
+    assert msgs == ["planner round 1 started", "planner round 1 finished", "plan review round 1 started",
+                    "plan review round 1 finished: revision_required", "planner round 2 started",
+                    "planner round 2 finished", "plan review round 2 started", "plan review round 2 finished: approved"]
+    assert all(e.kind.value == "phase_transition" and e.flow_run_name == "INU-900" for e in deps.notifier.events)
+    assert sum(1 for e in rec.events if e.kind == "agent") == 8

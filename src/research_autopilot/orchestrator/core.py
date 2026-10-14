@@ -57,6 +57,7 @@ class Deps:
     catalog: Any = None  # catalog.service.CatalogContext (Phase 7A); None -> catalog requirements block
     literature: Any = None  # Phase 8: (question, task_id, seeds) -> LiteratureReport; None disables research
     external: Any = None  # Phase 9: external.service.ExternalDeps; None disables onboarding of implementations
+    notifier: Any = None  # Discord #logs for planner / plan-reviewer hand-overs; None = not mirrored
 
 
 def plan_task(deps: Deps, *, task_id: str | None = None, next_task: bool = False,
@@ -133,14 +134,15 @@ def _run(deps: Deps, record: PlanRunRecord, task_id: str | None, next_task: bool
             reports += _research(deps, record, [(spec.literature, True)], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
         spec, external = _with_external(deps, record, bundle.spec, spec, reports)  # Phase 9 (Registry only)
-        outcome = run_planning(spec, deps.planner, deps.reviewer, s, record, seed=seed)
+        outcome = run_planning(spec, deps.planner, deps.reviewer, s, record, seed=seed,
+                               on_transition=_transition(deps, record))
         requests = (outcome.plan.plan.literature_requests if outcome.status is DecisionStatus.READY and outcome.plan
                     else [])
         if requests and deps.literature is not None:  # the Planner asked for evidence: research, re-plan once
             reports += _research(deps, record, [(q, False) for q in requests[:2]], bundle.issue.identifier, spec.purpose)
             spec = _with_evidence(bundle.spec, spec, reports)
             spec, external = _with_external(deps, record, bundle.spec, spec, reports)
-            outcome = run_planning(spec, deps.planner, deps.reviewer, s, record)
+            outcome = run_planning(spec, deps.planner, deps.reviewer, s, record, on_transition=_transition(deps, record))
         if outcome.status is not DecisionStatus.READY:
             return _decision(record, outcome.status, outcome.reasons, _loop_rationale(outcome), bundle, approval, outcome)
 
@@ -327,6 +329,24 @@ def _connector_failure(record, exc: ConnectorError, bundle=None, approval=None, 
     code = BlockedCode.NOT_FOUND if isinstance(exc, NotFoundError) else BlockedCode.CONNECTOR_ERROR
     return _decision(record, DecisionStatus.BLOCKED, [BlockedReason(code=code, message=str(exc))],
                      "external API error that retrying will not fix", bundle, approval, outcome)
+
+
+def _transition(deps: Deps, record: PlanRunRecord):
+    """Mirror planner / plan-reviewer hand-overs to Discord #logs (user request 2026-10-14); recorded as events."""
+    from research_autopilot.notifications import EventKind, NotificationEvent, notify_once
+
+    def tell(message: str) -> None:
+        record.events.append(RunEvent(kind="agent", message=message[:500]))
+        if deps.notifier is None:
+            return
+        try:
+            notify_once(deps.store, NotificationEvent(
+                kind=EventKind.PHASE_TRANSITION, flow_name="plan-task", flow_run_name=record.task_id or "?",
+                state_name="planning", details=[message[:500]],
+                dedupe_key=f"plan-transition:{record.plan_run_id}:{len(record.events)}"), deps.notifier)
+        except Exception:  # noqa: BLE001 - observability must not change the planning outcome
+            pass
+    return tell
 
 
 def _loop_rationale(outcome: LoopOutcome) -> str:
