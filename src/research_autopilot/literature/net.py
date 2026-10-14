@@ -5,11 +5,13 @@
 * No cookies or credentials are sent; a mailto contact is attached as the
   scholarly APIs request.  GitHub uses a token only if one is configured.
 * Requests are spaced per host and responses are size-limited.
+* 429 / 503 (rate limits, e.g. arXiv's API) are retried a few times after the server's Retry-After (bounded).
 Response bodies are data: nothing fetched here is ever executed or obeyed.
 """
 
 from __future__ import annotations
 
+import email.utils
 import os
 import threading
 import time
@@ -28,6 +30,10 @@ DEFAULT_ALLOWED = (
     "readthedocs.io", "jmlr.org", "www.jmlr.org",
 )
 MAX_BYTES = 60 * 1024 * 1024
+RETRY_STATUSES = (429, 503)
+RETRIES = 2
+RETRY_DEFAULT_S = 15.0  # when the server gives no Retry-After
+RETRY_CAP_S = 60.0      # never wait longer than this per retry
 
 
 class BlockedHost(Exception):
@@ -36,7 +42,7 @@ class BlockedHost(Exception):
 
 class Net:
     def __init__(self, contact_email: str, *, allowed: tuple[str, ...] = DEFAULT_ALLOWED, min_interval_s: float = 1.0,
-                 github_token: str | None = None, timeout_s: float = 30.0, transport=None) -> None:
+                 github_token: str | None = None, timeout_s: float = 30.0, transport=None, sleep=time.sleep) -> None:
         self.contact_email = contact_email
         self.allowed = tuple(h.lower() for h in allowed)
         self.min_interval_s = min_interval_s
@@ -46,6 +52,7 @@ class Net:
         self.client = httpx.Client(timeout=timeout_s, follow_redirects=False, transport=transport,
                                    headers={"User-Agent": f"ResearchAutopilot/0.1 (mailto:{contact_email})"})
         self.log: list[dict] = []  # host / path / status only (no query secrets, no bodies)
+        self._sleep = sleep
 
     def allowed_host(self, url: str) -> bool:
         host = (urlparse(url).hostname or "").lower()
@@ -53,6 +60,16 @@ class Net:
 
     def get(self, url: str, *, params: dict | None = None, accept: str | None = None, max_bytes: int = MAX_BYTES,
             redirects: int = 6) -> httpx.Response:
+        """GET with the allowlist, pacing and size limit; rate-limited answers are retried (bounded)."""
+        for attempt in range(RETRIES + 1):
+            r = self._get_once(url, params=params, accept=accept, max_bytes=max_bytes, redirects=redirects)
+            if r.status_code not in RETRY_STATUSES or attempt == RETRIES:
+                return r
+            self._sleep(retry_after(r))
+        return r
+
+    def _get_once(self, url: str, *, params: dict | None, accept: str | None, max_bytes: int,
+                  redirects: int) -> httpx.Response:
         for _ in range(redirects + 1):
             if not self.allowed_host(url):
                 raise BlockedHost(f"host not on the literature allowlist: {urlparse(url).hostname}")
@@ -89,6 +106,21 @@ class Net:
             if wait > 0:
                 time.sleep(wait)
             self._last[host] = time.monotonic()
+
+
+def retry_after(r: httpx.Response) -> float:
+    """Seconds to wait before retrying: the Retry-After header (seconds or HTTP date), bounded."""
+    v = (r.headers.get("retry-after") or "").strip()
+    wait = RETRY_DEFAULT_S
+    if v:
+        try:
+            wait = float(v)
+        except ValueError:
+            try:
+                wait = email.utils.parsedate_to_datetime(v).timestamp() - time.time()
+            except (TypeError, ValueError):
+                pass
+    return min(max(wait, 1.0), RETRY_CAP_S)
 
 
 def from_env() -> Net:

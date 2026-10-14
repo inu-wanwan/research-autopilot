@@ -256,6 +256,22 @@ def test_past_reports_and_sources_are_reused_without_new_calls(tmp_path):
     assert not any(c.startswith(("arxiv.org/pdf", "raw.githubusercontent.com")) for c in calls[n_http:])
 
 
+def test_rate_limited_answers_are_retried_after_a_bounded_wait():
+    """Eagle 2026-10-14: arXiv's API answered 429 and the seed paper was dropped without a retry."""
+    from research_autopilot.literature.net import RETRY_CAP_S, retry_after
+    answers = [httpx.Response(429, headers={"retry-after": "7"}), httpx.Response(503), httpx.Response(200, content=b"ok")]
+    waits = []
+    n = Net("x@example.org", min_interval_s=0, sleep=waits.append,
+            transport=httpx.MockTransport(lambda req: answers.pop(0)))
+    assert n.get("https://export.arxiv.org/api/query").status_code == 200
+    assert waits == [7.0, 15.0]  # Retry-After, else the default
+    assert retry_after(httpx.Response(429, headers={"retry-after": "3600"})) == RETRY_CAP_S
+    always = Net("x@example.org", min_interval_s=0, sleep=waits.append,
+                 transport=httpx.MockTransport(lambda req: httpx.Response(429)))
+    assert always.get("https://export.arxiv.org/api/query").status_code == 429  # gives up after the retries
+    assert len([e for e in always.log if e["status"] == 429]) == 3
+
+
 def test_unreachable_web_still_yields_a_report_with_failures(tmp_path):
     from literature_fakes import web
     deps = _deps(tmp_path)
