@@ -83,7 +83,8 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 停止の背景：Codex 契約は 02:29 から上限（5:58 回復）、Claude 契約は 03:24 に session limit（7:20 回復）、OpenAI API は `credit_balance_exhausted`。
 - 原因（コード）：`autopilot/budget.py` の `chain_usage` が、plan run の合計費用が不明のとき、失敗して課金されていない呼び出しも「価格不明の課金呼び出し」に数えていた（INU-364 の reviewer 3 回の失敗）。ブランチ `phase10/fix-budget-unknown-calls` で、価格不明かつ `error` なしの呼び出しだけ数えるよう修正（Phase 4 の `llm_usage` と同じ規則）。`tests/test_budget_unknown_calls.py` を追加。
 - INU-363（T1_diag）の `unknown dependency ['INU-358']`：仕様の `resources.job_dependencies` に前サイクルのタスク ID が入っていたため Phase 4 が実験前に blocked にしていた（診断は未実行）。ユーザー決定（案 C）で修正：`experiments/orchestrator.py` は、今の run の実験に無く、かつタスク ID の形（`[A-Z][A-Z0-9]*-\d+`）の依存を警告イベントにして無視する（タスク間の順序は DAG が保証）。それ以外の未知の実験名は従来どおり blocked。`implementation/prompts.py` に「job_dependencies は同じタスク内の実験 ID だけ」を追記。`tests/test_phase4.py` に 2 件追加。
-- テスト：WSL の既存 venv で `PYTHONPATH=src ... pytest tests/test_phase4.py tests/test_phase3.py tests/test_budget_unknown_calls.py` が 107 passed。
+- テスト：WSL の既存 venv で `PYTHONPATH=src ... pytest tests/test_phase4.py tests/test_phase3.py tests/test_budget_unknown_calls.py` が 109 passed（マージ後回帰なし）。
+- Eagle への反映（2026-10-15 04:39 JST）：ユーザー指示により、修正コミットを `main` にマージし `origin/main` に push（`4ebaf17`）。Eagle の `/opt/research-autopilot` で `git checkout main && git pull origin main` を行い、`uv sync --frozen --no-dev` を実行。`ra-prefect-worker` / `ra-discord-bot` / `ra-watchdog` を再起動し、直後の `autopilot-poll`（flow run `origami-tortoise`）が Completed で正常動作することを確認。
 - INU-358 は 81 条件中 9 pass / 72 fail（k=3..10、`reference_geometry_metadata_inconsistent`）。どの check で食い違うかは未調査。
 - Gemini を fallback に加える件は、ユーザー判断で後日。
 
