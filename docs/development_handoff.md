@@ -26,7 +26,23 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 01:47 JST / Codex
+2026-10-15 04:30 JST / Antigravity
+
+### A3 Generic Optimizer Benchmark（INU-327）の結果解析（2026-10-15 / Antigravity）
+
+- **成果・結論**：
+  - E2E Phase A（INU-324）の子タスク A3（INU-327）の 81 条件（3分子×3幾何×k=2..10）実測データを解析。
+  - 最適到達率：Beam-8 (91.4%, 74/81) > **BOCS (84.0%, 68/81)** > Beam-4 (80.2%, 65/81) > Beam-2 (65.4%, 53/81) > Greedy (64.2%, 52/81)。
+  - BOCS は組合せベイズ最適化（二次 surrogate）により、貪欲法が陥る局所トラップを回避し Beam-4 を凌駕する精度を達成。
+  - 幾何別の失敗特性：BeO 伸長結合（r=1.80 Å, 2.40 Å）において Greedy は最大 98.6 kcal/mol（0.157 Ha）の破滅的失敗。Beam-8 は 0.28 kcal/mol まで低減。一方、NH3 幾何 1 (k=5..9) では Beam-8 を含む全 Beam 手法が同一のリグレット（1〜7 kcal/mol）でトラップ（false attractor）。
+  - クエリ数：Greedy 平均 45.4（max 81）、Beam-2 平均 61.4（max 118）、Beam-4 平均 90.6（max 187）、Beam-8 平均 141.6（max 317）。
+  - データ整合性：新規 CASCI 0 件（全 query が承認済み cache 内で解決）、データ欠損 0、予算違反 0、Greedy Phase 4 完全一致（81/81）。
+- **未検証事項（実機環境制約の明示）**：
+  - 生データ CSV（`summary/budget_table.csv` 4,536行、`summary/regret_vs_queries.csv` 112,608行、各trajectory CSV）は MacBook（callduck）上に生成されており、Eagle（Windows/WSL）へ未転送。
+  - したがって、randomized 4手法（BOCS, SA, swap LS, Random）の「同一 query budget 各ステップにおける詳細な過渡的 regret-query curve（mean, std, optimum hit 率）」の再集計・プロットは Eagle 単体では未検証・保留。
+- **成果物・記録**：
+  - Notion Research Notes に詳細解析ノートを作成：`[解析] INU-327 A3 Generic Optimizer Benchmark 結果詳細解析・限界・比較評価`（ID: `3f969893-cf8f-81fe-81bc-ed974067f011`、URL: https://app.notion.com/p/INU-327-A3-Generic-Optimizer-Benchmark-3f969893cf8f81fe81bced974067f011 ）。
+  - 報告用可視化図を生成：`a3_benchmark_summary.png`（最適到達率と平均リグレット）、`a3_failure_heatmap.png`（幾何×k 別の失敗リグレット熱マップ）。
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
