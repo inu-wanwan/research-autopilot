@@ -161,6 +161,18 @@ def validate(spec: ExperimentSpec, status: JobStatus, collected: CollectResult, 
             for field, unit in out.units.items():
                 # OutputFile.units permits top-level field names ("e_fci") as well as JSON pointers ("/e_fci").
                 ptr = field if field.startswith("/") else "/" + field.replace("~", "~0").replace("/", "~1")
+                if "*" in ptr.split("/"):  # one value per record, e.g. /results/*/fci/total_energy_hartree
+                    try:
+                        hits = _expand(doc, ptr)
+                    except (KeyError, IndexError, ValueError, TypeError):
+                        hits = []
+                    ok = bool(hits) and all(_quantity(v) for _, v in hits)
+                    checks.append(ValidationCheck(
+                        name=f"units:{out.path}:{field}", kind="units", status="pass" if ok else "fail",
+                        detail=(f"{len(hits)} numeric finite value(s) at {field}; declared unit {unit}" if ok else
+                                f"field with declared unit {unit} missing" if not hits else
+                                f"a value at {field} is not a finite number; declared unit {unit}")))
+                    continue
                 try:
                     raw = _pointer(doc, ptr)
                     numeric = _finite_number(raw)

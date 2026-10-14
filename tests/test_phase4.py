@@ -425,6 +425,37 @@ def test_nested_record_units_and_wildcard_metrics_and_checks(tmp_path):
     assert v.status == "fail" and "failing ['/results/1/delta_e_hartree']" in v.failure_reason
 
 
+def test_units_declared_with_wildcard_pointers_are_checked_per_record(tmp_path):
+    """Eagle INU-341 (2026-10-14): units declared as /results/*/fci/total_energy_hartree were reported missing."""
+    import json as _json
+
+    from research_autopilot.experiments.models import ArtifactRecord, CollectResult, JobState, JobStatus
+    from research_autopilot.experiments.validator import validate
+    from research_autopilot.implementation.experiment import OutputFile
+    deps, runs, *_ = make_exp(tmp_path, compute=FakeComputeBackend([OK]))
+    spec = next(iter(run_experiment(deps, phase3_run_ids=runs).specs.values()))
+    doc = {"results": [{"fci": {"total_energy_hartree": -1.13}, "delta_e_hartree": 0.02},
+                       {"fci": {"total_energy_hartree": -1.10}, "delta_e_hartree": 0.05}]}
+    out = tmp_path / "res.json"
+    out.write_text(_json.dumps(doc))
+    collected = CollectResult(job_key="k", artifacts=[ArtifactRecord(path="res.json", stored_path=str(out),
+                                                                     sha256="x", size_bytes=out.stat().st_size)],
+                              missing=[], stdout_path="", stderr_path="")
+    status = JobStatus(job_key="k", state=JobState.SUCCEEDED, exit_code=0)
+
+    def check(units):
+        s = spec.model_copy(deep=True, update={"outputs": [OutputFile(path="res.json", format="json", required=True,
+                                                                      units=units)], "inputs": []})
+        s.validation.metrics, s.validation.numeric_checks = [], []
+        return validate(s, status, collected, tmp_path, {})
+    v = check({"/results/*/fci/total_energy_hartree": "hartree", "/results/*/delta_e_hartree": "hartree"})
+    assert v.status == "pass", v.failure_reason
+    assert check({"/results/*/fci/missing_hartree": "hartree"}).status == "fail"
+    doc["results"][1]["delta_e_hartree"] = None
+    out.write_text(_json.dumps(doc))
+    assert check({"/results/*/delta_e_hartree": "hartree"}).status == "fail"
+
+
 def test_job_waits_for_free_memory_instead_of_blocking(tmp_path):
     from research_autopilot.experiments import resources as res
     from phase4_fakes import host
