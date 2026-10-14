@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 01:34 JST / Codex
+2026-10-15 01:36 JST / Codex
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
@@ -41,6 +41,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - Resume 前の追加確認：INU-344 の承認済み `authorization.scope.autonomy` は `max_cycles=10`、`max_retries_per_task=2`、`no_progress_cycles=2` だが、保存された引用文は「再試行は 1 タスクあたり最大 3 回」「新しい情報が得られないサイクルが 3 回続いたら停止」。数値が不一致。旧計画 v1 の open question にも autonomy の引用と構造化値の不整合が記録されている。どちらを正とするか研究者判断が必要。INU-351 の plan run `d03f2ce8` は 2 回の replan 後も reviewer `revision_required`：最後の指摘は同一・監査上等価な複数 reference/cache pair まで曖昧拒否している点。コード上、停止後の単純 Resume は許された再試行があれば最後の blocked child DAG を同サイクルで再試行する。一方、Notion 親仕様の編集は spec hash 変更後に新しい計画版と承認を要求し、既存サイクル履歴は残る。INU-344 は未再開。
 - 2026-10-15、ユーザーは再試行・無進展停止の上限を 3/3 と決定。Notion の INU-344 親仕様「自律実行の裁量」に `max_cycles = 10、max_new_tasks_per_cycle = 5、max_retries_per_task = 3、no_progress_cycles = 3` を実行用の構造化上限として追記した。Eagle の RA が取得する TaskSpec の `autonomy` に追記が含まれることと、現行計画 v2 から spec hash が変わったことを確認。現行計画 v2 は `needs_input`、承認は v1 のまま。追記後の計画版生成・構造化上限 3/3・新規承認は未確認。INU-344 の手動 Resume は未実施。
 - 01:31 JST に計画 v3 が生成され `pending_approval`。ただし `scope.autonomy` は 10/5/2/2 のままで、引用が途中で切れたため 3/3 が RA 既定値に戻った。v3 は承認しない。親仕様に「研究サイクル10回、新規タスク5件/サイクル、再試行3回/タスク、無進展3サイクルで停止」を一文で追加し、次の自動再計画待ち。元の数値は変更していない。INU-344 は未再開。
+- 計画 v4 は 10/5/3/3 を構造化値に取得したが、`needs_input`。blocking は `primary_metric`：value に「81 conditions」を含む一方、引用は「mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」のみで 81 を含まず、決定論的検証で ambiguous となった。モデルの引用選択と厳密な引用検証の組合せが原因であり、仕様の 81 条件自体は別箇所に明記されている。v3 は superseded、承認は v1 のまま。INU-344 は未再開。
 
 ## Git Branch / Commit
 
@@ -762,7 +763,7 @@ Fake の E2E で確認したこと：
 
 ## Known Issues / Blockers
 
-0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。計画 v3 は 2/2 のまま `pending_approval` になったため承認不可。簡潔な上限文を追記して次の計画版を待つ。INU-351 の計画承認失敗は履歴として残り、INU-344 は resume 前で blocked。
+0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。計画 v4 は 3/3 を取得したが、primary_metric の引用に value 内の 81 がなく `needs_input`。承認は v1 のまま、INU-344 は resume 前で blocked。
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
 2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
@@ -775,7 +776,7 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
-0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。自動再計画の完了を待ち、新計画の `scope.autonomy` が 10/5/3/3 か、blocking open question がないかを確認する。新計画の研究スコープは人間が確認・承認する。旧 INU-349 の Spec / コード修正は不要。
+0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。`scope.py` の引用検証と Scope structurer の出力を調べ、仕様に既存の「81 条件」を primary_metric の引用に含められなかっただけで停止する問題を修正する。修正後は対象テストのみ実行し、新計画の 10/5/3/3 と blocking question 0 を確認する。新計画の研究スコープは人間が確認・承認する。旧 INU-349 の Spec / コード修正は不要。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
