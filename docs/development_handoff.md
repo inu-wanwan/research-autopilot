@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 01:36 JST / Codex
+2026-10-15 01:44 JST / Codex
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
@@ -42,6 +42,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 2026-10-15、ユーザーは再試行・無進展停止の上限を 3/3 と決定。Notion の INU-344 親仕様「自律実行の裁量」に `max_cycles = 10、max_new_tasks_per_cycle = 5、max_retries_per_task = 3、no_progress_cycles = 3` を実行用の構造化上限として追記した。Eagle の RA が取得する TaskSpec の `autonomy` に追記が含まれることと、現行計画 v2 から spec hash が変わったことを確認。現行計画 v2 は `needs_input`、承認は v1 のまま。追記後の計画版生成・構造化上限 3/3・新規承認は未確認。INU-344 の手動 Resume は未実施。
 - 01:31 JST に計画 v3 が生成され `pending_approval`。ただし `scope.autonomy` は 10/5/2/2 のままで、引用が途中で切れたため 3/3 が RA 既定値に戻った。v3 は承認しない。親仕様に「研究サイクル10回、新規タスク5件/サイクル、再試行3回/タスク、無進展3サイクルで停止」を一文で追加し、次の自動再計画待ち。元の数値は変更していない。INU-344 は未再開。
 - 計画 v4 は 10/5/3/3 を構造化値に取得したが、`needs_input`。blocking は `primary_metric`：value に「81 conditions」を含む一方、引用は「mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」のみで 81 を含まず、決定論的検証で ambiguous となった。モデルの引用選択と厳密な引用検証の組合せが原因であり、仕様の 81 条件自体は別箇所に明記されている。v3 は superseded、承認は v1 のまま。INU-344 は未再開。
+- ユーザー指示で Notion 親仕様の主指標文を「81 条件の mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」へ修正。既存の 81 条件・指標・閾値は変更なし。Eagle RA の TaskSpec に新文が入り、計画 v4 から spec hash が変わったことを確認。次の計画版生成と blocking 解消は未確認。
 
 ## Git Branch / Commit
 
