@@ -60,6 +60,18 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - 実際の Discord での表示は未確認。
   - 承認依頼そのものの `what_changes` などの英語は残っている（承認記録や Linear にも使われるため）。
 
+### test-only 運用開始（2026-10-14 14:10 JST / Claude Code、ユーザー指示）
+
+- main に push した（`ea6fd85..71b1fd0`）。ra の `/opt/research-autopilot` も `71b1fd0` に更新済み。
+- 人間：`config/research_repos.toml` を作成し（`user` / `env` 入り。新しいコードで読み込めることを確認）、`.env` に `RA_AUTOPILOT_WRITE=true` / `RA_AUTOPILOT_TEST_ONLY=true` / `RA_LINEAR_WRITE_ENABLED=true` を設定した。`RA_GITHUB_PUSH_TOKEN` も設定済み（ユーザー回答。PR の機能も試す）。
+- エージェント：
+  - deployment 11 件を version `71b1fd0` で登録し直した。
+  - `discord check --send-test` で 4 チャンネルにテスト投稿した。見た目はユーザーが確認する。
+  - `autopilot-poll/scheduled` のスケジュールを有効にした（60 秒ごと、ユーザー決定「方式 a」）。最初の 1 回が完了し、heartbeat も確認した。
+- DB バックアップ：rixyt の cron で毎日 4:30 に `infra/host/backup-db.sh` を実行する（`~/backups/research-autopilot`、14 日分。`recovery.md` §5）。
+- LLM：今は `codex,claude`。実運用では `claude,codex` にする予定（ユーザー）。書いた順に試すようコードを直した（`0bccf6c`）。
+- 人間に残っている作業：Windows の自動ログイン・ログイン直後のロック・BIOS の通電時の自動起動（手順は会話で案内した。未実施）、[TEST] タスクの作成と Run Autopilot。
+
 ### GPU（2026-10-14 / Claude Code、ユーザー決定）
 
 - ユーザー決定：ML の学習は uv（ホストで直接）で動かす。Phase 9 の外部コードも GPU で動かせるようにする。
