@@ -62,7 +62,12 @@ uv run research-agent experiment list | show <id> | proposals [--task INU-123]
   - 理由：同じ GPU に学習を重ねるとメモリが足りなくなる。
 - ジョブには `CUDA_VISIBLE_DEVICES` で自分の GPU だけを見せる（番号は nvidia-smi の順、`CUDA_DEVICE_ORDER=PCI_BUS_ID`）。GPU を使わないジョブには空文字を渡すので、GPU は見えない。
 - CUDA GPU のないホストで GPU ジョブを投げると blocked になる。
-- 研究リポジトリの compose イメージで動かすジョブ（`container = {...}`）に GPU を渡すには、そのリポジトリの compose.yaml に GPU デバイスの指定が必要。RA からは付けない（未対応）。
+- 研究リポジトリの compose イメージで動かすジョブ（`container = {...}`）：GPU ジョブだけ、ジョブのディレクトリに上書き用の compose ファイル `compose.gpu.yaml`（サービスに `devices: [nvidia.com/gpu=all]` を足すだけ）を作り、`-f` で重ねる。研究リポジトリ側の compose.yaml は変更不要。
+  - 前提：その Docker（Eagle では `ra` の rootless Docker）に CDI 設定があること。
+  - 前提：イメージの中に GPU を使うソフト（CUDA 版の PyTorch など）が入っていること。
+  - Phase 3 のテスト（`test_command`）には GPU を渡さない。テストは CPU で通る必要がある。
+- `container` には `user`（`docker compose run --user`）と `env`（`{NAME = "value"}`）も書ける。rootless Docker で、コンテナ内のユーザーがジョブのディレクトリに書けないときに使う（Eagle の `active_space_research` は `user = "0"`、`env = { RESEARCH_USER = "root" }`）。ユーザー名・uid と変数名は形式を検査するので、ここから他の docker フラグは入らない。
+- Planner には、ホストの GPU の一覧と「`resources.gpu` を 1 以上にしたジョブだけが GPU を使える」という規則を渡す（`implementation/facts.py` の `gpus`）。
 - 外部コード（Phase 9）の GPU は `phase9_external_repositories.md` を参照。
 
 ## 4. 保存先

@@ -26,6 +26,7 @@ from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, Scie
 from research_autopilot.experiments.backends.base import BackendNotConfigured, ComputeBackend
 from research_autopilot.experiments.config import Phase4Settings
 from research_autopilot.experiments.environment import (EnvironmentError_, container_argv, container_provenance,
+                                                         gpu_override,
                                                        ensure_venv, export_commit, resolve_argv)
 from research_autopilot.experiments.models import (
     AnalysisResult,
@@ -425,8 +426,9 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
             if p.returncode != 0:
                 raise _Block(f"{spec.experiment_id}: {SETUP_DEFECT}: setup step {step[:3]} failed (exit "
                              f"{p.returncode}) in the container: {(p.stderr or p.stdout)[-300:]}")
+        override = gpu_override(repo_cfg.container, jdir) if alloc.gpu_ids else None  # only a GPU job sees GPUs
         argv = container_argv(repo_cfg.container, checkout.resolve(), argv, spec.execution.working_directory, env,
-                              mounts)
+                              mounts, override)
         env = {}  # passed into the container with -e; the docker CLI itself keeps the host HOME / context
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
                   commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,

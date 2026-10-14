@@ -14,6 +14,10 @@ from research_autopilot.experiments.config import Phase4Settings
 from research_autopilot.experiments.models import Allocation, HostResources, ResourceEstimate
 from research_autopilot.implementation.experiment import ExperimentSpec
 
+# CDI device of the host's NVIDIA GPUs (nvidia-ctk cdi generate; WSL's spec has only "all", so a job's own
+# GPUs are selected with CUDA_VISIBLE_DEVICES)
+CDI_GPU_DEVICE = "nvidia.com/gpu=all"
+
 THREAD_VARS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
                "VECLIB_MAXIMUM_THREADS", "BLIS_NUM_THREADS", "PYSCF_MAX_MEMORY"]
 

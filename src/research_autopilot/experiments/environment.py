@@ -12,6 +12,7 @@
 import hashlib
 import io
 import os
+import re
 import subprocess
 import tarfile
 import time
@@ -143,11 +144,42 @@ def git_mount_args(checkout: Path) -> list[str]:
     return [a for g in worktree_git_mounts(checkout) for a in ("-v", f"{g}:{g}:ro")]
 
 
+def gpu_override(container: dict, directory: Path) -> Path:
+    """Compose override giving the service the host GPUs through CDI (``docker compose run`` has no device flag).
+
+    Written to the job directory, never into the repository; the job's own GPUs are chosen by CUDA_VISIBLE_DEVICES."""
+    from research_autopilot.experiments.resources import CDI_GPU_DEVICE
+    path = Path(directory) / "compose.gpu.yaml"
+    path.write_text(f"services:\n  {container['service']}:\n    devices:\n      - {CDI_GPU_DEVICE}\n")
+    return path
+
+
+_RUN_USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?$")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def container_run_args(container: dict) -> list[str]:
+    """``--user`` / ``-e`` from the repository's container config (a user name or uid[:gid] and plain variables
+    only: nothing here can add other docker flags)."""
+    out: list[str] = []
+    if user := container.get("user"):
+        if not isinstance(user, str) or not _RUN_USER.match(user):
+            raise EnvironmentError_(f"container user {user!r} is not a user name or uid[:gid]")
+        out += ["--user", user]
+    env = container.get("env") or {}
+    if not isinstance(env, dict) or any(not _ENV_NAME.match(str(k)) for k in env):
+        raise EnvironmentError_("container env must be a table of NAME = value")
+    for k, v in sorted(env.items()):
+        out += ["-e", f"{k}={v}"]
+    return out
+
+
 def container_argv(container: dict, checkout: Path, argv: list[str], working_directory: str, env: dict[str, str],
-                   mounts: list[Path]) -> list[str]:
+                   mounts: list[Path], override: Path | None = None) -> list[str]:
     """``docker compose run`` of the repository's service with the job checkout as its project directory (the
     compose file's ``.`` volume therefore mounts this checkout, never the live repository). ``mounts`` are host
-    directories the job reads (inputs, the job directory) and are mounted at the same path."""
+    directories the job reads (inputs, the job directory) and are mounted at the same path. ``override`` is an
+    extra compose file (``gpu_override``) layered on the repository's one."""
     if argv[:1] in (["python"], ["python3"]):
         inner = ["python", *argv[1:]]
     elif argv[:3] in (["uv", "run", "python"], ["uv", "run", "python3"]):
@@ -157,8 +189,9 @@ def container_argv(container: dict, checkout: Path, argv: list[str], working_dir
     checkout = Path(checkout).resolve()
     workdir = (Path(container.get("workdir", "/workspace")) / working_directory).as_posix().rstrip("/.") or "/"
     cmd = ["docker", "compose", "-f", str(checkout / container.get("compose_file", "compose.yaml")),
+           *(["-f", str(Path(override).resolve())] if override else []),
            "--project-directory", str(checkout), "-p", container["compose_project"], "run", "--rm", "-T",
-           "--no-deps", "-w", workdir]
+           "--no-deps", *container_run_args(container), "-w", workdir]
     for m in sorted({str(Path(x).resolve()) for x in mounts}):
         cmd += ["-v", f"{m}:{m}"]
     cmd += git_mount_args(checkout)

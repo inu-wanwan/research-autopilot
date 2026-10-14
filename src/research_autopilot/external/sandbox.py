@@ -24,10 +24,10 @@ import tempfile
 import time
 from pathlib import Path
 
+from research_autopilot.experiments.resources import CDI_GPU_DEVICE as GPU_DEVICE  # never in verification runs
 from research_autopilot.external.models import SandboxLimits, Wheel
 
 NOBODY = "65534:65534"
-GPU_DEVICE = "nvidia.com/gpu=all"  # CDI device (nvidia-ctk cdi generate --mode=wsl); never in verification runs
 WHEEL = re.compile(r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[^-]+)-.*\.whl$")
 
 

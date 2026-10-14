@@ -34,8 +34,10 @@ class RepoConfig(BaseModel):
     # Phase 7A: where this repository lives on other environments (e.g. {"eagle": "~/..."}); ``path`` is this host.
     locations: dict[str, str] = Field(default_factory=dict)
     # Phase 4 runs experiments inside the repository's own container image instead of a uv venv, e.g.
-    # {"compose_project": "active-space-ra", "service": "research", "workdir": "/workspace"} (docker compose)
-    container: dict[str, str] | None = None
+    # {"compose_project": "active-space-ra", "service": "research", "workdir": "/workspace"} (docker compose);
+    # optional "user" (docker compose run --user) and "env" ({NAME: value}, e.g. for rootless Docker on Eagle:
+    # user = "0", env = {RESEARCH_USER = "root"} keeps the job as the host user so it can write its directories)
+    container: dict[str, str | dict[str, str]] | None = None
     # push the finished task branch and open a PR after a Discord approval (autopilot.publish); needs a GitHub url
     publish: bool = False
 

@@ -188,7 +188,10 @@ sudo install -o ra -g ra -m 600 /home/rixyt/workspace/ResearchAutopilot/.env /op
    ```bash
    cd ~/research-repos/active_space_research && docker compose -p active-space-ra build research
    ```
-   - compose.yaml / Dockerfile が root 以外のユーザー（`user:` / `USER`）を指定していると、rootless ではジョブのディレクトリに書けない可能性がある（未検証）。その場合はエージェントに見せる。
+   - rootless Docker では、コンテナ内で root 以外のユーザー（`active_space_research` では `researcher`、uid 1001）として動くと、`ra` が持っているファイルに書けない（2026-10-14 に Eagle で `Permission denied` を確認）。
+     - `active_space_research` の起動処理は root で起動すると `gosu "${RESEARCH_USER}"` でユーザーを切り替えるので、`--user 0 -e RESEARCH_USER=root` で起動すれば root（＝ホスト上の `ra`）のまま動く。書き込みも GPU も確認済み（2026-10-14）。
+     - RA には `research_repos.toml` の `[repositories.<id>.container]` に `user = "0"` と `env = { RESEARCH_USER = "root" }` を書く。`test_command` にも `"--user", "0", "-e", "RESEARCH_USER=root"` を付ける。
+     - この方式で起動すると `codex-data` volume の所有者が root になる。手で `researcher` として入るときは、先に `docker compose -p active-space-ra run --rm codex-init` を実行する。
 4. **`/opt/research-autopilot/config/research_repos.toml`**。
    - `config/research_repos.example.toml` をもとに作る（path は `/home/ra/research-repos/...`）。
    - `test_command` などは Mac の同じファイルの値を使う。
@@ -245,6 +248,12 @@ uv で動かすジョブは、WSL の GPU ドライバをそのまま使う。
    - 2 つ目で RTX 4090 が表示されれば完了。2026-10-14 に Eagle で確認済み（RTX 4090、ドライバ 610.88）。
    - `ra` のシェルで `nvidia-smi` が見つからない場合は、`/usr/lib/wsl/lib/nvidia-smi` を使う。表示される `apt install nvidia-utils-…` は WSL では入れない。
 - WSL のドライバを更新したら、CDI 設定を作り直す（`nvidia-ctk cdi generate` をもう一度実行する）。
+3. ra：研究リポジトリのコンテナで GPU が見えるかを確認する（研究イメージのビルド後）。RA が GPU ジョブで使うのと同じ方式で確認する。
+   ```bash
+   cd ~/research-repos/active_space_research
+   printf 'services:\n  research:\n    devices:\n      - nvidia.com/gpu=all\n' > /tmp/ra-gpu-check.yaml
+   docker compose -f compose.yaml -f /tmp/ra-gpu-check.yaml -p active-space-ra run --rm -T --no-deps research nvidia-smi
+   ```
 
 ### H6. 判断すること（運用開始時）
 

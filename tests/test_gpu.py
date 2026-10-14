@@ -51,3 +51,40 @@ def test_gpu_job_on_a_host_without_cuda_is_refused():
     with pytest.raises(res.ResourceError):
         _rm([]).plan(ResourceEstimate(cpu=1, memory_gb=1, gpu=1, walltime_minutes=5, basis="default",
                                       confidence="low", rationale=[]))
+
+
+def test_a_container_job_gets_the_gpu_only_through_its_own_override(tmp_path):
+    from research_autopilot.experiments.environment import container_argv, gpu_override
+    c = {"compose_project": "p", "service": "research", "workdir": "/workspace"}
+    override = gpu_override(c, tmp_path)
+    assert override.read_text() == "services:\n  research:\n    devices:\n      - nvidia.com/gpu=all\n"
+    argv = container_argv(c, tmp_path / "src", ["python", "train.py"], ".", {"CUDA_VISIBLE_DEVICES": "0"}, [],
+                          override)
+    i = argv.index(str(override.resolve()))
+    assert argv[i - 1] == "-f" and argv[i - 2].endswith("compose.yaml")  # layered on the repository's compose file
+    assert "CUDA_VISIBLE_DEVICES=0" in argv
+    plain = container_argv(c, tmp_path / "src", ["python", "train.py"], ".", {}, [])
+    assert str(override.resolve()) not in plain and plain.count("-f") == 1
+
+
+def test_the_planner_learns_the_hosts_gpus_and_the_rule_to_use_them():
+    from research_autopilot.implementation.facts import environment_facts
+    from research_autopilot.models import TaskSpec
+    facts = environment_facts({}, gpus=lambda: ["NVIDIA GeForce RTX 4090, 24564 MiB"])(TaskSpec.model_construct(repository=None))
+    assert facts["gpus"]["available"] == ["NVIDIA GeForce RTX 4090, 24564 MiB"]
+    assert "resources.gpu >= 1" in facts["gpus"]["rule"]
+
+
+def test_container_user_and_env_reach_every_compose_run_and_cannot_inject_flags(tmp_path):
+    """Eagle (rootless Docker): user 0 + RESEARCH_USER=root keeps jobs as the host user, able to write their dirs."""
+    from research_autopilot.experiments.environment import EnvironmentError_, container_argv, container_run_args
+    c = {"compose_project": "p", "service": "research", "workdir": "/workspace", "user": "0",
+         "env": {"RESEARCH_USER": "root"}}
+    argv = container_argv(c, tmp_path, ["python", "run.py"], ".", {}, [])
+    run = argv.index("run")
+    assert argv[run:run + 8] == ["run", "--rm", "-T", "--no-deps", "--user", "0", "-e", "RESEARCH_USER=root"]
+    assert argv[-3:] == ["research", "python", "run.py"]
+    assert container_run_args({"compose_project": "p", "service": "s"}) == []
+    for bad in ({"user": "--privileged"}, {"user": "0 --privileged"}, {"env": {"A B": "x"}}, {"env": "X=1"}):
+        with pytest.raises(EnvironmentError_):
+            container_run_args(bad)

@@ -26,6 +26,23 @@ PHASE4_ENVIRONMENT_CONTRACT = (
     "with a src/ layout put src/ on sys.path explicitly (or set the working directory to src/). The repository's "
     "tests (Phase 3) run with the test command below, in the test environment."
 )
+GPU_CONTRACT = (
+    "GPUs: a job gets the host's CUDA GPU(s) only when experiment.json resources.gpu >= 1; each GPU runs one job at a "
+    "time (the job sees only its own GPUs through CUDA_VISIBLE_DEVICES, also inside the repository's container). "
+    "With resources.gpu = 0 no GPU is visible and the code must run on the CPU. A GPU job on a host without a CUDA "
+    "GPU is blocked.")
+
+
+def host_gpus() -> list[str]:
+    """Names of this host's CUDA GPUs (empty when there are none or nvidia-smi is missing)."""
+    try:
+        p = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], capture_output=True,
+                           text=True, timeout=20, stdin=subprocess.DEVNULL)
+        return [ln.strip() for ln in p.stdout.splitlines() if ln.strip()] if p.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
 def container_contract(repo: RepoConfig) -> str:
     c = repo.container or {}
     return (f"This repository runs in its own container image: Phase 4 exports the commit (`git archive`) and runs "
@@ -47,10 +64,12 @@ def repo_id(repository: str | None) -> str | None:
                  if ln.strip().strip("-*` ")), None)
 
 
-def environment_facts(registry: dict[str, RepoConfig]) -> Callable[[TaskSpec], dict | None]:
+def environment_facts(registry: dict[str, RepoConfig],
+                      gpus: Callable[[], list[str]] = host_gpus) -> Callable[[TaskSpec], dict | None]:
     def facts(spec: TaskSpec) -> dict | None:
         repo = registry.get(repo_id(spec.repository) or "")
-        out: dict = {"phase4_environment": PHASE4_ENVIRONMENT_CONTRACT}
+        out: dict = {"phase4_environment": PHASE4_ENVIRONMENT_CONTRACT,
+                     "gpus": {"available": gpus(), "rule": GPU_CONTRACT}}
         if repo is None:
             return out
         if repo.container:
@@ -81,14 +100,15 @@ def _test_packages(repo: RepoConfig) -> list[str] | str:
         key = f"container:{repo.id}"
         if (hit := _cache.get(key)) and time.monotonic() - hit[0] < CACHE_TTL_SECONDS:
             return hit[1]
+        from research_autopilot.experiments.environment import EnvironmentError_, container_run_args
         try:
             p = subprocess.run(["docker", "compose", "-p", c["compose_project"], "run", "--rm", "-T", "--no-deps",
-                                c["service"], "python", "-m", "pip", "list", "--format=freeze"],
+                                *container_run_args(c), c["service"], "python", "-m", "pip", "list", "--format=freeze"],
                                cwd=Path(repo.path).expanduser(), capture_output=True, text=True, timeout=600,
                                stdin=subprocess.DEVNULL)
             result: list[str] | str = sorted(ln.strip() for ln in p.stdout.splitlines() if "==" in ln) \
                 if p.returncode == 0 else "unknown (package listing in the container failed)"
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, EnvironmentError_):  # incl. a bad container config
             result = "unknown (package listing in the container failed)"
         _cache[key] = (time.monotonic(), result)
         return result

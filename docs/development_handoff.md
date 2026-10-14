@@ -55,7 +55,16 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 2026-10-14：人間が H5 ⑦（nvidia-container-toolkit、`/etc/cdi/nvidia.yaml`）を実施した。
   - ra の rootless Docker で `--device nvidia.com/gpu=all` のコンテナに RTX 4090 が見えることを確認（別エージェントが確認）。
   - rixyt で試すと失敗する（Docker Desktop が `/etc/cdi` を見ないため）。
-- 未検証：ra での `cuInit`（uv で動かすジョブ）、実際の学習ジョブ、研究リポジトリの compose イメージで動かすジョブへの GPU（未対応）。
+- 研究リポジトリのコンテナで動かすジョブにも GPU を渡すようにした（ユーザー依頼、2026-10-14、ブランチ `phase4/container-gpu`）。
+  - GPU ジョブだけ、ジョブのディレクトリに `compose.gpu.yaml`（`devices: [nvidia.com/gpu=all]`）を作り、`-f` で重ねる。
+  - Planner に、ホストの GPU と GPU を使う規則を渡す（`facts.gpus`）。
+  - Docker Desktop で、この上書き方式が CDI の GPU 要求としてデーモンに届くことを確認した（Desktop には CDI 設定が無いので「unresolvable」で止まる）。
+- 2026-10-14：rootless Docker で `active_space_research` の `researcher`（uid 1001）がジョブのディレクトリに書けない問題を確認した（`Permission denied`）。
+  - 対処：`--user 0 -e RESEARCH_USER=root` で起動する。研究リポジトリの起動処理が `gosu "${RESEARCH_USER}"` で切り替えるため、研究リポジトリの変更は不要。
+  - ra で書き込みと GPU（`nvidia-smi`）が通ることを、ユーザーが確認済み。
+  - RA 側：`RepoConfig.container` に `user` / `env` を追加した（`experiments/environment.container_run_args`）。Phase 4 の compose run と、Planner 向けのパッケージ一覧の取得に使う。
+  - Eagle の `test_command` にも同じものを付ける（手順書）。
+- 未検証：ra での `cuInit`（uv で動かすジョブ）、RA 経由の実際のジョブ（Phase 3 のテスト・Phase 4 の実験・学習）。
 
 ### RA が作る Linear issue の担当者（2026-10-14 / Claude Code、ユーザー決定）
 
