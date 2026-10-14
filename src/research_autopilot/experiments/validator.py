@@ -74,16 +74,16 @@ def _finite_number(raw) -> bool:
 
 def _quantity(raw) -> bool:
     """A value a unit can be declared for: a finite number, a non-empty list of such values (e.g. the scanned
-    distances), an object whose numeric leaves are all finite (e.g. coordinates with an atom label), or a
-    boolean (a flag: the unit is meaningless and ignored, it is not a reason to reject the result)."""
+    distances), an object or list whose non-label leaves are all finite (e.g. coordinates with an atom label:
+    {"atom": "H", "z": 0.7} or PySCF's ["H", [0.0, 0.0, 0.7]]), or a boolean (a flag: the unit is meaningless
+    and ignored, it is not a reason to reject the result).  String labels never count as the quantity: at least
+    one numeric leaf is required."""
     if isinstance(raw, bool):
         return True
     if isinstance(raw, (int, float)):
         return math.isfinite(float(raw))
-    if isinstance(raw, list):
-        return bool(raw) and all(_quantity(v) for v in raw)
-    if isinstance(raw, dict):
-        leaves = [v for v in raw.values() if not isinstance(v, str)]
+    if isinstance(raw, (list, dict)):
+        leaves = [v for v in (raw.values() if isinstance(raw, dict) else raw) if not isinstance(v, str)]
         return bool(leaves) and all(_quantity(v) for v in leaves)
     return False
 

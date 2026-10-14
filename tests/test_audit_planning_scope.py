@@ -231,6 +231,9 @@ def test_units_may_be_declared_for_numeric_lists_objects_and_flags():
     assert _quantity([{"atom": "H", "x": 0.0}, {"atom": "H", "x": 0.74}])
     assert not _quantity("Angstrom") and not _quantity([]) and not _quantity(float("nan"))
     assert not _quantity([1.0, float("inf")]) and not _quantity({"atom": "H"})
+    # PySCF atom lists (Eagle INU-338, 2026-10-14): labels inside lists are allowed like labels inside objects
+    assert _quantity([["H", [0.0, 0.0, 0.0]], ["H", [0.0, 0.0, 0.7]]]) and _quantity(["H", [0.0, 0.0, 0.7]])
+    assert not _quantity(["H"]) and not _quantity([["H", [0.0, float("nan"), 0.7]]]) and not _quantity(["H", None])
 
 
 def test_container_repositories_run_experiments_in_their_own_image(tmp_path):
