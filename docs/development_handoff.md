@@ -45,6 +45,22 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - ユーザー指示で Notion 親仕様の主指標文を「81 条件の mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」へ修正。既存の 81 条件・指標・閾値は変更なし。Eagle RA の TaskSpec に新文が入り、計画 v4 から spec hash が変わったことを確認。次の計画版生成と blocking 解消は未確認。
 - 計画 v5（https://www.notion.so/3f969893cf8f81f68de3d64574e6782a、hash `6ca4fa6cf512`）は `pending_approval`、6 tasks、`scope.autonomy` は 10/5/3/3、`primary_metric` は `stated`、blocking open question 0 件。非 blocking の BOCS 実装詳細・targets 引用についての質問は残る。承認は旧 v1 のままで、INU-344 は未再開。今回の仕様文修正だけで新計画の生成ゲートは通った。
 
+### main 統合と Claude 一時エラーの再試行（2026-10-15 / Claude Code）
+
+- ユーザーの指示「両方やって push までして」に従って、次の 2 つを行った。
+  - `phase4/output-access`（`7c5207d` と docs の commit）を main に fast-forward した。
+  - `phase3/claude-transient-retry` の `31fc743` を merge commit `a4590fe` で main に取り込んだ。
+  - origin への push は済み（`588fd4d..a4590fe`）。
+- `31fc743` の変更内容：
+  - 「Failed to refresh OAuth token: another Claude Code process is refreshing it」を auth エラーではなく `transient_error` に分類するようにした。
+  - 一時エラーのときは `Phase3Settings.transient_retry_wait_seconds`（20 秒）待ってから、同じ担当で 1 回だけ再試行する。対象は Implementer、Reviewer、`llm_subscription._try_claude`。
+- テスト：次はすべて実行して pass した。全テストは実行していない（ユーザー指示）。
+  - `tests/test_phase3.py`、`tests/test_llm_subscription.py`、`tests/test_audit_planning_scope.py`、`tests/test_gpu.py`：合わせて 103 passed
+  - `tests/test_phase5_e2e.py`：21 passed
+- ra の `/opt/research-autopilot` への反映はまだ行っていない。
+  - ra で `git pull --rebase` を実行すれば反映される。`c29897e` / `2b25049` / `c38c025` は patch-id が同じなので自動で落ちる。
+  - そのあと `uv sync --frozen --no-dev` と `systemctl --user restart ra-prefect-worker ra-discord-bot` を実行する。
+
 ## Git Branch / Commit
 
 - 作業ブランチ：`phase7/artifact-catalog`（main `2f662bc` から分岐）
@@ -777,7 +793,7 @@ Fake の E2E で確認したこと：
 
 ## Exact Next Actions
 
-0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
+0. `phase4/output-access` と Claude の一時エラーの再試行は main に統合し、push 済み（`a4590fe`）。次は ra で `cd /opt/research-autopilot && git pull --rebase && uv sync --frozen --no-dev` を実行し、worker と bot を再起動する。`config/research_repos.toml` の `read_only_output_dirs` は Git の管理外なので、そのまま残す。
 0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。計画 v5 の研究スコープ・6 tasks・非 blocking 質問を人間が確認し、Discord の新しい承認依頼で判断する。承認後にだけ再開する。旧 INU-349 の Spec / コード修正は不要。引用検証の堅牢化は別途検討できるが、今回の生成ゲートには不要。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
