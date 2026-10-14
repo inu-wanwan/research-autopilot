@@ -221,8 +221,8 @@ def _execute(deps, run: WorkflowRun, pub: dict, req: ApprovalRequest) -> dict:
     pub.update(state="published", pr_url=pr_url, published_at=utcnow().isoformat())
     run.event("published", f"{p['branch']} @ {p['commit'][:12]}: {pr_url}")
     _notify(deps, run, EventKind.TASK_COMPLETED, f"published:{req.request_id}",
-            [f"Pull Request: {pr_url}", f"ブランチ: {p['branch']}（{p['commit'][:12]}）→ {p['base_branch']}",
-             "merge は GitHub で確認してから行ってください"])
+            ["Pull Request を作成しました（merge は GitHub で確認してから人が行う）",
+             f"ブランチ: {p['branch']} → {p['base_branch']}", f"Pull Request: {pr_url}", f"Commits: {p['commit'][:12]}"])
     return {"state": "published", "pr_url": pr_url}
 
 

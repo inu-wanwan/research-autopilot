@@ -364,8 +364,8 @@ def _tick_run(deps, run: WorkflowRun, out: dict) -> None:
         last = _last_control(store, run.task_id, run)
         # one message per Stop (a constant key would swallow every later pause of the same task)
         _milestone(deps, run.task_id, f"paused:{last.control_id if last else run.execution_run_id}",
-                   [f"Research paused by {last.actor if last else 'the user'}: no new work starts; running jobs "
-                    "finish.", _page_line(deps, run.task_id)],
+                   [f"研究を一時停止しました（操作: {last.actor if last else '利用者'}）。新しい作業は始めず、実行中のジョブは"
+                    "完了まで続きます。", _page_line(deps, run.task_id)],
                    kind=_ev().UNRECOVERABLE_ERROR, buttons=["resume", "cancel"], needs_human=True,
                    steps=STEPS["paused"])
         out["controls"].append(f"{run.task_id}: paused")
@@ -375,7 +375,7 @@ def _tick_run(deps, run: WorkflowRun, out: dict) -> None:
         _save(deps, run)
         last = _last_control(store, run.task_id, run)
         _milestone(deps, run.task_id, f"resumed:{last.control_id if last else run.execution_run_id}",
-                   ["Research resumed; authorization and budget re-checked."],
+                   ["研究を再開しました（承認範囲と予算を再確認済み）。"],
                    kind=_ev().PHASE_TRANSITION, buttons=None)
         out["controls"].append(f"{run.task_id}: resumed")
     if replan_stale_run(deps, run):
@@ -503,9 +503,9 @@ def cancel_research(deps, run: WorkflowRun, control: ResearchControl) -> None:
                            + (f"; not written: {'; '.join(refused)}" if refused else ""))
     _save_cancelled(deps, run)
     _milestone(deps, run.task_id, f"cancelled:{control.control_id}",
-               [f"Research cancelled by {control.actor}.",
-                f"Linear Canceled: {', '.join(linear_done) or '-'}",
-                *([f"Not written (do it by hand): {'; '.join(refused)}"] if refused else []),
+               [f"研究を打ち切りました（操作: {control.actor}）。",
+                f"Linear を Canceled にしたタスク: {', '.join(linear_done) or 'なし'}",
+                *([f"書き込めなかったもの（手で対応してください）: {'; '.join(refused)}"] if refused else []),
                 _page_line(deps, run.task_id)], kind=_ev().PHASE_TRANSITION, buttons=None)
 
 
@@ -938,10 +938,10 @@ def _evaluate(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization, cs: l
     run.event("research_evaluation", f"cycle {cur.number}: {d.action} ({d.rationale[:200]})")
     # keyed per evaluation: a re-evaluation (after a resume / a revision request) is reported again
     _milestone(deps, run.task_id, f"cycle-{cur.cycle_id}:{cur.evaluations}",
-               [f"Cycle {cur.number} evaluated: {d.action}", d.rationale[:400],
-                f"Results: {sum(1 for r in cur.results if r['validated'])}/{len(cur.results)} validated",
-                f"Budget used: {cur.budget_after.get('cpu_hours')} CPU-h, ${cur.budget_after.get('api_usd')}",
-                *([f"Next: {len(d.new_tasks)} task(s): " + ", ".join(t.title for t in d.new_tasks)[:300]]
+               [f"サイクル {cur.number} の評価: {_ACTION_JA.get(d.action, d.action)}", d.rationale[:400],
+                f"結果: 検証済み {sum(1 for r in cur.results if r['validated'])}/{len(cur.results)} 件",
+                f"費用: {cur.budget_after.get('cpu_hours')} CPU-h, ${cur.budget_after.get('api_usd')}",
+                *([f"次のサイクル: タスク {len(d.new_tasks)} 件（" + ", ".join(t.title for t in d.new_tasks)[:300] + "）"]
                   if d.action == "continue" else []),
                 f"Notion: {bundle.page.url if bundle.page else ''}"])
     _act(deps, run, bundle, auth, plan, cycles(store, run.task_id))
@@ -1037,7 +1037,7 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
             run.event("publish_request_failed", f"{type(exc).__name__}: {exc}"[:300])
         closed = _close_unused_children(deps, run, cs)
         _milestone(deps, run.task_id, f"done:{run.run_id}",
-                   [f"Research completed after {len(cs)} cycle(s)", reason[:600], f"Notes: {note_url}",
+                   [f"研究が完了しました（{len(cs)} サイクル）", f"結果: {reason[:600]}", f"Notes: {note_url}",
                     *([f"使われなかったタスク（Canceled）: {', '.join(closed)}"] if closed else []),
                     f"Task: {bundle.page.url if bundle.page else ''}"], kind=EventKind.TASK_COMPLETED, buttons=None)
     else:
@@ -1047,7 +1047,7 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         # a Resume restarts the same WorkflowRun under a new execution run: key on that, or every later stop is
         # deduplicated away and the human never gets a Resume button again
         _milestone(deps, run.task_id, f"stopped:{run.run_id}:{run.execution_run_id}",
-                   [f"Research stopped after {len(cs)} cycle(s): {reason[:500]}", f"Notes: {note_url}",
+                   [f"研究を止めました（{len(cs)} サイクル後）", f"理由: {reason[:500]}", f"Notes: {note_url}",
                     f"Task: {bundle.page.url if bundle.page else ''}", _budget_line(deps, run, auth)],
                    kind=EventKind.BUDGET_EXCEEDED if budget else EventKind.UNRECOVERABLE_ERROR,
                    buttons=["resume", "cancel"], needs_human=True, steps=stop_steps(why, auth))
@@ -1056,43 +1056,44 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
 # Numbered "what to do until it resumes" per stop reason (docs/phase_specs/ux_policy.md 1.5).  Saving the Notion page
 # re-plans automatically (an edit makes the approved scope stale); Resume is the fallback and the way to continue
 # without an edit; Cancel ends the research and cancels its unfinished tasks.
-_SAVE = "Save the page: RA re-plans within a few minutes and sends the new scope for approval here; approve it."
-_RESUME = "If no new approval request arrives, press Resume."
-_NUMBERS = ("Write every number (limit, range, count) in the text itself, e.g. 'Compute budget: 2 CPU-hours in "
-            "total; API budget 10 USD': RA never fills in numbers.")
+_SAVE = "ページを保存する（数分以内に RA が計画し直し、新しいスコープの承認依頼がここに届くので承認する）"
+_RESUME = "新しい承認依頼が届かない場合は Resume を押す。"
+_NUMBERS = ("数値（上限・範囲・件数）は本文にそのまま書く（例: 'Compute budget: 2 CPU-hours in total; API budget 10 USD'）。"
+            "RA は数値を補わない")
 STEPS = {
-    "paused": ["Running jobs finish; no new task starts while the research is paused.",
-               "Press Resume to continue (the approved scope and the budget are checked again).",
-               "Press Cancel to end the research; its unfinished tasks are set to Canceled in Linear."],
-    "budget": ["Open the research task in Notion and, in the section 'Budget / Authorization', raise the limit "
-               "that was used up.", _NUMBERS, _SAVE, _RESUME + " Cancel ends the research."],
-    "max_cycles": ["Read the results in Notes (link above).",
-                   "To allow more cycles, write the new limit in the section 'Autonomy' of the Notion task "
-                   "(e.g. 'at most 8 cycles').", _SAVE,
-                   "Resume re-evaluates the results within the current limits; Cancel ends the research."],
-    "no_progress": ["Read the results in Notes (link above): the last cycles added no new information.",
-                    "If the objective or the conditions need to change, edit 'Research Objective' in Notion. " + _SAVE,
-                    "Press Resume to continue anyway (the no-progress count starts again), or Cancel."],
-    "failure": ["Read why the task(s) failed (Notes, errors channel).",
-                "If the cause is in the specification, fix the Notion task. " + _SAVE,
-                "Press Resume to retry the failed tasks (within the approved retry limit), or Cancel."],
-    "authorization": ["The approved research scope is no longer valid (revoked, expired or changed).",
-                      "Press Resume: RA drafts a new plan version and asks for approval here.",
-                      "Or press Cancel to end the research."],
-    "scope_rejected": ["The research keeps the approved scope; the proposed change is not applied.",
-                       "Press Resume to let RA evaluate again within the approved scope (it may propose another "
-                       "change), or edit the Notion task to re-plan.", "Press Cancel to end the research."],
-    "scope_expired": ["The scope change request expired without a decision.",
-                      "Press Resume: RA evaluates again and re-proposes the change (or continues in scope).",
-                      "Press Cancel to end the research."],
-    "limits": ["The next step would leave the approved scope or limits (see the reason above).",
-               "To widen the scope, edit the Notion task (conditions in 'Research Objective', limits in "
-               "'Budget / Authorization' / 'Autonomy'). " + _NUMBERS, _SAVE,
-               "Or press Resume to let RA evaluate again within the approved scope, or Cancel."],
-    "evaluation": ["Read the stop reason above and the results in Notes.",
-                   "If the specification must change, edit the Notion task. " + _SAVE,
-                   "Press Resume to let RA evaluate again and continue, or Cancel to end the research."],
+    "paused": ["一時停止中は新しいタスクを始めない（実行中のジョブは完了まで続く）",
+               "続けるなら Resume を押す（承認範囲と予算を再確認してから再開）",
+               "やめるなら Cancel を押す（未完了のタスクは Linear で Canceled になる）"],
+    "budget": ["Notion の研究タスクの節 'Budget / Authorization' で、使い切った上限を引き上げる",
+               _NUMBERS, _SAVE, _RESUME + "Cancel で打ち切り"],
+    "max_cycles": ["Notes（上のリンク）で結果を確認する",
+                   "サイクルを増やすなら Notion タスクの節 'Autonomy' に新しい上限を書く（例: 'at most 8 cycles'）",
+                   _SAVE, "Resume = 今の上限のまま結果を評価し直す / Cancel = 打ち切り"],
+    "no_progress": ["Notes（上のリンク）で結果を確認する（直近のサイクルで新しい情報が得られなかった）",
+                    "目的や条件を変えるなら Notion の 'Research Objective' を編集する。" + _SAVE,
+                    "それでも続けるなら Resume（進展なしの回数は数え直し）、やめるなら Cancel"],
+    "failure": ["タスクが失敗した理由を確認する（Notes、errors チャンネル）",
+                "原因が仕様にあるなら Notion のタスクを直す。" + _SAVE,
+                "Resume = 失敗したタスクを再試行（承認された再試行回数の範囲内）/ Cancel = 打ち切り"],
+    "authorization": ["承認済みの研究スコープが無効になった（取り消し・失効・変更）",
+                      "Resume を押すと RA が計画の新しい版を作り、ここで承認を依頼する",
+                      "やめるなら Cancel を押す"],
+    "scope_rejected": ["承認済みのスコープのまま続ける（提案された変更は適用しない）",
+                       "Resume = 承認済みの範囲で評価し直す（別の変更を提案することがある）。計画し直すなら Notion の"
+                       "タスクを編集する", "やめるなら Cancel を押す"],
+    "scope_expired": ["スコープ変更の依頼が判断されないまま失効した",
+                      "Resume = RA が評価し直し、変更を再提案する（または範囲内で続ける）",
+                      "やめるなら Cancel を押す"],
+    "limits": ["次の手順が承認済みのスコープ・上限を超える（上の［理由］を参照）",
+               "範囲を広げるなら Notion のタスクを編集する（条件は 'Research Objective'、上限は "
+               "'Budget / Authorization' / 'Autonomy'）。" + _NUMBERS, _SAVE,
+               "または Resume = 承認済みの範囲で評価し直す / Cancel = 打ち切り"],
+    "evaluation": ["上の［理由］と Notes の結果を確認する",
+                   "仕様を変えるなら Notion のタスクを編集する。" + _SAVE,
+                   "Resume = 評価し直して続ける / Cancel = 打ち切り"],
 }
+
+_ACTION_JA = {"continue": "継続", "complete": "完了", "stop": "停止", "scope_change": "スコープ変更を提案"}
 
 
 def stop_steps(why: str, auth: ResearchAuthorization | None = None) -> list[str]:
@@ -1100,7 +1101,7 @@ def stop_steps(why: str, auth: ResearchAuthorization | None = None) -> list[str]
     if why == "failure" and auth is not None:
         n = ((auth.scope or {}).get("autonomy") or {}).get("max_retries_per_task")
         if n is not None:
-            steps[2] = steps[2].replace("approved retry limit", f"approved retry limit of {n}")
+            steps[2] = steps[2].replace("承認された再試行回数", f"承認された再試行回数 {n} 回")
     return steps
 
 
@@ -1108,9 +1109,9 @@ def _budget_line(deps, run: WorkflowRun, auth: ResearchAuthorization | None) -> 
     try:
         u = usage(deps, run.task_id)
         b = BudgetItem.model_validate((auth.scope or {}).get("budget") or {}) if auth else BudgetItem()
-        cpu = "no limit" if b.cpu_hours is None else f"{b.cpu_hours:g}"
-        api = "no limit" if b.api_usd is None else f"${b.api_usd:g}"
-        return f"Budget used: {u.cpu_hours:.3f} / {cpu} CPU-h, ${u.api_usd:.2f} / {api}"
+        cpu = "上限なし" if b.cpu_hours is None else f"{b.cpu_hours:g}"
+        api = "上限なし" if b.api_usd is None else f"${b.api_usd:g}"
+        return f"費用: 計算 {u.cpu_hours:.3f} / {cpu} CPU-h、API ${u.api_usd:.2f} / {api}"
     except Exception:  # noqa: BLE001 - informational
         return ""
 

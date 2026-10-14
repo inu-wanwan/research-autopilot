@@ -121,8 +121,9 @@ def plan_research(deps, run: WorkflowRun, bundle, *, revision_comment: str = "")
         run.stage = WorkflowStage.BLOCKED
         run.blocked_reason = (f"research plan v{plan.version} {plan.status.value}: " + "; ".join(why))[:900]
         _notify(deps, run, "research-needs-input", plan,
-                [f"Plan v{plan.version} cannot be approved yet ({plan.status.value})", *why[:6],
-                 f"Task: {bundle.page.url if bundle.page else ''}", f"Plan: {plan.plan_page_url or ''}"],
+                [f"研究計画 v{plan.version} はまだ承認できません（{_PLAN_STATUS_JA.get(plan.status.value, plan.status.value)}）",
+                 *[f"理由: {x}" for x in why[:6]],
+                 f"Task: {bundle.page.url if bundle.page else ''}", f"Notion plan: {plan.plan_page_url or ''}"],
                 controls=True, steps=input_steps(plan))
         return plan
     req = request_approval(deps, bundle, plan)
@@ -214,7 +215,7 @@ def apply_decision(deps, req: ApprovalRequest, approval, issue, run: WorkflowRun
                                   f"(authorization v{auth.version})")
             deps.ops.set_state(issue, "In Progress", f"research scope v{plan.version} approved ({req.request_id[:8]})")
         _notify(deps, run, f"research-approved:{plan.plan_id}", plan,
-                [f"Research scope v{plan.version} approved by {approval.actor}", f"Notion: {plan.plan_page_url or ''}"],
+                [f"研究スコープ v{plan.version} が承認されました（{approval.actor}）", f"Notion plan: {plan.plan_page_url or ''}"],
                 milestone=True)
     elif approval.decision == "reject" and plan.kind == "scope_change":
         # a rejected scope change keeps the approved scope: the research step stops with a report and Resume / Cancel
@@ -452,21 +453,24 @@ def section_for(field: str) -> str:
     return _SECTION.get(field.split(".", 1)[0], "Research Objective")
 
 
+_PLAN_STATUS_JA = {"needs_input": "入力が必要", "invalid": "計画が不正"}
+
+
 def input_steps(plan: ResearchPlan) -> list[str]:
     """Numbered steps until a needs-input / invalid plan resumes: what to write in which Notion section."""
     if plan.status is PlanStatus.NEEDS_INPUT:
         by_section: dict[str, list[str]] = {}
         for q in plan.scope.blocking():
             by_section.setdefault(section_for(q.field), []).append(q.question)
-        steps = [f"In the Notion section '{sec}' of the research task, answer: " + " / ".join(qs)[:400]
+        steps = [f"Notion の研究タスクの節 '{sec}' に答えを書く: " + " / ".join(qs)[:400]
                  for sec, qs in by_section.items()]
     else:
-        steps = [f"Fix the Notion research task so that this is resolved: {p[:300]}" for p in plan.validation_problems[:3]]
+        steps = [f"次の点が解消するよう Notion の研究タスクを直す: {p[:300]}" for p in plan.validation_problems[:3]]
     return [*steps,
-            "Write every number (range, count, budget limit) in the text itself, e.g. 'bond length R between 0.5 and "
-            "3.0 Angstrom' or 'Compute budget: 1 CPU-hour in total; API budget 5 USD': RA never fills in numbers.",
-            "Save the page: RA re-plans automatically within a few minutes and sends the plan for approval here.",
-            "If nothing arrives, press Resume. Cancel ends the research."]
+            "数値（範囲・件数・予算の上限）は本文にそのまま書く（例: 'bond length R between 0.5 and 3.0 Angstrom'、"
+            "'Compute budget: 1 CPU-hour in total; API budget 5 USD'）。RA は数値を補わない",
+            "ページを保存する（数分以内に RA が自動で計画し直し、承認依頼がここに届く）",
+            "届かない場合は Resume を押す。Cancel で打ち切り"]
 
 
 NO_LIMIT = 1e9  # policy Budget has no "unlimited": a limit the approved scope does not state

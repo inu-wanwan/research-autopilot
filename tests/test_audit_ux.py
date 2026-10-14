@@ -68,10 +68,10 @@ def test_embed_has_numbered_steps_and_links():
                               details=["止めました", "Notion: https://www.notion.so/abc", "Linear: https://linear.app/x/issue/INU-1"],
                               steps=["Notion の仕様を直す", "Run Autopilot を押す"])
     payload = embed_payload(event)
-    fields = {f["name"]: f["value"] for f in payload["fields"]}
-    assert fields["次にやること"] == "1. Notion の仕様を直す\n2. Run Autopilot を押す"
-    assert "https://www.notion.so/abc" in fields["リンク"] and "INU-1" in fields["リンク"]
-    assert "notion.so" not in payload["description"]
+    desc = payload["description"]
+    assert "**[次にやること]**\n1. Notion の仕様を直す\n2. Run Autopilot を押す" in desc
+    assert "**[リンク]** [Notion](https://www.notion.so/abc) / [Linear](https://linear.app/x/issue/INU-1)" in desc
+    assert desc.index("[次にやること]") < desc.index("[リンク]")  # links last, after the steps
     assert "1. Notion の仕様を直す" in event.body()  # ntfy / logging get the steps too
 
 

@@ -380,7 +380,7 @@ def test_resume_on_a_blocked_research_run_restarts_planning(tmp_path):
     assert sent and all(e.get("control_task_id") == "INU-900" and e["control_actions"] == ["resume", "cancel"]
                         and e["needs_human"] for e in sent)
     assert any("Budget / Authorization" in x for x in sent[0]["steps"])
-    assert any("re-plans automatically" in x for x in sent[0]["steps"])
+    assert any("自動で計画し直し" in x for x in sent[0]["steps"])
     _edit_spec(notion, budget=RESEARCH_SECTIONS["budget"])
     orchestration.request_control(deps.store, "INU-900", "resume", "discord:1001", "discord")
     poll(deps)
