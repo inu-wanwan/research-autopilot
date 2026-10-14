@@ -45,6 +45,15 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - ユーザー指示で Notion 親仕様の主指標文を「81 条件の mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」へ修正。既存の 81 条件・指標・閾値は変更なし。Eagle RA の TaskSpec に新文が入り、計画 v4 から spec hash が変わったことを確認。次の計画版生成と blocking 解消は未確認。
 - 計画 v5（https://www.notion.so/3f969893cf8f81f68de3d64574e6782a、hash `6ca4fa6cf512`）は `pending_approval`、6 tasks、`scope.autonomy` は 10/5/3/3、`primary_metric` は `stated`、blocking open question 0 件。非 blocking の BOCS 実装詳細・targets 引用についての質問は残る。承認は旧 v1 のままで、INU-344 は未再開。今回の仕様文修正だけで新計画の生成ゲートは通った。
 
+### INU-344 の稼働状況と予算停止の修正（2026-10-15 04:00 JST / Antigravity）
+
+- Eagle の実測（読み取りのみ）：v5 は 01:54 に Discord で承認済み（承認 v2）。サイクル 5〜7 が進んだが、03:24 に INU-344 が `research stopped: 4 paid call(s) without a known price; budget cannot be verified` で blocked。ra の 3 サービスは active。サイクル 7 の INU-364 は予算承認待ち（request `776c177e`、未判断）。
+- 停止の背景：Codex 契約は 02:29 から上限（5:58 回復）、Claude 契約は 03:24 に session limit（7:20 回復）、OpenAI API は `credit_balance_exhausted`。
+- 原因（コード）：`autopilot/budget.py` の `chain_usage` が、plan run の合計費用が不明のとき、失敗して課金されていない呼び出しも「価格不明の課金呼び出し」に数えていた（INU-364 の reviewer 3 回の失敗）。ブランチ `phase10/fix-budget-unknown-calls` で、価格不明かつ `error` なしの呼び出しだけ数えるよう修正（Phase 4 の `llm_usage` と同じ規則）。`tests/test_budget_unknown_calls.py` を追加。`uv run pytest tests/test_budget_unknown_calls.py tests/test_phase5_units.py tests/test_phase8_literature.py` で 45 passed（全テストは未実行）。Eagle には未反映（`/opt/research-autopilot` は `deploy/output-access` のまま）。INU-364 の plan run は `transient_failure` のまま。
+- 未修正の不具合：INU-363（T1_diag）は Phase 4 が `unknown dependency ['INU-358']` で実験前に blocked。仕様の `resources.job_dependencies` が前サイクルのタスク ID を指しており、現在の run の `m.specs` に無い（`experiments/orchestrator.py` の依存検査）。診断は未実行。修正方針は未決定（仕様の依存の解決方法は設計判断）。
+- INU-358 は 81 条件中 9 pass / 72 fail（k=3..10、`reference_geometry_metadata_inconsistent`）。どの check で食い違うかは未調査。
+- Gemini を fallback に加える件は、ユーザー判断で後日。
+
 ## Git Branch / Commit
 
 - 作業ブランチ：`phase7/artifact-catalog`（main `2f662bc` から分岐）

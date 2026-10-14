@@ -25,7 +25,9 @@ def chain_usage(store: Store, runs: list[dict]) -> Usage:
             rec = store.get_run(run["plan_run_id"])
             if rec and rec.cost:
                 if rec.cost.estimated_cost_usd is None and rec.llm_calls:
-                    u.unknown_api_cost_calls += len(rec.llm_calls)
+                    # Failed calls (e.g. API credit exhausted) consumed nothing, so they are not "paid calls
+                    # without a known price" (same rule as the Phase 4 llm_usage below).
+                    u.unknown_api_cost_calls += sum(1 for c in rec.llm_calls if c.estimated_cost_usd is None and not c.error)
                     u.api_usd += rec.literature_cost_usd + rec.external_cost_usd  # Phase 8/9 costs are known even then
                 else:
                     u.api_usd += rec.cost.estimated_cost_usd or 0.0
