@@ -27,12 +27,18 @@ QUOTA_PATTERNS = [r"usage limit", r"quota", r"insufficient_quota", r"out of cred
 RATE_PATTERNS = [r"rate.?limit", r"\b429\b", r"too many requests", r"overloaded", r"\b529\b"]
 TRANSIENT_PATTERNS = [r"\b50[0234]\b", r"timed? ?out", r"connection (reset|refused|error)", r"network error",
                       r"temporarily unavailable", r"stream disconnected"]
+# Claude Code's OAuth refresh race (several claude processes refreshing at once; Eagle 2026-10-15): transient, retried
+# after a short wait instead of moving to the next backend.  Checked before the auth patterns.
+REFRESH_PATTERNS = [r"refresh(ing)? (the )?oauth token", r"another claude code process"]
+TRANSIENT_RETRY_WAIT_SECONDS = 20.0
 AUTH_PATTERNS = [r"not logged in", r"unauthori[sz]ed", r"\b401\b", r"authentication", r"login required",
                  r"invalid api key"]
 
 
 def classify_error_text(text: str) -> ResultStatus | None:
     t = text.lower()
+    if any(re.search(p, t) for p in REFRESH_PATTERNS):
+        return "transient_error"
     for status, pats in (("auth_error", AUTH_PATTERNS), ("quota_exhausted", QUOTA_PATTERNS),
                          ("rate_limited", RATE_PATTERNS), ("transient_error", TRANSIENT_PATTERNS)):
         if any(re.search(p, t) for p in pats):

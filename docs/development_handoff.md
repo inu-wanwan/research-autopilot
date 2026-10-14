@@ -61,14 +61,32 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - ユーザー指示で Notion 親仕様の主指標文を「81 条件の mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」へ修正。既存の 81 条件・指標・閾値は変更なし。Eagle RA の TaskSpec に新文が入り、計画 v4 から spec hash が変わったことを確認。次の計画版生成と blocking 解消は未確認。
 - 計画 v5（https://www.notion.so/3f969893cf8f81f68de3d64574e6782a、hash `6ca4fa6cf512`）は `pending_approval`、6 tasks、`scope.autonomy` は 10/5/3/3、`primary_metric` は `stated`、blocking open question 0 件。非 blocking の BOCS 実装詳細・targets 引用についての質問は残る。承認は旧 v1 のままで、INU-344 は未再開。今回の仕様文修正だけで新計画の生成ゲートは通った。
 
-### INU-344 の稼働状況と予算停止の修正（2026-10-15 04:00 JST / Antigravity）
+### main 統合と Claude 一時エラーの再試行（2026-10-15 / Claude Code）
+
+- ユーザーの指示「両方やって push までして」に従って、次の 2 つを行った。
+  - `phase4/output-access`（`7c5207d` と docs の commit）を main に fast-forward した。
+  - `phase3/claude-transient-retry` の `31fc743` を merge commit `a4590fe` で main に取り込んだ。
+  - origin への push は済み（`588fd4d..a4590fe`）。
+- `31fc743` の変更内容：
+  - 「Failed to refresh OAuth token: another Claude Code process is refreshing it」を auth エラーではなく `transient_error` に分類するようにした。
+  - 一時エラーのときは `Phase3Settings.transient_retry_wait_seconds`（20 秒）待ってから、同じ担当で 1 回だけ再試行する。対象は Implementer、Reviewer、`llm_subscription._try_claude`。
+- テスト：次はすべて実行して pass した。全テストは実行していない（ユーザー指示）。
+  - `tests/test_phase3.py`、`tests/test_llm_subscription.py`、`tests/test_audit_planning_scope.py`、`tests/test_gpu.py`：合わせて 103 passed
+  - `tests/test_phase5_e2e.py`：21 passed
+- ra の `/opt/research-autopilot` への反映はまだ行っていない。
+  - ra で `git pull --rebase` を実行すれば反映される。`c29897e` / `2b25049` / `c38c025` は patch-id が同じなので自動で落ちる。
+  - そのあと `uv sync --frozen --no-dev` と `systemctl --user restart ra-prefect-worker ra-discord-bot` を実行する。
+
+### INU-344 の稼働状況と予算停止・依存関係の修正（2026-10-15 04:20 JST / Antigravity）
 
 - Eagle の実測（読み取りのみ）：v5 は 01:54 に Discord で承認済み（承認 v2）。サイクル 5〜7 が進んだが、03:24 に INU-344 が `research stopped: 4 paid call(s) without a known price; budget cannot be verified` で blocked。ra の 3 サービスは active。サイクル 7 の INU-364 は予算承認待ち（request `776c177e`、未判断）。
 - 停止の背景：Codex 契約は 02:29 から上限（5:58 回復）、Claude 契約は 03:24 に session limit（7:20 回復）、OpenAI API は `credit_balance_exhausted`。
-- 原因（コード）：`autopilot/budget.py` の `chain_usage` が、plan run の合計費用が不明のとき、失敗して課金されていない呼び出しも「価格不明の課金呼び出し」に数えていた（INU-364 の reviewer 3 回の失敗）。ブランチ `phase10/fix-budget-unknown-calls` で、価格不明かつ `error` なしの呼び出しだけ数えるよう修正（Phase 4 の `llm_usage` と同じ規則）。`tests/test_budget_unknown_calls.py` を追加。`uv run pytest tests/test_budget_unknown_calls.py tests/test_phase5_units.py tests/test_phase8_literature.py` で 45 passed（全テストは未実行）。Eagle には未反映（`/opt/research-autopilot` は `deploy/output-access` のまま）。INU-364 の plan run は `transient_failure` のまま。
-- INU-363（T1_diag）の `unknown dependency ['INU-358']`：仕様の `resources.job_dependencies` に前サイクルのタスク ID が入っていたため Phase 4 が実験前に blocked にしていた（診断は未実行）。ユーザー決定（案 C）で修正：`experiments/orchestrator.py` は、今の run の実験に無く、かつタスク ID の形（`[A-Z][A-Z0-9]*-\d+`）の依存を警告イベントにして無視する（タスク間の順序は DAG が保証）。それ以外の未知の実験名は従来どおり blocked。`implementation/prompts.py` に「job_dependencies は同じタスク内の実験 ID だけ」を追記。`tests/test_phase4.py` に 2 件追加。WSL の既存 venv で `PYTHONPATH=src ... pytest tests/test_phase4.py tests/test_phase3.py tests/test_budget_unknown_calls.py` が 107 passed。Windows の `uv run pytest`（同 3 ファイル）は `test_phase3.py` が POSIX 前提で 64 failed（`WinError` / `AttributeError`。今回の変更前との比較は未実施）。Eagle には未反映。INU-363 の Resume 後に通るかは未確認。
+- 原因（コード）：`autopilot/budget.py` の `chain_usage` が、plan run の合計費用が不明のとき、失敗して課金されていない呼び出しも「価格不明の課金呼び出し」に数えていた（INU-364 の reviewer 3 回の失敗）。ブランチ `phase10/fix-budget-unknown-calls` で、価格不明かつ `error` なしの呼び出しだけ数えるよう修正（Phase 4 の `llm_usage` と同じ規則）。`tests/test_budget_unknown_calls.py` を追加。
+- INU-363（T1_diag）の `unknown dependency ['INU-358']`：仕様の `resources.job_dependencies` に前サイクルのタスク ID が入っていたため Phase 4 が実験前に blocked にしていた（診断は未実行）。ユーザー決定（案 C）で修正：`experiments/orchestrator.py` は、今の run の実験に無く、かつタスク ID の形（`[A-Z][A-Z0-9]*-\d+`）の依存を警告イベントにして無視する（タスク間の順序は DAG が保証）。それ以外の未知の実験名は従来どおり blocked。`implementation/prompts.py` に「job_dependencies は同じタスク内の実験 ID だけ」を追記。`tests/test_phase4.py` に 2 件追加。
+- テスト：WSL の既存 venv で `PYTHONPATH=src ... pytest tests/test_phase4.py tests/test_phase3.py tests/test_budget_unknown_calls.py` が 107 passed。
 - INU-358 は 81 条件中 9 pass / 72 fail（k=3..10、`reference_geometry_metadata_inconsistent`）。どの check で食い違うかは未調査。
 - Gemini を fallback に加える件は、ユーザー判断で後日。
+
 
 ## Git Branch / Commit
 
@@ -802,7 +820,7 @@ Fake の E2E で確認したこと：
 
 ## Exact Next Actions
 
-0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
+0. `phase4/output-access` と Claude の一時エラーの再試行は main に統合し、push 済み（`a4590fe`）。次は ra で `cd /opt/research-autopilot && git pull --rebase && uv sync --frozen --no-dev` を実行し、worker と bot を再起動する。`config/research_repos.toml` の `read_only_output_dirs` は Git の管理外なので、そのまま残す。
 0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。計画 v5 の研究スコープ・6 tasks・非 blocking 質問を人間が確認し、Discord の新しい承認依頼で判断する。承認後にだけ再開する。旧 INU-349 の Spec / コード修正は不要。引用検証の堅牢化は別途検討できるが、今回の生成ゲートには不要。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。

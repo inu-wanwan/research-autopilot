@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -182,6 +183,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
            on_event: Callable[[str], None] = lambda m: None,
            extra_checks: Callable[[], list[CheckResult]] | None = None,
            science_guard: Callable[[], list[str]] | None = None,
+           retry_wait_s: float = 0.0,
            extra_instructions: str = "", previous: ReviewOutcome | None = None) -> ReviewOutcome:
     det, diff = deterministic_report(task, repo, wt)
     if extra_checks is not None:
@@ -239,6 +241,10 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
                 cost_known = False
             else:
                 cost += result.cost_usd
+            if result.status == "transient_error" and attempt == 0:  # e.g. Claude's OAuth refresh race
+                on_event(f"reviewer {ch.backend}/{ch.model} transient error; retrying after {retry_wait_s:g}s")
+                time.sleep(retry_wait_s)
+                continue
             if result.status != "completed":
                 on_event(f"reviewer {ch.backend}/{ch.model} {result.status}: {result.error}")
                 break
