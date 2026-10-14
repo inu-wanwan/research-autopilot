@@ -73,7 +73,9 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - Windows の自動ログイン（2026-10-14）：一度は見送ったが、ユーザーが Sysinternals Autologon を設定した。
   - レジストリで `AutoAdminLogon=1` / `DefaultUserName=rixyt` を確認した。パスワードは LSA に保存され、平文はない。
   - エージェントが、ログオン時に画面をロックするタスク「Lock workstation at logon (Eagle autologon)」を登録した。
-  - 「Windows Hello サインインのみを許可」が ON（`DevicePasswordLessBuildVersion=2`）だと自動ログインは効かない。ユーザーがオフにする予定で、再起動での確認は未実施。
+  - 「Windows Hello サインインのみを許可」が ON（`DevicePasswordLessBuildVersion=2`）だと自動ログインは効かない。ユーザーがオフにし、Autologon のユーザー名を Microsoft アカウントのメールアドレスに直した。
+  - 2026-10-14 14:16 の再起動で確認した：人の操作なしでログインし、ロックのタスクが起動の 11 秒後に実行された。Docker Desktop・compose・ra の 3 サービス・tailnet（200）・ポーリング（14:21 に heartbeat）がすべて自動で戻った。
+    - DB より先に起動した ra-discord-bot と ra-watchdog は一度失敗したが、systemd の再起動で回復した。
   - 停止したときは、ユーザーが現地で復旧してもよい（電源を入れる → ログインすれば、全サービスが自動で戻ることを電源断で確認済み）。
   - Windows の電源設定は、AC 接続時のスリープ・休止状態とも「なし」（powercfg で確認した）。BIOS の通電時の自動起動は未設定（未確認）。
   - Eagle 自体が止まると、watchdog（Eagle 上で動いている）は通知できない。tailnet の UI に到達できるかで判断する。
