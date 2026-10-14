@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 01:30 JST / Codex
+2026-10-15 01:34 JST / Codex
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
@@ -40,6 +40,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 旧 INU-349 の監査スクリプトを `/tmp/ra-inu344-preflight-20261015` 出力で限定実行：81/81 ok、missing 0、inconsistent 0、input files 55,320、changed inputs 0、cache_unchanged true。出力の exact-degeneracy group 675件すべてに `group_id`、`mo_indices`、`energy_tolerance` が存在するため、旧 units fail は入力欠損の副作用と判明し、Spec / コード修正は不要。実 Docker container でも cache 55,160 JSON と reference 81 JSON を `:ro` mount から読み取れた。INU-344 はまだ blocked、resume は未実施。
 - Resume 前の追加確認：INU-344 の承認済み `authorization.scope.autonomy` は `max_cycles=10`、`max_retries_per_task=2`、`no_progress_cycles=2` だが、保存された引用文は「再試行は 1 タスクあたり最大 3 回」「新しい情報が得られないサイクルが 3 回続いたら停止」。数値が不一致。旧計画 v1 の open question にも autonomy の引用と構造化値の不整合が記録されている。どちらを正とするか研究者判断が必要。INU-351 の plan run `d03f2ce8` は 2 回の replan 後も reviewer `revision_required`：最後の指摘は同一・監査上等価な複数 reference/cache pair まで曖昧拒否している点。コード上、停止後の単純 Resume は許された再試行があれば最後の blocked child DAG を同サイクルで再試行する。一方、Notion 親仕様の編集は spec hash 変更後に新しい計画版と承認を要求し、既存サイクル履歴は残る。INU-344 は未再開。
 - 2026-10-15、ユーザーは再試行・無進展停止の上限を 3/3 と決定。Notion の INU-344 親仕様「自律実行の裁量」に `max_cycles = 10、max_new_tasks_per_cycle = 5、max_retries_per_task = 3、no_progress_cycles = 3` を実行用の構造化上限として追記した。Eagle の RA が取得する TaskSpec の `autonomy` に追記が含まれることと、現行計画 v2 から spec hash が変わったことを確認。現行計画 v2 は `needs_input`、承認は v1 のまま。追記後の計画版生成・構造化上限 3/3・新規承認は未確認。INU-344 の手動 Resume は未実施。
+- 01:31 JST に計画 v3 が生成され `pending_approval`。ただし `scope.autonomy` は 10/5/2/2 のままで、引用が途中で切れたため 3/3 が RA 既定値に戻った。v3 は承認しない。親仕様に「研究サイクル10回、新規タスク5件/サイクル、再試行3回/タスク、無進展3サイクルで停止」を一文で追加し、次の自動再計画待ち。元の数値は変更していない。INU-344 は未再開。
 
 ## Git Branch / Commit
 
@@ -761,7 +762,7 @@ Fake の E2E で確認したこと：
 
 ## Known Issues / Blockers
 
-0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。承認済み v1 の構造化値は 2/2 のままで、追記後の計画版・承認を待つ。INU-351 の計画承認失敗は履歴として残り、INU-344 は resume 前で blocked。
+0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。計画 v3 は 2/2 のまま `pending_approval` になったため承認不可。簡潔な上限文を追記して次の計画版を待つ。INU-351 の計画承認失敗は履歴として残り、INU-344 は resume 前で blocked。
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
 2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
