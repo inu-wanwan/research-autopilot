@@ -189,6 +189,10 @@ def _try_claude(instructions: str, prompt: str, output_type: type[BaseModel], ti
         except SubscriptionCallError as exc:
             if exc.status == "invalid_output" and attempt == 1:
                 continue
+            if exc.status == "transient_error" and attempt == 1:  # e.g. the OAuth refresh race
+                from research_autopilot.implementation.backends.base import TRANSIENT_RETRY_WAIT_SECONDS
+                time.sleep(TRANSIENT_RETRY_WAIT_SECONDS)
+                continue
             if exc.status in _STICKY:
                 _claude["skip_until"] = time.monotonic() + COOLDOWN_SECONDS
             log.warning("claude subscription call failed (%s: %s)", exc.status, exc.detail[:200])

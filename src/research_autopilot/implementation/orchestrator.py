@@ -10,6 +10,7 @@ with ``implement(..., resume_run_id=...)`` from Git + manifest. An interrupted
 process is recorded as ``interrupted`` -- never as success or failure.
 """
 
+import time
 import json
 import os
 from dataclasses import dataclass, field
@@ -541,7 +542,9 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
             raise _Stop(RunState.BLOCKED, "budget_exceeded", f"{choice.backend} hit its budget cap", "budget")
         if result.status == "transient_error" and not transient_retry_used:
             transient_retry_used = True
-            m.event("retry", f"{choice.backend} transient error; retrying once")
+            m.event("retry", f"{choice.backend} transient error; retrying once after "
+                              f"{deps.settings.transient_retry_wait_seconds:g}s")
+            time.sleep(deps.settings.transient_retry_wait_seconds)
             continue
         if result.status in FALLBACK_STATUSES:
             _switch_to_fallback(deps, m, attempt, result, wt, task, run_dir)
@@ -602,7 +605,8 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
                      on_event=lambda msg: _progress(deps, m, run_dir, msg, notify=False),
                      extra_checks=lambda: [_experiment_check(task, wt)],
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,
-                     extra_instructions=_repair_review_note(rctx) if rctx else "")
+                     extra_instructions=_repair_review_note(rctx) if rctx else "",
+                     retry_wait_s=s.transient_retry_wait_seconds)
     _account(m, outcome.reviewer_usage, outcome.reviewer_cost_usd if outcome.llm or outcome.reviewer_usage.total else 0.0)
     attempt.review = outcome
     m.changed_files = outcome.deterministic.changed_files

@@ -19,6 +19,8 @@ DEFAULT_EFFORT: dict[Tier, str] = {"lightweight": "low", "standard": "medium", "
 
 
 class Phase3Settings(BaseModel):
+    # wait before retrying the same backend / reviewer after a transient error (e.g. Claude's OAuth refresh race)
+    transient_retry_wait_seconds: float = 20.0
     repos_file: Path = Path("config/research_repos.toml")
     worktrees_dir: Path = Path.home() / ".research-autopilot" / "worktrees"
     primary_backend: BackendName = "codex"

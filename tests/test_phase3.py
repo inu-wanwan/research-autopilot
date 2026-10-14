@@ -539,6 +539,9 @@ def test_danger_scan():
     ("You've hit your usage limit. Upgrade to Pro", "quota_exhausted"),
     ("429 Too Many Requests", "rate_limited"),
     ("stream disconnected before completion", "transient_error"),
+    # Claude Code's OAuth refresh race (Eagle 2026-10-15): transient, not an auth failure
+    ("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. "
+     "This is usually transient; retry", "transient_error"),
     ("Not logged in. Run codex login", "auth_error"),
     ("assertion failed in test", None),
 ])
@@ -571,3 +574,14 @@ def test_diff_includes_new_files_when_a_noise_dir_is_gitignored(tmp_path):
     wt = WorktreeManager(SimpleNamespace(path=str(repo), id="r", base_branch="main"), tmp_path / "wts")
     d = wt.diff(repo, base)
     assert "b/new.py" in d and "b/.ruff_cache" not in d
+
+
+def test_a_transient_reviewer_error_retries_the_same_reviewer(tmp_path):
+    """Eagle 2026-10-15: one transient Claude failure skipped to an exhausted fallback and blocked the review."""
+    from phase3_fakes import FakeReviewer, code_review
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [GOOD])
+    deps.reviewers["codex"] = FakeReviewer("codex", ["transient_error", code_review("pass")])
+    deps.reviewers["claude"] = FakeReviewer("claude", [])  # must not be needed
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.state is RunState.COMPLETED
+    assert any("transient error; retrying" in e.message for e in m.events)
