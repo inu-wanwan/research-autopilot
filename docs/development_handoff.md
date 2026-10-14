@@ -41,6 +41,25 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Completed Work
 
+### Eagle 稼働開始（2026-10-14 / Claude Code）
+
+- 人間：H5 を ⑥ まで完了した。
+  - systemd --user の ra-prefect-worker / ra-discord-bot / ra-watchdog が動いている。
+  - Mac 側の bot / poller は止めてあるとユーザーから回答あり。
+  - 研究リポジトリのテストは、コンテナで pass したとユーザーから回答あり。
+- エージェント：A2 を実施した。
+  - automation `crash-zombie-flow-runs` を登録した。
+  - `prefect deploy --all` で 11 deployment を登録した（version `ea6fd85` ＝ ra の `/opt/research-autopilot` の HEAD）。
+  - `smoke-success/manual` を `eagle-host` worker が Completed で実行した。
+  - `research-agent discord check` は OK（4 チャンネル、投稿なし）。
+- 判明して直したこと：
+  - `.wslconfig` を反映した `wsl --shutdown` のあと、Docker Desktop のポート中継が古いエンジンにつながったままになり、4200 / 5432 に届かなくなった。Docker Desktop の完全再起動で解消した（手順書に追記）。
+  - host worker の unit に `PREFECT_FLOWS_HEARTBEAT_FREQUENCY=180` が無く、zombie 検出が働かない状態だった。unit を修正した（`fb5eb6d`、未 push）。ra 側は `.env` への追記か、unit の再コピーが必要。
+- Discord メッセージを日本語の見出し形式に変えた（ユーザー依頼、ブランチ `phase5/discord-readability`、別エージェント）。
+  - 本体は `notifications/layout.py`。ID はフッターの「参照」行に移した。routing・ボタン・dedupe は変えていない。
+  - 実際の Discord での表示は未確認。
+  - 承認依頼そのものの `what_changes` などの英語は残っている（承認記録や Linear にも使われるため）。
+
 ### GPU（2026-10-14 / Claude Code、ユーザー決定）
 
 - ユーザー決定：ML の学習は uv（ホストで直接）で動かす。Phase 9 の外部コードも GPU で動かせるようにする。
