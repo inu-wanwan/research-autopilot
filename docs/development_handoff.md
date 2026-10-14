@@ -26,7 +26,14 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-13 05:xx JST / Claude Code
+2026-10-15 00:45 JST / Codex
+
+### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
+
+- Eagle 実測：`ra` の worker / Discord bot / watchdog は active、INU-344 は `research stopped` で blocked。研究 repo の `supervisor_6c0d1dd` に exhaustive result 81 JSON があるが、`main_6c0d1dd/cache/` は存在しない。Catalog の対応 81 artifact は全件 inconsistent（代表的な理由：cache 照合先ファイルなし）。`outputs/*` は Git 除外のため、Phase 4 の `git archive` checkout に自動では入らない。
+- ブランチ `phase4/output-access`（origin/main `588fd4d` から分岐）の `7c5207d`：登録済み repository の `read_only_output_dirs` に列挙した `outputs/` 直下ディレクトリを Phase 4 コンテナの checkout 内 `outputs/<name>` に `:ro` mount。未設定時は従来どおり。存在しない / 不正な名前は実行前に拒否し、GPU compose override と共存。Eagle の実設定・稼働コードには未適用。Catalog の verified 判定や停止済み INU-344 は変更しない。
+- 変更前の関連テスト2件は WSL 既存 venv で成功。変更後は `tests/test_audit_planning_scope.py` の関連3件と `tests/test_gpu.py` の関連2件が成功（いずれも `PYTHONPATH=src /home/rixyt/workspace/ResearchAutopilot/.venv/bin/python -m pytest -q ... -k ...`）。全テストはユーザー指示で実行していない。Windows `uv run pytest -q` は sandbox の uv cache 書き込み拒否でテスト開始前に失敗した。
+- 未検証：Eagle の rootless Docker で実際に nested `:ro` mount が成功するか、Mac 側に不足 cache の完全な原本が残っているか。
 
 ## Git Branch / Commit
 
@@ -748,6 +755,7 @@ Fake の E2E で確認したこと：
 
 ## Known Issues / Blockers
 
+0. Eagle / INU-344：Phase 4 cache `outputs/phase4_orbital_diagnostics/main_6c0d1dd/cache/` が欠損。reference 81件はあるが Catalog は 81件 inconsistent。Phase 4 checkout への read-only 経路は `phase4/output-access` で実装済み・Eagle 未適用。INU-349 の単位宣言不一致、INU-345/350 の quota / wall-time、INU-351 の計画承認失敗は別問題として残る。
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
 2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
@@ -759,6 +767,8 @@ Fake の E2E で確認したこと：
 
 ## Exact Next Actions
 
+0. `phase4/output-access` の差分と対象テストを確認後、Eagle 適用の指示があれば本番 deploy 手順に従い稼働コードを更新する。`/opt/research-autopilot/config/research_repos.toml` の `[repositories.active-space-research]` に `read_only_output_dirs = ["phase4_orbital_diagnostics"]` を追加し、実行中 job がない状態で worker を再起動、rootless Docker 上で既存 reference の read-only 読み出しと書き込み拒否を確認する。現時点でこの操作は未実施。
+0a. 元の `main_6c0d1dd/cache/` を原本から Eagle に read-only で配置し、Catalog scan / resolve で 81件 verified を確認する。旧 INU-349 の ExperimentSpec は単位宣言不一致なので、監査再実行前に別途修復が必要。INU-344 の再開は研究者判断後に行う。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
