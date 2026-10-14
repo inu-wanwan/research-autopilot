@@ -60,6 +60,19 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - 実際の Discord での表示は未確認。
   - 承認依頼そのものの `what_changes` などの英語は残っている（承認記録や Linear にも使われるため）。
 
+### test-only 初回 [TEST]（INU-331、2026-10-14 / Claude Code）
+
+- Phase 10 の [TEST] タスク INU-331 を投入した（H2/STO-3G、3 点の RHF–FCI）。
+  - 研究計画 v1 はユーザーが Discord で承認した。
+  - サイクル 1 の INU-332 で、ra の Codex による実装と、コンテナ内での実行が動いた。
+  - 失敗：仕様の「目的」にあった「承認待ち」を、Research Planner がリポジトリ内の承認ゲート（`pending_approval` のマニフェストと、計算しないガード）として計画した。ジョブは設計どおり exit 2 で止まり、RA は `unknown: unclassified failure` で blocked にした。サイクル 2（INU-335〜337）も同じ計画をくり返した。
+  - 対処 1（ユーザー）：Notion の目的から「承認待ち」を削った。実行中の研究が編集を検出するのは、親の研究のポーリングが回ったとき。子の長い実装のポーリングが終わるまで遅れる。
+  - 対処 2（ユーザー承認）：共通ルール `APPROVALS_ARE_RA` を、Research Planner・Evaluator・Phase 2 Planner に入れた（`c98d8a7`、push 済み、ra に pull 済み）。
+- Phase 8 の文献調査は、ra で単体実行して成功した（`RA_ZOTERO_ENABLED=false`。主張 28 件中 26 件が照合済み、費用 0）。
+  - 注意：Phase 10 の研究計画は、新しい文献調査を行わない。保存済みの report を読むだけ（`research/evidence.literature_reports`）。Notion の「書き方」ページも直した。
+- `prefect deploy --all` は、`autopilot-poll` のスケジュールを無効に戻す（`prefect.yaml` の `active: false`）。c98d8a7 で登録し直したときに約 1 分止まったので、有効に戻した。手順書に注意書きを追記した。
+- Zotero：方式 (a) をユーザーが選んだ（Windows の Zotero に portproxy と WSL 内の中継でつなぐ。mirrored は Docker Desktop との相性が悪いので不採用）。作業はブランチ `phase8/eagle-zotero` で進行中。
+
 ### test-only 運用開始（2026-10-14 14:10 JST / Claude Code、ユーザー指示）
 
 - main に push した（`ea6fd85..71b1fd0`）。ra の `/opt/research-autopilot` も `71b1fd0` に更新済み。

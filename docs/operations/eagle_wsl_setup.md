@@ -284,6 +284,8 @@ systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog   # 実行
 
 続けて、エージェント（または rixyt）が同じ commit で `prefect deploy --all` を行う（§3 A2）。
 
+**注意：`prefect deploy --all` を実行すると、`autopilot-poll/scheduled` のスケジュールが無効に戻る。** `prefect.yaml` で `active: false` と定義しているため（初回の登録で勝手に動き出さないようにする設定）。運用中に deployment を登録し直したら、必ずスケジュールを有効に戻す（Prefect UI の deployment 画面、または API で `update_deployment_schedule(..., active=True)`）。2026-10-14 に一度、約 1 分止まった。
+
 ## 3. エージェントが行う操作（rixyt で実行できるもの）
 
 人間はエージェントに「Eagle の A1 を実行して」と依頼すればよい。
