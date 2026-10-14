@@ -67,6 +67,7 @@ def _summary(entry: RegistryEntry, draft: GrantDraft) -> list[str]:
         f"Network: {s.network}",
         f"Limits: {s.max_cpus:g} CPU, {s.max_memory_gb:g} GB, {s.max_walltime_minutes} min per run, "
         f"{s.max_total_cpu_hours:g} CPU-h total",
+        f"GPU: {s.max_gpus} per run (CUDA, passed into the container)" if s.max_gpus else "GPU: none",
         "Research patches: " + (", ".join(h[:12] for h in s.approved_patches) or "none (original code only)"),
     ]
     if warn:
@@ -301,6 +302,8 @@ def scope_problems(g: ExecutionGrant, req: ExecutionRequest, used_cpu_hours: flo
         out.append(f"data paths not approved: {extra}")
     if req.cpus > s.max_cpus:
         out.append(f"{req.cpus:g} CPUs > approved {s.max_cpus:g}")
+    if req.gpus > s.max_gpus:
+        out.append(f"{req.gpus} GPU(s) > approved {s.max_gpus}")
     if req.memory_gb > s.max_memory_gb:
         out.append(f"{req.memory_gb:g} GB > approved {s.max_memory_gb:g} GB")
     if req.walltime_minutes > s.max_walltime_minutes:
@@ -332,7 +335,7 @@ def widened_scope(base: ExecutionScope | None, req: ExecutionRequest) -> Executi
                                data_paths=sorted(set(b.file_access.data_paths) | set(req.file_access.data_paths))),
         network="unrestricted" if "unrestricted" in (b.network, req.network) else "none",
         max_cpus=max(b.max_cpus, req.cpus), max_memory_gb=max(b.max_memory_gb, req.memory_gb),
-        max_walltime_minutes=walltime,
+        max_walltime_minutes=walltime, max_gpus=max(b.max_gpus, req.gpus),
         max_total_cpu_hours=max(b.max_total_cpu_hours, round(max(req.cpus, 1) * walltime / 60 * 10, 2)),
         approved_patches=sorted(set(b.approved_patches) | set(patch_hashes(req.patches))))
 

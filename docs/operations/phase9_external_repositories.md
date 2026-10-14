@@ -72,6 +72,16 @@ E2E は BOCS（`baptistar/BOCS`）で実施。
 
 その他（テスト 39 件、すべてオフライン：模擬 GitHub・模擬 Docker）：改ざんアーカイブは不合格、critical 検出は実行前に不合格、テスト失敗は登録されない、更新失敗は旧 entry を置き換えない、登録だけでは実行不可、承認後は範囲内で自動実行・別タスクから再利用、範囲外（CPU・ネットワーク・用途・時間・研究リポジトリ・データパス・累積予算・未承認パッチ）は再承認、commit 変更は再検証＋再承認・旧 commit 固定は継続可、手元ソース改変は実行拒否、承認前の entry 変更で承認は stale、却下は再依頼しない、未許可の Discord ユーザーは承認不可、取り消し、Phase 4 / Phase 5 / Phase 2 の連携。
 
+## GPU（2026-10-14 追加、ユーザー決定）
+
+- 承認の範囲（`ExecutionScope`）に `max_gpus` を追加した（既定 0）。外部コードが GPU を使えるのは、人が Discord で GPU を含む範囲を承認した場合だけ。
+  - 承認依頼には「GPU: N per run」と表示される。範囲を超える要求は、新しい承認依頼になる。
+- 承認された研究実行では、コンテナに `--device nvidia.com/gpu=all`（CDI）を付け、`CUDA_VISIBLE_DEVICES` で割り当てた GPU だけを見せる。
+  - WSL 用の CDI 設定には `all` しかないため、この方式にしている。
+- 登録前の検証用サンドボックスには GPU を渡さない。外部コードのテストは CPU で動く必要がある。
+- `max_gpus` が 0 の承認は、この変更の前と同じハッシュのまま（既存の承認は失効しない）。
+- 前提：`ra` の rootless Docker で CDI が使えること（`eagle_wsl_setup.md` H5 ⑦）。2026-10-14 に Eagle で `nvidia-smi` がコンテナ内で動くことを確認した。外部コードでの実際の GPU 学習は未検証。
+
 ## 既知の制約・未検証
 
 - Docker Desktop（Mac, arm64）でのみ検証。Eagle（Linux）での動作は未検証。

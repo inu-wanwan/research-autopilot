@@ -41,6 +41,22 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Completed Work
 
+### GPU（2026-10-14 / Claude Code、ユーザー決定）
+
+- ユーザー決定：ML の学習は uv（ホストで直接）で動かす。Phase 9 の外部コードも GPU で動かせるようにする。
+- Phase 4：
+  - `Allocation.gpu_ids` を追加した。`ResourceManager.fits_now` / `claim_gpus` で、1 台の GPU に同時に載るジョブを 1 つに制限する。
+  - `thread_env` で `CUDA_VISIBLE_DEVICES` を渡す。GPU を使わないジョブには空文字を渡す。
+- Phase 9：
+  - `ExecutionScope.max_gpus`（既定 0、承認範囲の比較と拡大に含める）と `ExecutionRequest.gpus` を追加した。
+  - 承認された実行に限り `--device nvidia.com/gpu=all` と `CUDA_VISIBLE_DEVICES` を付ける。
+  - `max_gpus` が 0 の承認はハッシュが変わらない。
+- 検証：`tests/test_gpu.py` 3 passed、`tests/test_phase9_external.py` に GPU のテスト 3 件を追加。Eagle 上の確認は rixyt の `cuInit` だけ。
+- 2026-10-14：人間が H5 ⑦（nvidia-container-toolkit、`/etc/cdi/nvidia.yaml`）を実施した。
+  - ra の rootless Docker で `--device nvidia.com/gpu=all` のコンテナに RTX 4090 が見えることを確認（別エージェントが確認）。
+  - rixyt で試すと失敗する（Docker Desktop が `/etc/cdi` を見ないため）。
+- 未検証：ra での `cuInit`（uv で動かすジョブ）、実際の学習ジョブ、研究リポジトリの compose イメージで動かすジョブへの GPU（未対応）。
+
 ### RA が作る Linear issue の担当者（2026-10-14 / Claude Code、ユーザー決定）
 
 - ユーザー決定（2026-10-14）：RA が作る Linear issue（サイクルの子タスク、自動フォローアップ）は未割り当てにする。

@@ -27,6 +27,7 @@ from pathlib import Path
 from research_autopilot.external.models import SandboxLimits, Wheel
 
 NOBODY = "65534:65534"
+GPU_DEVICE = "nvidia.com/gpu=all"  # CDI device (nvidia-ctk cdi generate --mode=wsl); never in verification runs
 WHEEL = re.compile(r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[^-]+)-.*\.whl$")
 
 
@@ -152,8 +153,12 @@ class Docker:
 
     def research_argv(self, *, image: str, name: str, code_dir: Path, mount_as: str, checkout: Path,
                       checkout_mode: str, data_paths: list[str], network: str, cpus: float, memory_gb: float,
-                      workdir: str, env: dict[str, str], python_dirs: list[str], argv: list[str]) -> list[str]:
-        """``docker run`` argv for one approved research execution (run by the Phase 4 job shim)."""
+                      workdir: str, env: dict[str, str], python_dirs: list[str], argv: list[str],
+                      gpu_ids: list[int] = ()) -> list[str]:
+        """``docker run`` argv for one approved research execution (run by the Phase 4 job shim).
+
+        GPUs (only within an approved ``max_gpus``) come in through CDI.  WSL's CDI spec has only
+        ``nvidia.com/gpu=all``, so the job's own devices are selected with ``CUDA_VISIBLE_DEVICES``."""
         if network not in ("none", "unrestricted"):
             raise ValueError(f"unknown network scope {network}")
         ext = f"/ext/{mount_as}"
@@ -166,6 +171,9 @@ class Docker:
                "-v", f"{code_dir}:{ext}:ro", "-v", f"{checkout}:/work:{checkout_mode}"]
         for i, d in enumerate(data_paths):
             out += ["-v", f"{d}:/data/{i}:ro"]
+        if gpu_ids:
+            out += ["--device", GPU_DEVICE, "-e", "CUDA_DEVICE_ORDER=PCI_BUS_ID",
+                    "-e", "CUDA_VISIBLE_DEVICES=" + ",".join(str(i) for i in gpu_ids)]
         for k, v in sorted(env.items()):
             out += ["-e", f"{k}={v}"]
         return out + ["-w", f"/work/{workdir}".rstrip("/.") or "/work", image, *argv]

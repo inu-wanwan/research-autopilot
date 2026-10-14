@@ -241,6 +241,7 @@ def test_human_grant_allows_runs_within_scope_and_reuse_across_tasks(tmp_path):
     (dict(walltime_minutes=90), "min"),
     (dict(research_repository="other-repo"), "research repository"),
     (dict(file_access=FileAccess(data_paths=["/Users/x/secret-data"])), "data paths"),
+    (dict(gpus=1), "GPU"),
 ])
 def test_requests_beyond_the_grant_need_a_new_approval(tmp_path, change, needle):
     d, _ = _granted(tmp_path, scope=_scope(file_access=FileAccess(job_checkout="rw")))
@@ -385,6 +386,33 @@ def test_research_container_gets_no_secrets_and_only_granted_mounts(tmp_path, mo
     assert "sk-should-never-leak" not in joined and "PYTHONPATH=/ext/bocs/BOCSpy" in joined
     from research_autopilot.external.sandbox import _clean_env
     assert "OPENAI_API_KEY" not in _clean_env()
+
+
+def test_gpu_needs_an_explicit_grant_and_only_then_reaches_the_container(tmp_path):
+    d, e = _granted(tmp_path)
+    gate = grants.authorize(d.store, _req(gpus=1), docker=d.docker)
+    assert not gate.allowed and gate.draft.scope.max_gpus == 1
+    assert any("GPU: 1 per run" in x for x in grants._summary(e, gate.draft))  # the human sees it
+    docker = d.docker
+    common = dict(image="sha256:i", name="n", code_dir=Path(e.source_dir), mount_as="bocs", checkout=tmp_path / "job",
+                  checkout_mode="ro", data_paths=[], network="none", cpus=1, memory_gb=2, workdir=".", env={},
+                  python_dirs=[], argv=["python", "run.py"])
+    plain = docker.research_argv(**common)
+    assert "--device" not in plain and not any(a.startswith("CUDA_VISIBLE_DEVICES") for a in plain)
+    gpu = docker.research_argv(**common, gpu_ids=[0])
+    assert gpu[gpu.index("--device") + 1] == "nvidia.com/gpu=all" and "CUDA_VISIBLE_DEVICES=0" in gpu
+
+
+def test_grants_without_gpus_keep_their_approval_hash(tmp_path):
+    """Adding max_gpus must not invalidate drafts / requests approved before GPUs existed."""
+    from research_autopilot.external.models import stable_hash
+    d, e = _registered(tmp_path)
+    draft = grants.draft_for(e, _scope(), task_id="INU-1")
+    old = draft.model_dump(mode="json", exclude={"requested_by_task", "reason"})
+    old["scope"].pop("max_gpus")
+    assert draft.approval_hash() == stable_hash(old)
+    assert draft.model_copy(update={"scope": draft.scope.model_copy(update={"max_gpus": 1})}).approval_hash() \
+        != draft.approval_hash()
 
 
 def _docker_with_info(info_stdout: str, returncode: int = 0):

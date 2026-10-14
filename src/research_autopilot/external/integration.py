@@ -120,7 +120,7 @@ def prepare_job(deps: service.ExternalDeps, spec, alloc, *, checkout: Path, env:
     req = ExecutionRequest(name=use.name, commit=use.commit, purpose=use.purpose, purpose_detail=use.purpose_detail,
                            research_repository=spec.identification.repository_id, task_id=spec.identification.task_id,
                            network=use.network, file_access=FileAccess(job_checkout=use.job_checkout),
-                           cpus=alloc.cpu, memory_gb=alloc.memory_gb,
+                           cpus=alloc.cpu, memory_gb=alloc.memory_gb, gpus=alloc.gpu,
                            walltime_minutes=max(1, math.ceil(alloc.walltime_seconds / 60)),
                            patches=[str(checkout / p) for p in use.patches])
     gate = grants.authorize(deps.store, req, docker=deps.docker)
@@ -153,7 +153,7 @@ def prepare_job(deps: service.ExternalDeps, spec, alloc, *, checkout: Path, env:
         code_dir=code_dir, mount_as=use.mount_as, checkout=checkout, checkout_mode=use.job_checkout,
         data_paths=[], network=use.network, cpus=alloc.cpu, memory_gb=alloc.memory_gb,
         workdir=spec.execution.working_directory, env=container_env, python_dirs=v.survey.python_dirs,
-        argv=["python", *spec.execution.argv[1:]])
+        argv=["python", *spec.execution.argv[1:]], gpu_ids=list(getattr(alloc, "gpu_ids", [])))
     rec = grants.record_start(deps.store, gate, req, argv=argv, code_sha256=code_sha, patches=patches, job_key=job_key,
                               experiment_run_id=experiment_run_id, experiment_id=spec.experiment_id,
                               catalog=deps.catalog)

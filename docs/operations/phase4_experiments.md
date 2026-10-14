@@ -55,6 +55,16 @@ uv run research-agent experiment list | show <id> | proposals [--task INU-123]
 
 メモリの見積もりには安全係数 1.5 を掛ける。wall time の上限は見積もりの2倍とし、`MAX_WALLTIME` で頭打ちにする。実際に空いているメモリより多くは割り当てない。
 
+### GPU（2026-10-14 追加）
+
+- 実験定義の `resources.gpu` が 1 以上のジョブだけに GPU を割り当てる。1 台の GPU を使えるのは同時に 1 ジョブだけ。
+  - GPU が空くまで、次の GPU ジョブは待つ。GPU を使わないジョブは並列で動き続ける。
+  - 理由：同じ GPU に学習を重ねるとメモリが足りなくなる。
+- ジョブには `CUDA_VISIBLE_DEVICES` で自分の GPU だけを見せる（番号は nvidia-smi の順、`CUDA_DEVICE_ORDER=PCI_BUS_ID`）。GPU を使わないジョブには空文字を渡すので、GPU は見えない。
+- CUDA GPU のないホストで GPU ジョブを投げると blocked になる。
+- 研究リポジトリの compose イメージで動かすジョブ（`container = {...}`）に GPU を渡すには、そのリポジトリの compose.yaml に GPU デバイスの指定が必要。RA からは付けない（未対応）。
+- 外部コード（Phase 9）の GPU は `phase9_external_repositories.md` を参照。
+
 ## 4. 保存先
 
 | データ | 場所 |

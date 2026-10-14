@@ -211,6 +211,41 @@ systemctl --user status ra-prefect-worker ra-discord-bot ra-watchdog --no-pager
 journalctl --user -u ra-prefect-worker -n 50 --no-pager
 ```
 
+**⑦ GPU（ML の学習を投げる場合）**
+
+uv で動かすジョブは、WSL の GPU ドライバをそのまま使う。
+
+- `/dev/dxg` は誰でも読み書きできる。CUDA の初期化（`cuInit`）が通ることは rixyt で確認済み（2026-10-14）。
+- `ra` では次で確認する：
+  ```bash
+  python3 -c "import ctypes; l=ctypes.CDLL('libcuda.so.1'); print('cuInit', l.cuInit(0))"   # 0 なら OK
+  ```
+
+外部コード（Phase 9）は必ずコンテナで動くので、`ra` の rootless Docker で GPU を使える設定が必要。
+
+1. rixyt（sudo）：nvidia-container-toolkit を入れ、WSL 用の CDI 設定を作る。
+   ```bash
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+     | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+   sudo nvidia-ctk cdi generate --mode=wsl --output=/etc/cdi/nvidia.yaml
+   nvidia-ctk cdi list
+   ```
+   `nvidia-ctk runtime configure` は実行しない。Docker Desktop の設定まで書き換えるため。
+2. ra：次の 2 つを確認する。**必ず `ra`（`sudo machinectl shell ra@`）で実行する。**
+   - rixyt の `docker` は Docker Desktop につながっていて、Ubuntu 側の `/etc/cdi` を見ない。rixyt で実行すると `nvidia.com/gpu=all` が見つからずに失敗する（2026-10-14 に発生）。
+   ```bash
+   docker info --format '{{json .CDISpecDirs}}'
+   docker run --rm --device nvidia.com/gpu=all ubuntu:24.04 nvidia-smi
+   ```
+   - 1 つ目の出力に `/etc/cdi` が無い場合：`~/.config/docker/daemon.json` に `{"cdi-spec-dirs": ["/etc/cdi"]}` と書き、`systemctl --user restart docker` してから確認し直す。
+   - 2 つ目で RTX 4090 が表示されれば完了。2026-10-14 に Eagle で確認済み（RTX 4090、ドライバ 610.88）。
+   - `ra` のシェルで `nvidia-smi` が見つからない場合は、`/usr/lib/wsl/lib/nvidia-smi` を使う。表示される `apt install nvidia-utils-…` は WSL では入れない。
+- WSL のドライバを更新したら、CDI 設定を作り直す（`nvidia-ctk cdi generate` をもう一度実行する）。
+
 ### H6. 判断すること（運用開始時）
 
 | 項目 | 既定 | 変えるとき |

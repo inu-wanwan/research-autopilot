@@ -288,6 +288,7 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
                 continue
             if not rm.fits_now(alloc):
                 continue
+            alloc = rm.claim_gpus(alloc)
             job = _submit(deps, m, run_dir, spec, alloc)
             rm.reserve(job.job_key, alloc)
             progressed = True

@@ -240,6 +240,7 @@ class ExecutionScope(BaseModel):
     max_memory_gb: float = 8.0
     max_walltime_minutes: int = 120
     max_total_cpu_hours: float = 20.0
+    max_gpus: int = 0                      # CUDA GPUs per run; 0 = no GPU is passed into the container
     # sha256 of the exact research modifications (patch files) the human approved; any other patch changes the
     # executed code and needs re-verification and re-approval
     approved_patches: list[str] = Field(default_factory=list)
@@ -265,7 +266,10 @@ class GrantDraft(BaseModel):
     reason: str = ""
 
     def approval_hash(self) -> str:
-        return stable_hash(self.model_dump(mode="json", exclude={"requested_by_task", "reason"}))
+        d = self.model_dump(mode="json", exclude={"requested_by_task", "reason"})
+        if not d["scope"].get("max_gpus"):
+            d["scope"].pop("max_gpus", None)  # grants approved before GPUs existed keep their hash
+        return stable_hash(d)
 
 
 class GrantStatus(StrEnum):
@@ -316,6 +320,7 @@ class ExecutionRequest(BaseModel):
     cpus: float = 1.0
     memory_gb: float = 2.0
     walltime_minutes: int = 30
+    gpus: int = 0
     patches: list[str] = Field(default_factory=list)   # absolute paths of patch files (research modifications)
 
 

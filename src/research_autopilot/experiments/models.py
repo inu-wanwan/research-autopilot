@@ -49,6 +49,7 @@ class Allocation(BaseModel):
     walltime_seconds: int
     threads: int
     estimate: ResourceEstimate
+    gpu_ids: list[int] = Field(default_factory=list)  # CUDA device indices given to this job (exclusive)
 
 
 # ---------------------------------------------------------------- jobs

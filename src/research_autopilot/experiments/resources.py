@@ -178,12 +178,21 @@ class ResourceManager:
         return Allocation(cpu=cpu, memory_gb=mem, gpu=est.gpu, walltime_seconds=int(wall_min * 60), threads=cpu,
                           estimate=est)
 
+    def free_gpus(self) -> list[int]:
+        """CUDA device indices not held by a running job (one job per GPU: a shared GPU runs out of memory)."""
+        held = {i for a in self.reserved.values() for i in a.gpu_ids}
+        return [i for i, g in enumerate(g for g in self.host.gpus if g.get("kind") == "cuda") if i not in held]
+
     def fits_now(self, alloc: Allocation) -> bool:
         cap_cpu, cap_mem = self.capacity()
         used_cpu = sum(a.cpu for a in self.reserved.values())
         used_mem = sum(a.memory_gb for a in self.reserved.values())
         return (len(self.reserved) < self.settings.max_parallel_jobs and used_cpu + alloc.cpu <= cap_cpu
-                and used_mem + alloc.memory_gb <= cap_mem)
+                and used_mem + alloc.memory_gb <= cap_mem and alloc.gpu <= len(self.free_gpus()))
+
+    def claim_gpus(self, alloc: Allocation) -> Allocation:
+        """Pick the job's GPUs (call after ``fits_now``, before the job environment is built)."""
+        return alloc.model_copy(update={"gpu_ids": self.free_gpus()[:alloc.gpu]}) if alloc.gpu else alloc
 
     def reserve(self, job_key: str, alloc: Allocation) -> None:
         self.reserved[job_key] = alloc
@@ -194,6 +203,9 @@ class ResourceManager:
 
 def thread_env(alloc: Allocation) -> dict[str, str]:
     env = {v: str(alloc.threads) for v in THREAD_VARS if v != "PYSCF_MAX_MEMORY"}
+    # GPUs are exclusive: a job sees only its own (indices as nvidia-smi lists them); a CPU job sees none
+    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in alloc.gpu_ids)
     env["PYSCF_MAX_MEMORY"] = str(int(alloc.memory_gb * 1024 * 0.8))  # MB, leave headroom
     return env
 
