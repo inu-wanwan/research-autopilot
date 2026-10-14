@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 00:57 JST / Codex
+2026-10-15 01:12 JST / Codex
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
@@ -35,7 +35,9 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 変更前の関連テスト2件は WSL 既存 venv で成功。変更後は `tests/test_audit_planning_scope.py` の関連3件と `tests/test_gpu.py` の関連2件が成功（いずれも `PYTHONPATH=src /home/rixyt/workspace/ResearchAutopilot/.venv/bin/python -m pytest -q ... -k ...`）。全テストはユーザー指示で実行していない。Windows `uv run pytest -q` は sandbox の uv cache 書き込み拒否でテスト開始前に失敗した。
 - Eagle の rootless Docker で `:ro` mount による既存 reference 81件の読み取りと `statvfs` の read-only フラグを確認。`ra-prefect-worker` を再起動し、直後の `autopilot-poll` は Completed。`ra-discord-bot` / `ra-watchdog` も active。未検証：実研究ジョブでの利用。
 - 2026-10-15 の追加調査：Windows clone `C:\Users\rixyt\workspace_eagle\sekijima_lab_local\active_space_research\outputs\phase4_orbital_diagnostics\main_6c0d1dd\cache` に JSON 55,160件（ファイル長合計 120,930,269 bytes）を確認。一方 Eagle の `/home/ra/research-repos/active_space_research/outputs/phase4_orbital_diagnostics/main_6c0d1dd/cache` は未存在。Windows 側ファイルは WSL で mode 600 / uid 1001 と見え、`ra` から直接読むと Permission denied。両 clone は別実体であり、mount 設定だけでは不足 cache は補われない。Windows 原本と Eagle reference の全件 hash 照合および cache 完全性は未確認。
-- 旧 INU-349 の保存済み ExperimentSpec は監査 JSON の `group_id`、`mo_indices`、`energy_tolerance` を units に宣言したが、実出力に無く Validator は fail。現行の warning 緩和は「存在する値の単位宣言と形の不一致」が対象で、これら欠損宣言は依然 fail。再開前に旧 Spec をそのまま再利用しないよう、監査タスクの出力 schema / 宣言を整合させる必要がある。INU-344 は停止したまま。
+- 旧 INU-349 の保存済み ExperimentSpec は監査 JSON の `group_id`、`mo_indices`、`energy_tolerance` を units に宣言したが、当時の参照欠損による出力には無く Validator は fail。現行の warning 緩和は「存在する値の単位宣言と形の不一致」が対象で、これら欠損宣言は依然 fail。
+- 2026-10-15 追加対応：Windows 原本 cache を Eagle の `main_6c0d1dd/cache/` に新規配置。55,160 JSON 全件を `rsync -rnc --delete --itemize-changes` で原本と checksum 照合し差分 0、所有者 `ra`、cache directory mode 700・file mode 600。既存成果物は上書きしていない。`research-agent catalog scan active-space-research` は 81 discovered / 81 verified / errors 0、`catalog resolve 'catalog: kind=orbital-casci-exhaustive-condition repository=active-space-research molecule=N2,BeO,NH3 k=2..10 git_commit=6c0d1dd expect=81'` は 81 artifacts / problems 0。
+- 旧 INU-349 の監査スクリプトを `/tmp/ra-inu344-preflight-20261015` 出力で限定実行：81/81 ok、missing 0、inconsistent 0、input files 55,320、changed inputs 0、cache_unchanged true。出力の exact-degeneracy group 675件すべてに `group_id`、`mo_indices`、`energy_tolerance` が存在するため、旧 units fail は入力欠損の副作用と判明し、Spec / コード修正は不要。実 Docker container でも cache 55,160 JSON と reference 81 JSON を `:ro` mount から読み取れた。INU-344 はまだ blocked、resume は未実施。
 
 ## Git Branch / Commit
 
@@ -757,7 +759,7 @@ Fake の E2E で確認したこと：
 
 ## Known Issues / Blockers
 
-0. Eagle / INU-344：Phase 4 cache `outputs/phase4_orbital_diagnostics/main_6c0d1dd/cache/` が欠損。reference 81件はあるが Catalog は 81件 inconsistent。Phase 4 checkout への read-only 経路は Eagle に適用済み。INU-349 の単位宣言不一致、INU-345/350 の quota / wall-time、INU-351 の計画承認失敗は別問題として残る。
+0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。INU-345/350 の quota / wall-time、INU-351 の計画承認失敗は履歴として残り、INU-344 は resume 前で blocked。
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
 2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
@@ -770,7 +772,7 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
-0a. Windows clone の `main_6c0d1dd/cache/` を Eagle の研究 repo に持ち主・読み取り権限を整えて配置し、Catalog scan / resolve で 81件 verified を確認する。旧 INU-349 の ExperimentSpec は欠損フィールドの units 宣言が残るため、監査再実行前に出力 schema / 宣言を整合させる。INU-344 の再開は研究者判断後に行う。
+0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。再開時は現在の承認範囲・予算と停止済み子タスクの再試行を確認し、INU-351 の計画承認失敗や LLM quota / wall-time が再発するか監視する。旧 INU-349 の Spec / コード修正は不要。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
