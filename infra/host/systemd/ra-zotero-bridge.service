@@ -1,0 +1,14 @@
+# Relays 127.0.0.1:23119 in WSL to the Windows Zotero app (via the Windows portproxy on :23120), run as `ra`.
+# Install: docs/operations/eagle_wsl_setup.md (Zotero).
+[Unit]
+Description=Research Autopilot Zotero bridge (WSL -> Windows Zotero)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/research-autopilot
+ExecStart=/usr/bin/python3 infra/host/zotero_bridge.py --listen 127.0.0.1:23119 --port 23120
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

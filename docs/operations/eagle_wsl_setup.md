@@ -19,7 +19,7 @@ Windows：Docker Desktop（rixyt が操作）              Tailscale（Windows �
 WSL2 Ubuntu（systemd 有効）
   └ ユーザー ra（docker / sudo グループに入れない）
        ├ rootless Docker（ra 専用。Phase 9 のサンドボックス）
-       ├ systemd --user：ra-prefect-worker / ra-discord-bot / ra-watchdog
+       ├ systemd --user：ra-prefect-worker / ra-discord-bot / ra-watchdog / ra-zotero-bridge（H7）
        ├ /opt/research-autopilot（コードと .env。deployment がここで実行される）
        └ Codex / Claude CLI（ra でログイン）、研究リポジトリ、worktree
 ```
@@ -268,9 +268,147 @@ uv で動かすジョブは、WSL の GPU ドライバをそのまま使う。
 | `autopilot-poll/scheduled` のスケジュール | inactive | Prefect UI で active にすると自律ポーリングが始まる（`phase5_autopilot.md` §7） |
 | `RA_AUTOPILOT_WRITE` / `RA_AUTOPILOT_TEST_ONLY` | `false` / `true` | まず [TEST] タスクで動作を確認してから変える |
 | `RA_LINEAR_WRITE_ENABLED` | `false` | Phase 2 の apply を使うとき |
-| `RA_ZOTERO_ENABLED` | `true` | Linux で未検証。調査が失敗するなら `false` |
+| `RA_ZOTERO_ENABLED` | `true` | Windows の Zotero に中継してつなぐ（H7）。H7 が済むまでは Zotero に届かず、調査は Zotero を使わずに進む |
 
 `/opt/research-autopilot/.env` を変えたら、`systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog` で反映する。
+
+### H7. Zotero（Windows の Zotero に中継してつなぐ）
+
+Windows で使っている Zotero（9.0.4）を、そのまま RA の保存先にする。`ra` 用の Zotero アカウントは作らない。
+
+```text
+ra の Chromium + Zotero Connector ─→ WSL の 127.0.0.1:23119
+  ─→ 中継（ra-zotero-bridge、ra の systemd --user）
+  ─→ Windows <WSL から見た既定ゲートウェイ>:23120（portproxy）
+  ─→ Windows の 127.0.0.1:23119（Zotero）
+```
+
+- WSL（NAT モード）からは Windows の `127.0.0.1` に届かない。そのため中継を置く。
+- ゲートウェイの IP（現在 `172.29.96.1`）は再起動で変わる。中継は接続のたびに `/proc/net/route` から調べ直す。ファイアウォールは IP ではなく WSL のインターフェースで絞る。
+- WSL の mirrored ネットワークは使わない（Docker Desktop の publish ポートが壊れる報告があるため）。
+
+順番に行う。
+
+**① Windows の Zotero（人間、GUI）**
+
+1. Zotero → 編集 → 設定 → 詳細 → 一般 → 「各種設定」（Miscellaneous）を開く。
+2. 「このコンピュータ上の他のアプリケーションが Zotero と通信できるようにする」にチェックを入れる。
+   - 9.0.x の日本語版では英語のまま「Allow other applications on this computer to communicate with Zotero」と表示されることがある。
+   - 設定名は `extensions.zotero.httpServer.localAPI.enabled`。RA はこの Local API で Zotero を読む。
+3. コレクション `ResearchAutopilot` を作り、**選択したままにする**。
+   - Connector は、Zotero で選択中のコレクションに保存する。
+   - RA は、`ResearchAutopilot` が選択されていなければ保存しない（`zotero check` も失敗する）。
+   - 選択中のコレクションは、人間が自分のブラウザの Connector で保存するときの保存先にもなる。手で保存するときは、保存後にコレクションを `ResearchAutopilot` に戻す。
+4. Windows のログオン時に Zotero を起動する。
+   - `Win + R` で `shell:startup` を開き、Zotero のショートカットを置く。
+   - Zotero が起動していないと、RA は Zotero を使わずに OA 取得などへ進む（調査は止まらない）。
+
+**② Windows の portproxy とファイアウォール（人間、管理者の PowerShell）**
+
+WSL が起動している状態で（Ubuntu の端末を開いておく）、管理者として PowerShell を開いて実行する。
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+& '\\wsl$\Ubuntu\home\rixyt\workspace\ResearchAutopilot\infra\host\windows\zotero-bridge.ps1'
+```
+
+- `\\wsl$` から実行できない場合は、ファイルをデスクトップなどにコピーしてから実行する。
+- 何度実行しても同じ設定になる。
+- 行うこと：
+  - `netsh interface portproxy`：`0.0.0.0:23120` → `127.0.0.1:23119`。
+  - ファイアウォール規則「Research Autopilot Zotero bridge (WSL only)」：TCP 23120 を、WSL のインターフェース `vEthernet (WSL (Hyper-V firewall))` からだけ許可する。
+  - portproxy に必要な IP Helper サービス（`iphlpsvc`）を自動起動にする。
+- 最後に portproxy の一覧と規則名が表示される。
+
+**③ Chromium が動くための OS パッケージ（人間、rixyt で sudo）**
+
+```bash
+sudo /opt/research-autopilot/.venv/bin/playwright install-deps chromium
+```
+
+- `apt-get` で Chromium に必要なライブラリを入れる（Playwright 1.63 の `install-deps` コマンド）。
+- 先に H5 の `uv sync` が終わっている必要がある。
+
+**④ ra で Chromium・Connector・中継を用意する（人間、`sudo machinectl shell ra@`）**
+
+```bash
+cd /opt/research-autopilot
+uv run --frozen --no-dev playwright install chromium
+uv run --frozen --no-dev research-agent literature zotero fetch-connector
+```
+
+- `fetch-connector` は Chrome Web Store の**その時点の最新版**を `~/.research-autopilot/zotero/connector` に展開する。版は選べない。
+- 出力の `version` を確認する。検証済みは 5.0.217。違う版なら、⑤ の確認を回帰確認として必ず行う。
+- 一度入れたら、更新するとき以外は実行しない。
+
+中継サービスを入れて起動する。
+
+```bash
+cp /opt/research-autopilot/infra/host/systemd/ra-zotero-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ra-zotero-bridge
+journalctl --user -u ra-zotero-bridge -n 20 --no-pager   # "zotero bridge: 127.0.0.1:23119 -> ..." が出る
+```
+
+`/opt/research-autopilot/.env` に追記する。
+
+```bash
+RA_ZOTERO_ENABLED=true
+RA_ZOTERO_SYNC_DIR=/mnt/c/Users/rixyt/GDriveSync/GDriveZotero
+RA_ZOTERO_HEADLESS=1
+```
+
+- `RA_ZOTERO_SYNC_DIR` は、Windows の ZotMoov の移動先（＝ Zotero の Linked Attachment Base Directory、`extensions.zotero.baseAttachmentPath`）`C:\Users\rixyt\GDriveSync\GDriveZotero` の WSL 側のパス。
+  - RA の自動検出は Linux の `~/.zotero` を読むので、Windows の Zotero の設定は見つけられない。そのため明示する。
+- `RA_ZOTERO_HEADLESS=1` は既定値（書かなくても同じ）。
+
+反映する（実行中の run がないことを確かめてから）。
+
+```bash
+systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog
+```
+
+**⑤ 確認（ra）**
+
+1. Zotero に届くか（rixyt でも実行できる）。
+   ```bash
+   curl -s http://127.0.0.1:23119/connector/ping
+   # <!DOCTYPE html><html><body>Zotero is running</body></html>
+   curl -s "http://127.0.0.1:23119/api/users/0/collections?limit=1"
+   # JSON が返る。"Local API is not enabled" なら ① の 2 をやり直す
+   ```
+   - 何も返らない（`Empty reply from server`）：Zotero が起動していない、または ② が済んでいない。
+2. RA の事前確認。
+   ```bash
+   cd /opt/research-autopilot
+   uv run --frozen --no-dev research-agent literature zotero check
+   # {"ok": true, "collection": "ResearchAutopilot", "sync_dir": true}
+   ```
+3. 実際に 1 件保存する。LLM を使うので少額の費用がかかる（Mac の BOCS 調査で約 $0.5）。
+   - Zotero にまだ入っていない OA の arXiv 論文を seed にする。既にあると、保存せずに再利用する。
+   ```bash
+   uv run --frozen --no-dev research-agent literature research "<確認用の質問>" --seed arXiv:<id> --no-note
+   ```
+   - 見るところ：
+     - 出力の `sources` で、その論文の取得方法が `zotero_connector`、状態が `ok`。
+     - Zotero の `ResearchAutopilot` コレクションに項目と PDF が増えている。
+     - PDF が `C:\Users\rixyt\GDriveSync\GDriveZotero`（WSL では `/mnt/c/Users/rixyt/GDriveSync/GDriveZotero`）にある。
+     - 同じ DOI の項目が二重にできていない。
+   - `failures` に `zotero connector ...` が出たら、その詳細をエージェントに渡す。
+
+**セキュリティ上の注意**
+
+- ポート 23120 は WSL のインターフェースからだけ許可している。LAN や Tailscale からは届かない。
+  - portproxy 自体は `0.0.0.0` で待ち受ける。ほかのファイアウォール規則で 23120 を開けないこと。
+- WSL の中のものは、中継を通して Zotero の Connector と Local API を使える。`ra` 以外の WSL ユーザー（`rixyt` を含む）や、WSL の中のコンテナ・プロセスも含む。
+  - Zotero 9 の Local API は読み取り専用で認証がない。ライブラリ全体を読める。
+  - Connector 経由では、選択中のコレクションに項目を保存できる。
+- Zotero は `Host` が `127.0.0.1` / `localhost` 以外の要求を拒否する。中継は `Host` を書き換えないので、この確認は通る。
+
+**この方式の制約**
+
+- Zotero に元からある PDF を再利用できるのは、基本ディレクトリ（`attachments:` で始まるパス）にあるものだけ。
+  - Windows の絶対パス（`C:\...`）でリンクされたファイルや、Zotero の `storage` に取り込まれたファイルは WSL から見つけられない。その場合は Connector で保存し直さず、OA 取得などに進む。
 
 ---
 
@@ -280,6 +418,7 @@ uv で動かすジョブは、WSL の GPU ドライバをそのまま使う。
 sudo machinectl shell ra@
 cd /opt/research-autopilot && git pull && uv sync --frozen --no-dev
 systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog   # 実行中の run がないことを確かめてから
+systemctl --user restart ra-zotero-bridge   # infra/host/zotero_bridge.py が変わったときだけ
 ```
 
 続けて、エージェント（または rixyt）が同じ commit で `prefect deploy --all` を行う（§3 A2）。
@@ -309,6 +448,6 @@ systemctl --user restart ra-prefect-worker ra-discord-bot ra-watchdog   # 実行
 - Eagle では未確認のもの：
   - `ra` での Codex / Claude のログイン（特に headless）
   - rootless Docker 上の Phase 9 の通し E2E
-  - Zotero Connector（Linux）
+  - Zotero の中継（H7）：Windows 側の portproxy・ファイアウォール規則と、WSL → Windows Zotero の通し確認、Connector での実保存
 - 古い container worker の state volume（`research-autopilot_worker-state`、Phase 1 の試験データ）は移行しない。消すかどうかは人間が決める（消すと元に戻せない）。
 - `infra/compose.yaml` の `prefect-worker` / `discord-bot` は profile `container-worker` に入れて止めている。ra のサービスと**同時に動かさない**（worker が二重に poll し、Discord gateway が二重に接続される）。

@@ -79,6 +79,8 @@ Connector は内部 API 依存のため、PoC で検証した 5.0.217 を `~/.re
 ## 既知の制約・未検証
 
 - Eagle（Windows）での Connector 保存と Drive クラウド到着は未検証（PoC と同じ）。
+  - Eagle では RA は WSL の `ra` で動き、Windows の Zotero に中継（`infra/host/zotero_bridge.py` と Windows の portproxy）でつなぐ。手順は [`eagle_wsl_setup.md`](eagle_wsl_setup.md) の H7。`RA_ZOTERO_SYNC_DIR` は自動検出されないので明示する。
+  - `zotero fetch-connector` は Web Store のその時点の最新版を取る（版は選べない）。5.0.217 以外になったら `zotero check` と 1 件の実保存で確認する。
 - 購読論文：実際の出版社ページ（機関アクセス・CAPTCHA）での Connector 保存は未検証。
 - pypdf は数式・表のレイアウトを失うことがある。数式の主張は引用が一致しにくく `unverified` になりやすい（安全側）。
 - 選定は LLM。外れた場合は seed（DOI / arXiv / GitHub）を仕様に書くと確実。
