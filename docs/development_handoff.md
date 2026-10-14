@@ -41,6 +41,31 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Completed Work
 
+### RA が作る Linear issue の担当者（2026-10-14 / Claude Code、ユーザー決定）
+
+- ユーザー決定（2026-10-14）：RA が作る Linear issue（サイクルの子タスク、自動フォローアップ）は未割り当てにする。
+  - 理由：ユーザーのタスク配信アプリは「担当者が自分」の issue だけを配信するため。
+  - これまでは API キーの持ち主（ユーザー）に割り当てていた。
+- 新しい設定 `RA_LINEAR_ASSIGNEE`：既定は `none`（未割り当て）。`me` にすると以前の動作に戻る。
+- 調べたこと：Linear の OAuth アプリ（`actor=app`）は Assignee にできず、delegate にしかならない（Linear Developers「Agents」）。このためアプリへの割り当ては採用しなかった。
+- 作成済みの issue の担当者は変更していない。外すかどうかはユーザーが判断する。
+
+### 完了タスクの承認付き push / PR（2026-10-14 / Claude Code、ユーザー決定）
+
+- ユーザー決定（2026-10-14）：タスク完了時に Discord で承認 → タスクブランチを push → PR を作成。merge は GitHub で人が行う。
+  - Phase 3 仕様「merge と push は行わない」への追加。仕様書（`phase_specs/phase3.md`）は書き換えず、`operations/phase5_autopilot.md` §4b と本記録に残した。
+- 実装：
+  - `autopilot/publish.py`：依頼・判定・実行・`GitHubPublisher`。
+  - `ApprovalKind.PUBLISH`、`WorkflowRun.publication`、`RepoConfig.publish`（既定 false）。
+  - `RA_GITHUB_PUSH_TOKEN`（空なら無効）、CLI `autopilot publish-retry`。
+- 依頼の扱い：Phase 9 と同じく Linear の状態を変えずに記録し、Discord で判定する（初版は `ApprovalController.request` を使い、Done の issue を Awaiting Approval に戻してしまう不具合をテストで検出して直した）。
+- 検証：`tests/test_publish.py` 9 passed。実 GitHub への push / PR 作成は未検証（token 未作成）。
+- ユーザー決定（2026-10-14、追加）：PR の単位は人が投げたタスク（Phase 10 の研究タスク）。
+  - サイクルの子タスク、6B の子タスク、自動フォローアップは依頼しない。
+  - 研究の完了時に、検証済みの最後の実装を `autopilot/<task>` ブランチとして 1 回依頼する（`research/orchestration._finish`）。
+  - 6B の親タスク単位の PR は実装していない（子のブランチが main から別々に分かれるため、自動 merge が必要になる。ユーザーは不要と回答）。
+- 検証：`tests/test_publish.py` 11 passed（研究タスクの E2E を含む）。
+
 ### Eagle デプロイ構成：WSL ホスト実行（2026-10-13 / Claude Code、ユーザー決定）
 
 - ユーザー決定（2026-10-13）：Phase 3 以降は WSL ホスト上のプロセスで動かす。Phase 9 は無効にしない。

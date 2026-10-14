@@ -247,7 +247,8 @@ def test_notion_writer_creates_result_note_as_adopted():
     assert writer.create_note("Result", [para("summary")]) == ("note-1", "https://notion.so/note-1")
 
 
-def test_linear_writer_assigns_created_issue_to_api_user():
+@pytest.mark.parametrize("assign", [False, True])
+def test_linear_writer_leaves_created_issues_unassigned_unless_asked(assign):
     calls = []
 
     def handler(request):
@@ -256,15 +257,16 @@ def test_linear_writer_assigns_created_issue_to_api_user():
         if "viewer" in body["query"]:
             return httpx.Response(200, json={"data": {"viewer": {"id": "user-1"}}})
         issue_input = body["variables"]["in"]
-        assert issue_input["assigneeId"] == "user-1"
+        assert issue_input.get("assigneeId") == ("user-1" if assign else None)
         return httpx.Response(200, json={"data": {"issueCreate": {
             "success": True, "issue": {"id": "issue-1", "identifier": "INU-999", "url": "https://linear/INU-999"}
         }}})
 
-    writer = LinearWriter("lin_api_secret", "proj", transport=httpx.MockTransport(handler), retry=NO_SLEEP)
+    writer = LinearWriter("lin_api_secret", "proj", transport=httpx.MockTransport(handler), retry=NO_SLEEP,
+                          assign_to_viewer=assign)
     created = writer.create_issue("team-1", "Follow-up", "details", "state-todo", ["label-autopilot"])
     assert created == ("issue-1", "INU-999", "https://linear/INU-999")
-    assert len(calls) == 2
+    assert len(calls) == (2 if assign else 1)
 
 
 def test_tables_over_the_notion_child_limit_are_split_and_notes_keep_every_block():

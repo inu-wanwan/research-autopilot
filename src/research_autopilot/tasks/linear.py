@@ -121,7 +121,14 @@ def _to_issue(n: dict) -> LinearIssue:
 
 class LinearWriter(LinearClient):
     """Phase 5 write operations (comments, issue creation, history). Status changes are
-    restricted by the caller (autopilot.linear_ops) to non-approval states."""
+    restricted by the caller (autopilot.linear_ops) to non-approval states.
+
+    ``assign_to_viewer``: issues RA creates are left unassigned by default (user decision 2026-10-14: the user's
+    own task feed delivers issues assigned to them); ``RA_LINEAR_ASSIGNEE=me`` assigns them to the API key owner."""
+
+    def __init__(self, api_key: str, project_id: str, *, assign_to_viewer: bool = False, **kw) -> None:
+        super().__init__(api_key, project_id, **kw)
+        self.assign_to_viewer = assign_to_viewer
 
     def team_states(self, team_id: str) -> dict[str, tuple[str, str]]:
         data = self._gql("query($id: String!) { team(id: $id) { states { nodes { id name type } } } }", {"id": team_id})
@@ -147,11 +154,13 @@ class LinearWriter(LinearClient):
         return data["viewer"]["id"]
 
     def create_issue(self, team_id: str, title: str, description: str, state_id: str, label_ids: list[str]) -> tuple[str, str, str]:
-        assignee_id = self.viewer_id()
+        issue_input = {"teamId": team_id, "projectId": self.project_id, "title": title, "description": description,
+                       "stateId": state_id, "labelIds": label_ids}
+        if self.assign_to_viewer:
+            issue_input["assigneeId"] = self.viewer_id()
         data = self._gql(
             "mutation($in: IssueCreateInput!) { issueCreate(input: $in) { success issue { id identifier url } } }",
-            {"in": {"teamId": team_id, "projectId": self.project_id, "title": title, "description": description,
-                    "stateId": state_id, "labelIds": label_ids, "assigneeId": assignee_id}})
+            {"in": issue_input})
         if not data["issueCreate"]["success"]:
             raise ConnectorResponseError("linear", "issueCreate returned success=false")
         i = data["issueCreate"]["issue"]
