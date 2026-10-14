@@ -13,6 +13,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+# Shared by the Phase 2 Planner, the Research Planner and the Research Evaluator (2026-10-14: a task saying
+# "confirm the approval wait" was planned as an in-repository approval gate whose job then refused to run).
+APPROVALS_ARE_RA = (
+    "Approvals belong to Research Autopilot: a human approves scopes, plans, budgets, external code and results on "
+    "Discord before anything runs, and the word 'approval' in a specification refers to that. Never plan an "
+    "in-repository approval mechanism: no approval / status fields that block execution, no 'pending approval' "
+    "manifests, no guard that makes a job exit until a human edits a file. Every planned command must run to "
+    "completion when Research Autopilot starts it.")
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)

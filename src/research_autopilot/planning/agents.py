@@ -19,7 +19,7 @@ import openai
 from agents import Agent, ModelBehaviorError, RunConfig, Runner
 from pydantic import BaseModel, ValidationError
 
-from research_autopilot.models import ExecutionPlan, ReviewResult, RevisionRequest, TaskSpec
+from research_autopilot.models import APPROVALS_ARE_RA, ExecutionPlan, ReviewResult, RevisionRequest, TaskSpec
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -125,7 +125,7 @@ Rules:
 - If a question only the literature can answer would materially change the plan, put it into
   literature_requests (concise, answerable questions); otherwise leave it empty.
 - Write in the same language as the task specification.
-"""
+""" + "- " + APPROVALS_ARE_RA + "\n"
 
 REVIEWER_INSTRUCTIONS = """\
 You are the independent Reviewer of Research Autopilot. You check a Planner's execution

@@ -10,6 +10,7 @@ import re
 
 from pydantic import BaseModel, Field
 
+from research_autopilot.models import APPROVALS_ARE_RA
 from research_autopilot.research import scope as scope_mod
 from research_autopilot.research.models import (EvidenceItem, OpenQuestion, PlannedTask, PlannedTaskOut, PlanStatus,
                                                 ResearchPlan, ResearchScope)
@@ -43,6 +44,7 @@ given research repository. Rules:
   cost honestly within BUDGET; produces/consumes name artifacts.
 - Cite EVIDENCE ids in rationale and evidence_ids; mark assumptions explicitly; add open_questions instead of
   deciding scientific matters the scope leaves open.
+- {APPROVALS_ARE_RA}
 At most {MAX_INITIAL_TASKS} tasks. {scope_mod.UNTRUSTED}
 """
 

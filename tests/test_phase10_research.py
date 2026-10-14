@@ -740,3 +740,14 @@ def test_a_human_resume_resets_the_no_progress_count(tmp_path):
     cs = orchestration.cycles(deps.store, "INU-900")
     assert [c.decision.action for c in cs] == ["continue", "continue", "complete"], [c.decision.action for c in cs]
     assert run.stage is WorkflowStage.DONE
+
+
+def test_planners_are_told_approvals_belong_to_ra_not_the_repository():
+    """2026-10-14 (Eagle INU-331): 'confirm the approval wait' became an in-repo gate whose job refused to run."""
+    from research_autopilot.models import APPROVALS_ARE_RA
+    from research_autopilot.planning.agents import PLANNER_INSTRUCTIONS
+    from research_autopilot.research.evaluator import EVAL_INSTRUCTIONS
+    from research_autopilot.research.planner import PLAN_INSTRUCTIONS
+    assert "Never plan an in-repository approval mechanism" in APPROVALS_ARE_RA
+    for text in (PLAN_INSTRUCTIONS, EVAL_INSTRUCTIONS, PLANNER_INSTRUCTIONS):
+        assert APPROVALS_ARE_RA in text
