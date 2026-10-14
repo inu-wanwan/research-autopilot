@@ -77,6 +77,7 @@ class AutopilotDeps:
     dependency_inferer: object | None = None
     external: object | None = None  # Phase 9 external.service.ExternalDeps
     research: object | None = None  # Phase 10 research.workflow.ResearchDeps (None: research objectives block)
+    publisher: object | None = None  # autopilot.publish.GitHubPublisher (None: finished tasks are not published)
 
     @property
     def store(self):
@@ -102,9 +103,15 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
             from research_autopilot.research import orchestration
             summary["research"] = orchestration.tick(deps)
         for req in deps.approvals.pending():
-            if req.kind in (ApprovalKind.EXTERNAL_CODE, ApprovalKind.EXTERNAL_LICENSE):
-                continue  # Phase 9 requests are decided by external.grants (not tied to a Linear state)
+            if req.kind in (ApprovalKind.EXTERNAL_CODE, ApprovalKind.EXTERNAL_LICENSE, ApprovalKind.PUBLISH):
+                continue  # Phase 9 / publish requests are decided by their own modules (not tied to a Linear state)
             summary["approvals"].append(_check_approval(deps, req))
+        if not deps.settings.dry_run:
+            from research_autopilot.autopilot import publish
+            try:
+                summary["publish"] = publish.tick(deps, _runs(deps), lambda r: _save(deps, r))
+            except Exception as exc:  # never break the poll loop
+                summary["publish"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
         if deps.research is not None and not deps.settings.dry_run:
             from research_autopilot.research import orchestration
             # a research-scope request that went stale / expired just now is re-planned in this same poll
@@ -827,6 +834,11 @@ def _complete(deps: AutopilotDeps, run: WorkflowRun) -> None:
     deps.ops.set_state(deps.linear.get_issue(run.task_id), "Done", f"completion {exp.experiment_run_id}")
     run.stage = WorkflowStage.DONE
     run.event("done", f"hypothesis {a.hypothesis_outcome}; " + "; ".join(a.reasons))
+    try:
+        from research_autopilot.autopilot import publish
+        publish.request(deps, run)
+    except Exception as exc:  # Done stands; this task is just not offered for publication
+        run.event("publish_request_failed", f"{type(exc).__name__}: {exc}"[:300])
     _notify(deps, run, EventKind.TASK_COMPLETED, f"done:{run.run_id}",
             [f"Notes: {deps.notion_writer.page_url(notes.notion_page_id)}", f"Linear: {links['linear']}",
              f"Result: {a.hypothesis_outcome}; " + (exp.analysis.summary[:200] if exp.analysis else "")])

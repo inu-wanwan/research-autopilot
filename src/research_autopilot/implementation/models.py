@@ -36,6 +36,8 @@ class RepoConfig(BaseModel):
     # Phase 4 runs experiments inside the repository's own container image instead of a uv venv, e.g.
     # {"compose_project": "active-space-ra", "service": "research", "workdir": "/workspace"} (docker compose)
     container: dict[str, str] | None = None
+    # push the finished task branch and open a PR after a Discord approval (autopilot.publish); needs a GitHub url
+    publish: bool = False
 
 
 class ComplexityAssessment(BaseModel):

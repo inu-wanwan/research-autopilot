@@ -69,6 +69,49 @@ blocked や dead_letter は errors、retry や stage 遷移は logs に届く。
 
 結果ページは、「結論」「計算結果」「検証状況」「注意点」「次のアクション」と、折りたたみの「参照・再現情報」で構成する。表の数値は表示用に丸めるが、未丸め値と詳細な検証・監査情報は PostgreSQL / ExperimentManifest / JSON artifacts に残る。主要 artifact は repo-relative path で示し、worker の一時絶対パスや checksum は本文に展開しない。既存の結果ページは自動更新せず、この形式は新しく作成する Notes に適用される。
 
+## 4b. 完了したタスクの push と Pull Request（2026-10-14 ユーザー決定）
+
+Phase 3 の仕様（merge と push はしない）に対する追加。ユーザー決定（2026-10-14）は次の 4 点。
+
+- 承認を求める時点：人が投げたタスクの完了時
+- 承認方法：Discord のボタン
+- 承認後に行うこと：タスクブランチを push し、Pull Request を作成する
+- **PR の単位：人が投げたタスク 1 件**
+
+PR の単位の詳細：
+
+- Phase 10 の研究タスクでは、研究の完了時に 1 回だけ依頼が届く。
+  - push する commit：サイクルの子タスクのうち、実験の検証まで通った最後の実装。子タスクは前の子の commit を土台に積み上がるので、それまでの変更がすべて入る。
+  - 最後の commit の祖先でない実装があれば、依頼と PR に「含まれない」と明記する。
+- サイクルの子タスク、6B の子タスク、自動のフォローアップには依頼を出さない。
+- ブランチ名は `autopilot/<タスクID>`（例 `autopilot/inu-292`）。研究を Resume して再び完了すると新しい依頼が届き、承認すると同じブランチを進めて（fast-forward）PR が更新される。
+
+流れ：
+
+1. タスク（研究タスクなら研究）が完了すると、approvals チャンネルに「push して PR を作ってよいか」の依頼（種類 `publish`）が届く。
+   - 依頼が届くのは、`config/research_repos.toml` で `publish = true` かつ GitHub の `url` がある repository だけ。
+   - `RA_GITHUB_PUSH_TOKEN` が空なら依頼は作らない。
+   - Linear の状態は Done のまま変わらない。
+2. Approve すると、次のポーリングで次の 2 つを行う。
+   - その commit を `autopilot/...` ブランチとして push する。
+   - base branch への PR を作成し、results チャンネルに PR の URL を送る。
+3. Reject すると何もしない。
+4. merge は GitHub で人が行う。
+
+安全上の約束：
+
+- push するのは承認した (repository, branch, commit, base) だけ。
+  - repository の `publish` を外すか、`url` を変えると、依頼は失効する。
+- base branch への push、force push、merge はしない。`autopilot/` で始まらないブランチは拒否する。
+- token は push のときだけ環境変数（`GIT_CONFIG_*`）で git に渡す。argv、remote URL、`.git/config`、ログには残らない。
+  - Implementer / Reviewer の環境からは除かれる（`TOKEN` を含む変数名はすべて除去される）。
+
+失敗したとき：
+
+- 通信などの一時的な失敗は、次のポーリングで再試行する（最大 5 回）。
+- リモートのブランチが進んでいる（non-fast-forward）、権限がない、などの失敗では再試行しない。errors チャンネルに通知する。
+- 原因を直したら `research-agent autopilot publish-retry <TASK>` を実行する。承認はそのまま有効。
+
 ## 5. 上限と予算（初期値）
 
 研究タスクの同時実行は1件。1回の実験からの新しい提案は最大3件、連鎖の深さは3、保留できる提案は5件。予算は root タスクとそのすべての追加実験の累計で、API $5、計算 4 CPU 時間（`RA_AUTOPILOT_BUDGET_*`）。超過したら BUDGET 承認を求める（承認すると予算は2倍になる）。再試行・fallback・修正で予算がリセットされることはない。

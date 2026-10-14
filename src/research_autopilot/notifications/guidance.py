@@ -45,6 +45,10 @@ APPROVAL_TEMPLATES: dict[str, tuple[str, list[str]]] = {
         "リポジトリ・ライセンス・サンドボックス検証の結果・実行範囲（下記）を確認する",
         "Approve = この範囲内でのみ実行を許可 / Reject = 実行しない / Request revision（コメント必須）",
         _NEXT_POLL]),
+    "publish": ("完了したタスクの実装を GitHub に push して Pull Request を作ってよいか", [
+        "Notion の結果と下の「変更」（push 先のブランチ・PR）を確認する",
+        "Approve = タスクのブランチだけを push して PR を作成（main への merge は GitHub で人が行う）/ Reject = push しない",
+        _NEXT_POLL]),
     "external_license": ("外部コードのライセンス条項の判断", [
         "検出したライセンス条項（下記）とリポジトリを確認する",
         "Approve = この用途で使ってよい（検証と登録に進む）/ Reject = このリポジトリは使わない", _NEXT_POLL]),

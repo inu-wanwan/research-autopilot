@@ -94,6 +94,7 @@ class ApprovalKind(StrEnum):
     EXTERNAL_CODE = "external_code"  # Phase 9: first execution grant (or scope change) for external code
     EXTERNAL_LICENSE = "external_license"  # Phase 9: unclear / conflicting license terms need a human
     RESEARCH_SCOPE = "research_scope"  # Phase 10: versioned research plan / scope (initial or change)
+    PUBLISH = "publish"  # push the finished task branch and open a PR (user decision 2026-10-14)
 
 
 class ApprovalStatus(StrEnum):
@@ -264,6 +265,9 @@ class WorkflowRun(BaseModel):
     dod_replans: int = 0
     dod_claim: dict | None = None  # {"criteria", "evidence", "by", "statements", "plan_run_id", "plan_id"}
     chain_depth: int = 0  # 0 = user-created root task
+    # approved publications (autopilot.publish), one per repository: {"request_id", "repo_id", "state", "attempts",
+    # "pr_url", "last_error", ...}
+    publications: list[dict] = Field(default_factory=list)
     parent_task_id: str | None = None
     attempts: int = 0
     events: list[dict] = Field(default_factory=list)

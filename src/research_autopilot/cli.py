@@ -334,6 +334,24 @@ def autopilot_resume(task: str, stage: str = typer.Option(..., "--stage", help="
     _set_run_stage(task, stage, f"resumed by operator at {stage}")
 
 
+@ap_app.command("publish-retry")
+def autopilot_publish_retry(task: str) -> None:
+    """Try a failed (approved) push / pull request of a finished task again after fixing the cause."""
+    from research_autopilot.autopilot import publish
+    from research_autopilot.autopilot.models import WorkflowRun
+    from research_autopilot.storage import db as dbm
+
+    store = Store(load_settings().resolved_database_url())
+    store.init_schema()
+    runs = [WorkflowRun.model_validate(r) for r in store.find(dbm.workflow_runs, task_id=task)]
+    run = next((r for r in reversed(runs) if any(p.get("state") == "failed" for p in r.publications)), None)
+    if run is None or not publish.retry(None, run):
+        typer.echo("no failed publication for this task", err=True)
+        raise typer.Exit(1)
+    store.put(dbm.workflow_runs, run.run_id, run.model_dump(mode="json"), task_id=run.task_id, stage=run.stage.value)
+    typer.echo(json.dumps({"task": task, "publications": run.publications}, ensure_ascii=False))
+
+
 def _set_run_stage(task: str, stage: str, message: str) -> None:
     from research_autopilot.autopilot.models import WorkflowRun, WorkflowStage
     from research_autopilot.storage import db as dbm

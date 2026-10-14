@@ -1030,6 +1030,11 @@ def _finish(deps, run: WorkflowRun, bundle, auth: ResearchAuthorization | None, 
         deps.ops.set_state(issue, "Done", f"research completed ({len(cs)} cycle(s))")
         run.stage = WorkflowStage.DONE
         run.event("research_completed", reason[:300])
+        try:  # one PR per research objective (user decision 2026-10-14); Done stands if asking fails
+            from research_autopilot.autopilot import publish
+            publish.request(deps, run, research=True)
+        except Exception as exc:
+            run.event("publish_request_failed", f"{type(exc).__name__}: {exc}"[:300])
         closed = _close_unused_children(deps, run, cs)
         _milestone(deps, run.task_id, f"done:{run.run_id}",
                    [f"Research completed after {len(cs)} cycle(s)", reason[:600], f"Notes: {note_url}",

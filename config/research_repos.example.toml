@@ -13,3 +13,6 @@ typecheck_command = ["uv", "run", "mypy", "."]
 check_timeout_seconds = 600
 # Phase 7A (optional): the same repository on other environments (RA_CATALOG_ENVIRONMENT names).
 # locations = { eagle = "~/workspace/research-repos/h2-test" }
+# Optional: after a task is Done, ask on Discord whether to push its autopilot/... branch and open a PR
+# (needs a GitHub `url` and RA_GITHUB_PUSH_TOKEN; the base branch is never pushed, merging stays on GitHub).
+# publish = true

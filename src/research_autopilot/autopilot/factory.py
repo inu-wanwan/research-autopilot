@@ -31,7 +31,11 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     plan = build_deps(p2)
     exp = build_exp_deps()
     impl = exp.impl_deps
-    linear = LinearWriter(p2.linear_api_key.get_secret_value(), p2.linear_project_id)
+    import os
+    assignee = os.environ.get("RA_LINEAR_ASSIGNEE", "none").strip().lower() or "none"
+    if assignee not in ("none", "me"):
+        raise ValueError(f"RA_LINEAR_ASSIGNEE must be 'none' or 'me', not {assignee!r}")
+    linear = LinearWriter(p2.linear_api_key.get_secret_value(), p2.linear_project_id, assign_to_viewer=assignee == "me")
     writer = NotionWriter(p2.notion_api_token.get_secret_value(), p2.notion_tasks_data_source_id, s5.notes_data_source_id)
     ops = LinearOps(linear, plan.store, test_only=s5.test_only, write_enabled=s5.write_enabled and not dry_run)
     channel = PrefectConfirmationChannel(s5.confirm_deployment, s5.prefect_ui_url)
@@ -47,9 +51,12 @@ def build_autopilot_deps(dry_run: bool = False) -> AutopilotDeps:
     dependency_inferer = OpenAIDependencyInferer(s5.dag_inference_model or p2.reviewer_model, p2.model_pricing,
                                                  lambda: s5.budget_api_usd, p2.agents_tracing)
     from research_autopilot.research.workflow import ResearchDeps, llm_factory_from_env
+    from research_autopilot.autopilot.publish import GitHubPublisher
+    push_token = os.environ.get("RA_GITHUB_PUSH_TOKEN", "").strip()
+    publisher = GitHubPublisher(push_token) if push_token else None
     return AutopilotDeps(external=exp.external, research=ResearchDeps(llm_factory=llm_factory_from_env(p2)), settings=AutopilotSettings(default_budget=s5.budget, prefect_ui_url=s5.prefect_ui_url,
                                                     max_concurrent_tasks=s5.max_concurrent_tasks, dry_run=dry_run),
                          plan=plan, impl=impl, exp=exp, linear=linear, notion_writer=writer, ops=ops, approvals=approvals,
                          outbox=Outbox(plan.store, writer, linear, ops),
                          completion_reviewer=OpenAICompletionReviewer(p2.reviewer_model, p2.model_pricing),
-                         notifier=notifier, dependency_inferer=dependency_inferer)
+                         notifier=notifier, dependency_inferer=dependency_inferer, publisher=publisher)

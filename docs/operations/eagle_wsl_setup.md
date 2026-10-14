@@ -163,7 +163,42 @@ sudo install -o ra -g ra -m 600 /home/rixyt/workspace/ResearchAutopilot/.env /op
   - `RA_EXP_MAX_WALLTIME_MIN=480`
 - `RA_AUTOPILOT_BUDGET_CPU_HOURS`：既定の 4 だと、上の設定では約 10 分で予算承認を求められる。タスクの規模に合わせて人間が決める。
 
-**研究リポジトリ**：`~/research-repos/` に clone する。`config/research_repos.example.toml` をもとに `/opt/research-autopilot/config/research_repos.toml` を作る（path は `/home/ra/research-repos/...`）。どのリポジトリを入れるかは人間が決める。
+**研究リポジトリ**（例：private の `inu-wanwan/active_space_research`）。どのリポジトリを入れるかは人間が決める。
+
+1. **clone 用の読み取り専用 deploy key**（ra）。
+   - GitHub の repository の Settings > Deploy keys に登録する。Allow write access は OFF。
+   - push は下の token で行うので、この鍵には書き込み権限を付けない。
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/active_space_research -N "" -C "ra@eagle"
+   cat ~/.ssh/active_space_research.pub          # これを Deploy keys に登録
+   printf '%s\n' 'Host github-asr' '  HostName github.com' '  User git' \
+     '  IdentityFile ~/.ssh/active_space_research' '  IdentitiesOnly yes' >> ~/.ssh/config
+   mkdir -p ~/research-repos
+   git clone github-asr:inu-wanwan/active_space_research.git ~/research-repos/active_space_research
+   ```
+2. **docker compose プラグイン**（ra）。
+   - repository の compose イメージで Phase 4 を実行する場合（`container = {...}`）に必要。rootless の静的版には含まれない。
+   ```bash
+   mkdir -p ~/.docker/cli-plugins
+   curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
+     https://github.com/docker/compose/releases/download/v5.4.0/docker-compose-linux-x86_64
+   chmod +x ~/.docker/cli-plugins/docker-compose && docker compose version
+   ```
+3. **研究イメージのビルド**（ra）。Phase 4 は、このホストにイメージが無いと止まる。
+   ```bash
+   cd ~/research-repos/active_space_research && docker compose -p active-space-ra build research
+   ```
+   - compose.yaml / Dockerfile が root 以外のユーザー（`user:` / `USER`）を指定していると、rootless ではジョブのディレクトリに書けない可能性がある（未検証）。その場合はエージェントに見せる。
+4. **`/opt/research-autopilot/config/research_repos.toml`**。
+   - `config/research_repos.example.toml` をもとに作る（path は `/home/ra/research-repos/...`）。
+   - `test_command` などは Mac の同じファイルの値を使う。
+   - 完了後の push と PR を使う repository には `publish = true` と GitHub の `url` を書く（`phase5_autopilot.md` §4b）。
+5. **push / PR 用の token**（人間が GitHub で作る。使う場合だけ）。
+   - Fine-grained personal access token を作る。
+     - Repository access：対象の repository だけ。
+     - Permissions：Contents を Read and write、Pull requests を Read and write。
+   - `/opt/research-autopilot/.env` の `RA_GITHUB_PUSH_TOKEN` に書く。
+   - token の期限が切れると push は失敗して errors に通知される。期限は人間が管理する。
 
 **常駐サービスの有効化**：§3 の A1（エージェントの作業）が終わってから行う。
 
