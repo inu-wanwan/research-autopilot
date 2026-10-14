@@ -114,6 +114,12 @@ class FakeLinearFull(FakeLinear):
         self.created.append(ident)
         return issue.id, ident, f"https://linear.app/x/issue/{ident}"
 
+    def project_team_id(self):
+        return next(iter(self.issues.values())).team_id
+
+    def find_by_notion_page(self, page_id):
+        return [k for k, i in self.issues.items() if page_id in i.notion_page_ids or page_id in (i.description or "")]
+
     def find_by_marker(self, marker):
         return [{"id": i.id, "identifier": i.identifier, "url": i.url, "title": i.title}
                 for i in self.issues.values() if marker in i.title]

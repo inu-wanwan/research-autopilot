@@ -128,7 +128,17 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
             # Phase 6A: an autopilot label is only a scope gate, never a start signal.
             for page_id in deps.plan.manager.notion.requested_task_ids():
                 page = deps.plan.manager.notion.get_task(page_id)
-                if not page.run_requested or not page.linear_issue_id or (only_task and page.linear_issue_id != only_task):
+                if not page.run_requested:
+                    continue
+                if not page.linear_issue_id:
+                    # 2026-10-14 user decision: Run Autopilot on a page without a Linear issue creates the issue first
+                    if only_task or deps.settings.dry_run:
+                        continue
+                    ident = _ensure_linear_issue(deps, page, summary)
+                    if ident is None:
+                        continue
+                    page = page.model_copy(update={"linear_issue_id": ident})
+                if only_task and page.linear_issue_id != only_task:
                     continue
                 bundle = deps.plan.manager.load(page.linear_issue_id)
                 if deps.research is not None and not deps.settings.dry_run:
@@ -211,6 +221,38 @@ def poll(deps: AutopilotDeps, *, only_task: str | None = None, prefect_flow_run_
     finally:
         store.release_lease(POLL_LEASE, "poller")
     return summary
+
+
+def _ensure_linear_issue(deps: AutopilotDeps, page, summary: dict) -> str | None:
+    """Linear issue for a Notion task whose Run Autopilot was pressed without one (label = scope label, Todo,
+    unassigned, the Notion URL in the description so both links agree).  An issue that already links the page is
+    reused (a retry after a half-finished attempt never duplicates).  Writes follow the autopilot write policy
+    (test-only: only [TEST] titles); a refused page is projected as Blocked with the reason."""
+    from types import SimpleNamespace
+    try:
+        deps.ops._guard(SimpleNamespace(title=page.title, identifier="(new)"))
+    except WriteRefused as exc:
+        reason = f"Linear Issue ID が空で、RA が Issue を作る書き込みが許可されていません（{exc}）"
+        deps.notion_writer.project_execution(page.page_id, status="Blocked", error=reason, acknowledge=True)
+        summary.setdefault("linear_created", []).append({"page": page.page_id, "refused": str(exc)[:200]})
+        return None
+    try:
+        found = deps.linear.find_by_notion_page(page.page_id)
+        if found:
+            ident = found[0]
+        else:
+            team = deps.linear.project_team_id()
+            state_id = deps.linear.team_states(team)["Todo"][0]
+            labels = deps.linear.label_ids([deps.plan.settings.scope_label])
+            desc = ("Research Autopilot が Notion の Run Autopilot から作成した Issue。\n\n"
+                    f"詳細仕様（SSOT）: {deps.notion_writer.page_url(page.page_id)}")
+            _, ident, _ = deps.linear.create_issue(team, page.title, desc, state_id, labels)
+        deps.notion_writer.set_task_links(page.page_id, linear_identifier=ident)
+    except Exception as exc:  # the request stays pending (Run Requested) and is retried on the next poll
+        summary.setdefault("linear_created", []).append({"page": page.page_id, "error": f"{type(exc).__name__}: {exc}"[:200]})
+        return None
+    summary.setdefault("linear_created", []).append({"page": page.page_id, "issue": ident, "reused": bool(found)})
+    return ident
 
 
 def _runs(deps: AutopilotDeps) -> list[WorkflowRun]:

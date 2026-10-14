@@ -166,6 +166,22 @@ class LinearWriter(LinearClient):
         i = data["issueCreate"]["issue"]
         return i["id"], i["identifier"], i["url"]
 
+    def project_team_id(self) -> str:
+        """The (first) team of the configured project: where issues RA creates for a Notion task go."""
+        data = self._gql("query($p: String!) { project(id: $p) { teams(first: 5) { nodes { id } } } }", {"p": self.project_id})
+        nodes = data["project"]["teams"]["nodes"]
+        if not nodes:
+            raise ConnectorResponseError("linear", "the configured project has no team")
+        return nodes[0]["id"]
+
+    def find_by_notion_page(self, page_id: str) -> list[str]:
+        """Identifiers of project issues whose description links this Notion page (idempotent issue creation)."""
+        hex_id = page_id.replace("-", "")
+        data = self._gql(
+            "query($p: ID!, $m: String!) { issues(first: 10, filter: { project: { id: { eq: $p } }, "
+            "description: { contains: $m } }) { nodes { identifier } } }", {"p": self.project_id, "m": hex_id})
+        return [n["identifier"] for n in data["issues"]["nodes"]]
+
     def create_relation(self, blocking_issue_id: str, blocked_issue_id: str) -> None:
         """``blocking`` blocks ``blocked`` (Linear blocked-by, the Phase 6B DAG edge source)."""
         data = self._gql("mutation($in: IssueRelationCreateInput!) { issueRelationCreate(input: $in) { success } }",
