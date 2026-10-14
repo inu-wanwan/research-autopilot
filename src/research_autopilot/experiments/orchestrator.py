@@ -238,6 +238,7 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
     done: dict[str, str] = {}  # experiment_id -> "validated" | "blocked"
     waiting_since: dict[str, float] = {}  # experiment_id -> when it started waiting for free memory
     waited: set[str] = set()
+    warned_deps: set[str] = set()  # experiments whose other-task job_dependencies were already reported
     # Rebuild state from the manifest (resume)
     for exp_id in m.specs:
         last = _last_job(m, exp_id)
@@ -257,16 +258,22 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
         for exp_id, spec in m.specs.items():
             if exp_id in done or _active_job(m, exp_id):
                 continue
-            unknown = [d for d in spec.resources.job_dependencies if d not in m.specs]
+            ignored = [d for d in spec.resources.job_dependencies if d not in m.specs and _TASK_ID.fullmatch(d)]
+            if ignored and exp_id not in warned_deps:
+                warned_deps.add(exp_id)
+                m.event("warning", f"{exp_id}: job_dependencies {ignored} look like other task ids, not experiments of "
+                                   f"this run; ignored (ordering between tasks is guaranteed by the task DAG)")
+            job_deps = _run_deps(spec, m.specs)
+            unknown = [d for d in job_deps if d not in m.specs]
             if unknown:
                 done[exp_id] = "blocked"
                 m.event("blocked", f"{exp_id}: unknown dependency {unknown}")
                 continue
-            if any(done.get(d) == "blocked" for d in spec.resources.job_dependencies):
+            if any(done.get(d) == "blocked" for d in job_deps):
                 done[exp_id] = "blocked"
                 m.event("blocked", f"{exp_id}: dependency failed")
                 continue
-            if not all(done.get(d) == "validated" for d in spec.resources.job_dependencies):
+            if not all(done.get(d) == "validated" for d in job_deps):
                 continue
             last = _last_job(m, exp_id)
             scale = 1.5 if last and last.triage and last.triage.action == "retry_more_resources" else 1.0
@@ -325,8 +332,17 @@ def _schedule(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, max_loops: in
         raise _Block(f"experiments blocked: {blocked}" + _triage_summary(m, blocked))
 
 
+_TASK_ID = re.compile(r"[A-Z][A-Z0-9]*-\d+")  # e.g. INU-358: a task id, never an experiment id of this run
+
+
+def _run_deps(spec, specs) -> list[str]:
+    """job_dependencies that are about experiments of this run. Other tasks' ids are dropped: the order between
+    tasks is already guaranteed by the task DAG / Linear blocked-by, and Phase 4 cannot resolve them."""
+    return [d for d in spec.resources.job_dependencies if d in specs or not _TASK_ID.fullmatch(d)]
+
+
 def _note_serialization(m: ExperimentManifest, rm: res.ResourceManager) -> None:
-    independent = [e for e, sp in m.specs.items() if not sp.resources.job_dependencies]
+    independent = [e for e, sp in m.specs.items() if not _run_deps(sp, m.specs)]
     if len(independent) > 1:
         cap_cpu, cap_mem = rm.capacity()
         if rm.settings.max_parallel_jobs < len(independent):

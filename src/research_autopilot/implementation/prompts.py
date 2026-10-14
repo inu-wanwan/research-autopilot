@@ -76,6 +76,9 @@ EXPERIMENT DEFINITION SCHEMA. It tells the experiment runner exactly how to run 
   for `python -m`); never rely on the package being installed.
 - resources (cpu, memory_gb, gpu, walltime_minutes): give a value, "required" or "estimated", the rationale
   and a confidence level. Do not invent hard requirements; mark estimates as estimates.
+- resources.job_dependencies lists ONLY experiment ids defined by this task's own experiment.json that must run
+  first. Never put other tasks' ids (e.g. INU-358) there: order between tasks is guaranteed by the task DAG, and
+  results of earlier tasks are read as inputs. Leave it empty when there is no such experiment.
 - Do not run the actual research calculation; only implement it and make it runnable. Real research outputs are
   produced and validated by Phase 4, so do not add fabricated or precomputed result files merely to make the
   implementation review appear complete.

@@ -189,6 +189,23 @@ def test_dependency_failure_blocks_dependent(tmp_path):
     assert m.state is ExperimentState.BLOCKED and jobs_of(m, "b") == []
 
 
+def test_other_task_id_in_job_dependencies_is_ignored_with_a_warning(tmp_path):
+    # INU-363 (2026-10-14): the spec listed the earlier task INU-358; its order is guaranteed by the task DAG.
+    deps, runs, *_ = make_exp(tmp_path, variants=[variant("a", deps=["INU-358"])], compute=FakeComputeBackend([OK]))
+    m = run_experiment(deps, phase3_run_ids=runs)
+    assert m.state is ExperimentState.COMPLETED, m.block_reason
+    warnings = [e for e in m.events if e.kind == "warning" and "INU-358" in e.message]
+    assert len(warnings) == 1
+
+
+def test_unknown_experiment_name_in_job_dependencies_still_blocks(tmp_path):
+    deps, runs, *_ = make_exp(tmp_path, variants=[variant("a", deps=["typo-experiment"])],
+                              compute=FakeComputeBackend([OK]))
+    m = run_experiment(deps, phase3_run_ids=runs)
+    assert m.state is ExperimentState.BLOCKED and jobs_of(m, "a") == []
+    assert any("unknown dependency" in e.message for e in m.events)
+
+
 def test_resource_estimate_planning_and_caps():
     from phase3_fakes import experiment_def
     from research_autopilot.implementation.experiment import Resources
