@@ -9,57 +9,59 @@ from __future__ import annotations
 
 from research_autopilot.notifications.events import EventKind, NotificationEvent
 
-_DECIDE = "Approve / Request revision（コメント必須）/ Reject のいずれかを押す"
-_NEXT_POLL = "押した後は次のポーリング（最大 5 分）で自動的に続きが始まる（追加の操作は不要）"
-_RUN = "Notion のタスクページで Run Autopilot を押す（新しい実行として最初から計画し直す）"
+_DECIDE = "Approve / Request Revision（要コメント）/ Reject のどれかを押す"
+_NEXT_POLL = "押せば次のポーリング（最大 5 分）で自動的に続きが始まる（追加の操作は不要）"
+_RUN = "Notion のタスクページで Run Autopilot を押す（最初から計画し直す）"
 
-# kind -> (what is asked, steps)
+# kind -> (what is asked, steps).  Messages show [変更点] [理由] [予算・費用] above the steps, so steps say "上の".
 APPROVAL_TEMPLATES: dict[str, tuple[str, list[str]]] = {
-    "onboarding": ("Autopilot への委任（計画・実装・実験・解析をこのタスクの範囲で自律実行）の承認", [
+    "onboarding": ("このタスクを Autopilot に任せてよいか（計画・実装・実験・解析をタスクの範囲で自律実行）", [
         "Notion のタスクページで目的・科学的不変条件・受け入れ基準を確認する",
-        "下の「変更」「予算」を確認する（範囲外の追加実験は別途承認が必要）",
+        "上の［変更点］［予算・費用］を確認する（範囲外の追加実験は別途承認）",
         _DECIDE, _NEXT_POLL]),
-    "budget": ("予算超過のため実行を止めています。予算の増額（承認で現在の上限の 2 倍）の承認", [
-        "下の「予算」で使用量と上限、超過の理由を確認する",
-        "続ける場合は Approve（上限が 2 倍になり止まった段階から再開）",
-        "続けない場合は Reject（打ち切り）、仕様を直す場合は Request revision（コメント必須）", _NEXT_POLL]),
-    "completion_review": ("自動で完了と判定できなかった結果の確認（Done にしてよいか）", [
-        "下の「理由」と Notion の結果・受け入れ基準を確認する",
-        "Approve = Done にして Notes を作成 / Request revision（コメント必須）= 止めて仕様を直す / Reject = 打ち切り",
+    "budget": ("予算超過で止めています。予算を増やしてよいか（承認で上限が 2 倍）", [
+        "上の［予算・費用］で使用量・上限・超過の理由を確認する",
+        "続けるなら Approve（上限 2 倍で止まった段階から再開）",
+        "やめるなら Reject（打ち切り）、仕様を直すなら Request Revision（要コメント）", _NEXT_POLL]),
+    "completion_review": ("自動で完了と判定できなかった結果を Done にしてよいか", [
+        "上の［理由］と Notion の結果・受け入れ基準を確認する",
+        "Approve = Done にして Notes を作成 / Request Revision（要コメント）= 止めて仕様を直す / Reject = 打ち切り",
         _NEXT_POLL]),
-    "proposal": ("自動範囲外の追加実験（フォローアップタスク）の承認", [
+    "proposal": ("自動範囲外の追加実験（フォローアップタスク）を実行してよいか", [
         "Notion の提案タスクページで目的・変更点・理由を確認する",
-        "Approve = 実行キューに入る / Reject = 取り下げ / Request revision（コメント必須）", _NEXT_POLL]),
-    "dag": ("親タスクの子タスク間の依存関係（推論した DAG）の承認", [
-        "下の依存関係（producer -> consumer）と根拠を確認する",
+        "Approve = 実行キューに入る / Reject = 取り下げ / Request Revision（要コメント）", _NEXT_POLL]),
+    "dag": ("推論した子タスク間の依存関係（DAG）でよいか", [
+        "上の［変更点］（producer -> consumer）と［理由］を確認する",
         "正しければ Approve（DAG を固定して子タスクを開始）",
-        "違う場合は Notion の子タスクの仕様（依存・入力）を直してから親タスクで Run Autopilot を押す"
+        "違う場合は Notion の子タスクの仕様（依存・入力）を直し、親タスクで Run Autopilot を押す"
         "（このメッセージは失効し、推論し直した依頼が届く）", _NEXT_POLL]),
-    "research_scope": ("研究スコープ（研究計画）の承認", [
+    "research_scope": ("研究計画を承認してよいか", [
         "Notion の計画ページで目的・条件・タスク・予算を確認する",
         _DECIDE,
-        "仕様を直したい場合は Notion の仕様を編集して保存するだけでよい（自動で計画し直し、新しい版が届く）",
+        "仕様を直したいときは Notion の仕様を編集して保存するだけでよい（自動で計画し直し、新しい版が届く）",
         _NEXT_POLL]),
-    "plan": ("計画の科学的判断の承認", ["Notion の計画を確認する", _DECIDE, _NEXT_POLL]),
-    "external_code": ("外部コードを研究環境で実行してよいか（初回実行・範囲変更）の承認", [
-        "リポジトリ・ライセンス・サンドボックス検証の結果・実行範囲（下記）を確認する",
-        "Approve = この範囲内でのみ実行を許可 / Reject = 実行しない / Request revision（コメント必須）",
+    "plan": ("計画の科学的判断を承認してよいか", ["Notion の計画を確認する", _DECIDE, _NEXT_POLL]),
+    "external_code": ("外部コードを研究環境で実行してよいか（初回実行・範囲変更）", [
+        "上のリポジトリ・ライセンス・サンドボックス検証の結果・実行範囲を確認する",
+        "Approve = この範囲内でのみ実行を許可 / Reject = 実行しない / Request Revision（要コメント）",
         _NEXT_POLL]),
-    "publish": ("完了したタスクの実装を GitHub に push して Pull Request を作ってよいか", [
-        "Notion の結果と下の「変更」（push 先のブランチ・PR）を確認する",
+    "publish": ("完了したタスクの実装を GitHub に push して PR を作ってよいか", [
+        "Notion の結果と上の［変更点］（push 先のブランチ・PR）を確認する",
         "Approve = タスクのブランチだけを push して PR を作成（main への merge は GitHub で人が行う）/ Reject = push しない",
         _NEXT_POLL]),
-    "external_license": ("外部コードのライセンス条項の判断", [
-        "検出したライセンス条項（下記）とリポジトリを確認する",
+    "external_license": ("外部コードのライセンス条項をこの用途で使ってよいか", [
+        "上のライセンス条項とリポジトリを確認する",
         "Approve = この用途で使ってよい（検証と登録に進む）/ Reject = このリポジトリは使わない", _NEXT_POLL]),
 }
 
 
 def approval_event(req, *, flow_name: str = "autopilot", links: list[str] = (), form_url: str | None = None,
                    dedupe_key: str | None = None, changes_limit: int = 8) -> NotificationEvent:
-    """The single approvals message of one request (buttons are attached by the Discord gateway)."""
+    """The single approvals message of one request (buttons are attached by the Discord gateway).
+
+    Lines are ``<prefix>: <text>``; ``notifications.layout`` turns them into [見出し] blocks."""
     kind = req.kind.value
-    ask, steps = APPROVAL_TEMPLATES.get(kind, (f"{kind} の承認", ["下の内容を確認する", _DECIDE, _NEXT_POLL]))
+    ask, steps = APPROVAL_TEMPLATES.get(kind, (f"{kind} を承認してよいか", ["上の内容を確認する", _DECIDE, _NEXT_POLL]))
     p = req.payload or {}
     details = [f"依頼: {ask}", f"対象: {req.title}"]
     if p.get("_supersedes"):
@@ -67,10 +69,13 @@ def approval_event(req, *, flow_name: str = "autopilot", links: list[str] = (), 
     details += [x for x in links if x]
     if form_url:
         details.append(f"Approval form: {form_url}")
-    details += [f"変更: {x}" for x in req.what_changes[:changes_limit]]
+    changes = list(req.what_changes)
+    details += [f"変更: {x}" for x in changes[:changes_limit]]
+    if len(changes) > changes_limit:
+        details.append(f"変更: ほか {len(changes) - changes_limit} 件（Notion / Linear を参照）")
     details += [f"理由: {x}" for x in req.diff_from_original[:5]]
     details.append(f"予算: {req.budget_summary}")
-    details.append(f"期限: {req.expires_at:%Y-%m-%d %H:%M} UTC（期限後は無効になり、必要なら新しい依頼が届く）")
+    details.append(f"期限: {req.expires_at:%m/%d %H:%M} UTC まで（過ぎると無効。必要なら新しい依頼が届く）")
     return NotificationEvent(kind=EventKind.APPROVAL_REQUIRED, flow_name=flow_name, flow_run_name=req.task_id,
                              state_name=f"{kind}:{req.status.value}", details=details,
                              dedupe_key=dedupe_key or f"approval:{req.request_id}", approval_request_id=req.request_id,
@@ -94,22 +99,22 @@ _BLOCK_RULES: list[tuple[tuple[str, ...], list[str]]] = [
     (("Definition of Done",), [
         "Notion の受け入れ基準（Definition of Done）を確認し、実現できない項目を書き直すか根拠を確認する"]),
     (("revision requested",), [
-        "承認メッセージに書かれた修正内容（コメント）を確認する",
+        "上の［理由］にある修正内容（コメント）を確認する",
         "Notion の仕様・計画をコメントどおりに直す"]),
     (("Phase 2",), [
-        "下の理由（計画できなかった点）を確認する",
+        "上の［理由］（計画できなかった点）を確認する",
         "Notion の仕様（目的・実装方針・受け入れ基準・ファイル範囲）を、理由に書かれた点が解消するよう直す"]),
     (("Phase 3",), [
-        "下の理由（実装・レビューが止まった点）を確認する",
+        "上の［理由］（実装・レビューが止まった点）を確認する",
         "Notion の仕様（実装方針・対象ファイル・受け入れ基準）を直す。環境・権限の問題ならそれを直す"]),
     (("Phase 4",), [
-        "下の理由（実験が止まった点）を確認する",
+        "上の［理由］（実験が止まった点）を確認する",
         "計算条件・資源・データの指定を Notion の仕様で直す。計算資源の問題ならそれを直す"]),
     (("external code",), [
-        "外部コードの判断（Reject / Request revision / 失効）を確認する",
+        "外部コードの判断（Reject / Request Revision / 失効）を確認する",
         "Notion の仕様で外部コードを使わない方針にするか、範囲を変えて改めて依頼する"]),
     (("cannot complete",), [
-        "下の理由（決定的なチェックが通らなかった点）と実験結果を確認する",
+        "上の［理由］（決定的なチェックが通らなかった点）と実験結果を確認する",
         "受け入れ基準・実験条件を Notion で直す"]),
     (("research objective found but",), [
         "Phase 10 の研究計画の設定（LLM の設定）を有効にする"]),
@@ -119,7 +124,7 @@ _BLOCK_RULES: list[tuple[tuple[str, ...], list[str]]] = [
 def block_steps(reason: str, *, resume_button: bool = False) -> list[str]:
     """Numbered steps for a blocked run, derived from the block reason."""
     steps = next((list(s) for keys, s in _BLOCK_RULES if any(k in reason for k in keys)),
-                 ["下の理由を確認する", "理由に書かれた点を Notion の仕様または環境で直す"])
+                 ["上の［理由］を確認する", "理由に書かれた点を Notion の仕様または環境で直す"])
     steps.append("直したら Resume を押す（打ち切る場合は Cancel）" if resume_button else _RUN)
     return steps
 

@@ -76,8 +76,9 @@ def test_legacy_completion_routing_and_embed_shape():
     assert route_event(experiment) is DiscordRoute.LOGS
     assert route_event(planning) is DiscordRoute.LOGS
     payload = embed_payload(experiment)
-    assert payload["title"] and payload["description"] == "metric: 0.1"
-    assert {f["name"] for f in payload["fields"]} == {"Task / Run", "Status"}
+    assert payload["title"] == "完了｜INU-1"
+    assert payload["description"] == "**[タスク]** INU-1\n**[内容]** metric: 0.1"
+    assert payload["fields"] == [] and payload["footer"] == "参照: 状態 Completed · flow run-experiment"
 
 
 def test_discord_config_is_strict_and_token_is_secret():

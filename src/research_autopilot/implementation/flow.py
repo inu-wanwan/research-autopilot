@@ -60,7 +60,7 @@ def _publish(m: ImplementationManifest) -> dict:
                      f"Phase 3 run: {m.phase3_run_id}",
                      f"費用: ${m.cost_usd_known:.4f}（費用不明の呼び出し {m.cost_unknown_calls} 件）"],
             needs_human=True,
-            steps=["下の理由を確認する（詳細は Prefect の run の artifact）",
+            steps=["上の［理由］を確認する（詳細は Prefect の run の artifact）",
                    "理由に応じて Notion の仕様（実装方針・対象ファイル・受け入れ基準）、承認、環境を直す",
                    f"implement-task を resume_run_id={m.phase3_run_id} で実行し直す"]))
     create_markdown_artifact(key="impl-" + re.sub(r"[^a-z0-9-]", "-", m.task_id.lower()),

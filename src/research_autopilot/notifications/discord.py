@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 
 from research_autopilot.autopilot.models import ApprovalRequest, ApprovalStatus, DiscordSubmission
 from research_autopilot.models import utcnow
-from research_autopilot.notifications.events import EventKind, NotificationEvent, numbered
+from research_autopilot.notifications.events import EventKind, NotificationEvent
+from research_autopilot.notifications.layout import FOOTER_LIMIT, TOTAL_LIMIT, render
 from research_autopilot.storage import db
 from research_autopilot.storage.db import Store
 
@@ -137,47 +138,42 @@ _COLOURS = {
 }
 
 
-_LINK_PREFIXES = ("Notion:", "Notion plan:", "Notion Notes:", "Notes:", "Linear:", "Prefect:", "Approval form:")
+def embed_payload(event: NotificationEvent, marker: str | None = None) -> dict:
+    """Library-independent embed representation, kept within Discord's limits.
 
-
-def embed_payload(event: NotificationEvent) -> dict:
-    """Library-independent embed representation, kept small enough for Discord.
-
-    ``steps`` become a numbered "次にやること" field; Notion / Linear / Notes links in ``details`` get their own
-    field so the place to act is visible at a glance."""
+    Short Japanese ``[見出し]`` blocks in the description (``notifications.layout``); identifiers go to the footer
+    reference line, followed by the delivery ``marker`` (used to adopt an already-sent message after a restart)."""
     route = route_event(event)
-    links = [d for d in event.details if d.startswith(_LINK_PREFIXES) and "http" in d]
-    body = [d for d in event.details if d not in links]
-    description = "\n".join(body)[:4000] or "詳細はリンク先を確認してください。"
-    fields = []
-    if event.steps:
-        fields.append({"name": "次にやること", "value": "\n".join(numbered(event.steps))[:1024], "inline": False})
-    if links:
-        fields.append({"name": "リンク", "value": "\n".join(links)[:1024], "inline": False})
-    if event.flow_run_name:
-        fields.append({"name": "Task / Run", "value": event.flow_run_name[:1024], "inline": True})
-    if event.state_name:
-        fields.append({"name": "Status", "value": event.state_name[:1024], "inline": True})
-    if event.error_type:
-        fields.append({"name": "Error", "value": event.error_type[:1024], "inline": True})
-    return {
-        "title": event.title()[:256],
-        "description": description,
+    layout = render(event)
+    footer = " · ".join(x for x in (layout.footer, marker) if x)
+    payload = {
+        "title": layout.title,
+        "description": layout.description or "詳細はリンク先を確認してください。",
         "color": _COLOURS[route],
         "url": event.ui_url,
-        "fields": fields[:25],
+        "fields": [],
+        "footer": footer[:FOOTER_LIMIT],
     }
+    over = len(payload["title"]) + len(payload["description"]) + len(payload["footer"]) - TOTAL_LIMIT
+    if over > 0:
+        payload["description"] = payload["description"][: len(payload["description"]) - over - 1] + "…"
+    return payload
 
 
 def _embed(event: NotificationEvent, marker: str | None = None) -> discord.Embed:
-    payload = embed_payload(event)
+    payload = embed_payload(event, marker)
     embed = discord.Embed(title=payload["title"], description=payload["description"],
                           colour=payload["color"], url=payload["url"])
-    for field in payload["fields"]:
-        embed.add_field(**field)
-    if marker:
-        embed.set_footer(text=marker)
+    for item in payload["fields"]:
+        embed.add_field(**item)
+    if payload["footer"]:
+        embed.set_footer(text=payload["footer"])
     return embed
+
+
+def _has_marker(footer_text: str | None, marker: str) -> bool:
+    """The marker ends the footer (older messages have the bare marker as the whole footer)."""
+    return bool(footer_text) and (footer_text == marker or footer_text.endswith(" · " + marker))
 
 
 def _delivery_marker(key: str) -> str:
@@ -620,7 +616,7 @@ class DiscordGatewayClient(discord.Client):
                 marker = _delivery_marker(delivery.dedupe_key)
                 adopted = None
                 async for previous in channel.history(limit=100):
-                    if any(embed.footer and embed.footer.text == marker for embed in previous.embeds):
+                    if any(embed.footer and _has_marker(embed.footer.text, marker) for embed in previous.embeds):
                         adopted = previous
                         break
                 if adopted is not None:

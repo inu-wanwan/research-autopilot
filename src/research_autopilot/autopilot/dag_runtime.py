@@ -703,7 +703,7 @@ def _dag_problem_steps(problems: list[DAGProblem]) -> list[str]:
     spec = [p for p in problems if not p.code.startswith(("inferred_", "dependency_inference_"))]
     steps = [f"{p.task_id or '親タスク'} の Notion ページを直す: {p.message}（{p.code}）" for p in spec[:6]]
     if len(spec) > 6:
-        steps.append(f"ほか {len(spec) - 6} 件（下の理由を参照）")
+        steps.append(f"ほか {len(spec) - 6} 件（上の［理由］を参照）")
     if len(spec) < len(problems):
         # the dependency planner's proposal failed validation: a model output problem, not a spec problem
         steps.append("依存関係の自動推定が検証を通りませんでした（仕様の誤りではありません）。"
@@ -716,7 +716,7 @@ def _dag_problem_steps(problems: list[DAGProblem]) -> list[str]:
 def _child_failure_steps(statuses: dict[str, ExecutionStatus]) -> list[str]:
     failed = sorted(t for t, s in statuses.items()
                     if s in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED, ExecutionStatus.CANCELED})
-    return [f"止まった子タスク（{', '.join(failed) or '下の理由を参照'}）の理由を確認する",
+    return [f"止まった子タスク（{', '.join(failed) or '上の［理由］を参照'}）の理由を確認する",
             "その子タスクの Notion の仕様（または環境）を直す",
             "親タスクで Run Autopilot を押す（完了した子タスクの成果物は再利用される）"]
 
