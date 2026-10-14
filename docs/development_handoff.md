@@ -62,6 +62,13 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - `tests/test_phase9_external.py` 42 passed。
 - 未検証：H2〜H5 の通し実行、ra の rootless Docker で Phase 9 の制限オプションが通るか、ra での Codex / Claude ログイン。
 - WSL の rixyt に uv 0.12.18 を `~/.local/bin` に入れた（テスト実行のため）。
+- 2026-10-14：人間が H1〜H4 を完了（systemd 有効、`ra` は uid 1002・groups ra,users のみ、`/opt/research-autopilot` は ra 所有）。
+- 2026-10-14：エージェントが A1 を実施した。
+  - rixyt 用チェックアウトは `~/workspace/ResearchAutopilot`（`/mnt/c` の repo から clone、LF、`.env` 600、`GIT_SHA=feed112`）。今後はこちらで作業する。`/mnt/c` 側は CRLF のため commit に使わない。
+  - compose（host override）で postgres / prefect-server が healthy。既存 volume のパスワードと一致していることも確認した。
+  - `research_autopilot` DB を作成し、`db init` で 37 table。
+  - Windows 側の待ち受けは 4200 / 5432 とも 127.0.0.1 のみ。LAN・tailnet の IP からの直接接続は不可。tailnet の Serve は `/api/health` 200、認証なしは 401。
+- 判明したこと：`.env` を `set -a; . ./.env` で shell に読み込むと、`RA_MODEL_PRICING` の JSON 行でエラーになる（値は読まれない）。`deployment.md` §2 の automation 登録手順が該当する。代わりに `uv run python infra/host/with_dotenv.py <cmd>` を使う。
 
 ### Phase 10 Research Planning / Orchestration（2026-10-11 / Claude Code）
 
@@ -613,6 +620,6 @@ Fake の E2E で確認したこと：
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
    - 次に人間が H5、そのあとエージェントが A2 を実行する。
    - H4 最後の `docker run` が失敗したら、Phase 9 の制限オプション（`external/sandbox.py` の `_limits` / `_hardening`）を rootless 用に見直す。
-   - ブランチ `docs/wsl-setup` は未 push。main への merge はユーザーの指示を待つ。
+   - A1 は完了（2026-10-14）。H5 の clone（GitHub から）に `infra/host/` が必要だが、ブランチ `docs/wsl-setup` は未 push。push / main merge はユーザーの指示を待つ。
 2b. TSUBAME と Phase 5 の本番化（schedule active、TEST_ONLY=false）は `phase5_autopilot.md` §7 に従い、ユーザーの承認を得てから行う。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
