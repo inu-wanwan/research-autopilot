@@ -26,8 +26,8 @@ from research_autopilot.experiments.analyst import Analyst, LlmBudgetError, Scie
 from research_autopilot.experiments.backends.base import BackendNotConfigured, ComputeBackend
 from research_autopilot.experiments.config import Phase4Settings
 from research_autopilot.experiments.environment import (EnvironmentError_, container_argv, container_provenance,
-                                                         gpu_override,
-                                                       ensure_venv, export_commit, resolve_argv)
+                                                       ensure_venv, export_commit, gpu_override, repository_output_mounts,
+                                                       resolve_argv)
 from research_autopilot.experiments.models import (
     AnalysisResult,
     ExperimentManifest,
@@ -375,8 +375,12 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
     impl = deps.store.get_implementation(spec.identification.phase3_run_id)
     repo_cfg = _repo(deps, impl)
     repo = Path(repo_cfg.path).expanduser()
+    if repo_cfg.read_only_output_dirs and not repo_cfg.container:
+        raise _Block(f"{spec.experiment_id}: read-only repository outputs require a container")
     try:
         export_commit(repo, spec.identification.commit, checkout)  # immutable per-job checkout of the fixed commit
+        output_mounts = repository_output_mounts(repo, repo_cfg.read_only_output_dirs, repo_cfg.container) \
+            if repo_cfg.container else []
         if deps.prepare_env and not spec.external_code and repo_cfg.container:
             # the repository's own image is the environment (e.g. conda + compiled solvers): no venv is built
             m.environment[spec.experiment_id] = container_provenance(repo_cfg.container, checkout)
@@ -421,14 +425,15 @@ def _submit(deps: ExpDeps, m: ExperimentManifest, run_dir: Path, spec: Experimen
         setup_env = dict(env)
         for step in spec.execution.setup:
             p = subprocess.run(container_argv(repo_cfg.container, checkout.resolve(), step,
-                                              spec.execution.working_directory, setup_env, mounts),
+                                              spec.execution.working_directory, setup_env, mounts,
+                                              read_only_mounts=output_mounts),
                                cwd=checkout, capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL)
             if p.returncode != 0:
                 raise _Block(f"{spec.experiment_id}: {SETUP_DEFECT}: setup step {step[:3]} failed (exit "
                              f"{p.returncode}) in the container: {(p.stderr or p.stdout)[-300:]}")
         override = gpu_override(repo_cfg.container, jdir) if alloc.gpu_ids else None  # only a GPU job sees GPUs
         argv = container_argv(repo_cfg.container, checkout.resolve(), argv, spec.execution.working_directory, env,
-                              mounts, override)
+                              mounts, override, output_mounts)
         env = {}  # passed into the container with -e; the docker CLI itself keeps the host HOME / context
     job = JobSpec(job_key=key, experiment_run_id=m.experiment_run_id, experiment_id=spec.experiment_id, spec_id=spec.spec_id,
                   commit=spec.identification.commit, argv=argv, working_directory=spec.execution.working_directory,

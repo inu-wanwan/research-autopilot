@@ -209,6 +209,8 @@ sudo install -o ra -g ra -m 600 /home/rixyt/workspace/ResearchAutopilot/.env /op
    - `/opt/research-autopilot/.env` の `RA_GITHUB_PUSH_TOKEN` に書く。
    - token の期限が切れると push は失敗して errors に通知される。期限は人間が管理する。
 
+既存の Git 管理外の `outputs/` を Phase 4 のコンテナジョブで参照する場合、対象リポジトリの設定に `read_only_output_dirs = ["phase4_orbital_diagnostics"]` のように直下のディレクトリ名を列挙する。ジョブの固定 commit checkout に同名の `outputs/<name>/` が読み取り専用でマウントされる。設定したディレクトリがホストに存在しなければジョブは停止する。新規実験の出力先は、このマウント先以外にする。Catalog の検証済み判定は別途必要であり、この設定だけで未検証の成果物を検証済みとはみなさない。
+
 **常駐サービスの有効化**：§3 の A1（エージェントの作業）が終わってから行う。
 
 ```bash

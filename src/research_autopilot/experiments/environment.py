@@ -16,7 +16,7 @@ import re
 import subprocess
 import tarfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from research_autopilot.implementation.experiment import ExperimentSpec
 
@@ -174,8 +174,26 @@ def container_run_args(container: dict) -> list[str]:
     return out
 
 
+def repository_output_mounts(repo: Path, names: list[str], container: dict) -> list[tuple[Path, str]]:
+    """Expose configured live output directories at their usual paths in a job container, read-only."""
+    root = (Path(repo) / "outputs").resolve()
+    workdir = PurePosixPath(container.get("workdir", "/workspace"))
+    if not workdir.is_absolute():
+        raise EnvironmentError_("container workdir must be absolute for read-only outputs")
+    mounts = []
+    for name in names:
+        if not name or name in (".", "..") or "/" in name or "\\" in name or ":" in name:
+            raise EnvironmentError_(f"invalid read-only output directory name: {name!r}")
+        source = root / name
+        if source.is_symlink() or not source.is_dir() or not source.resolve().is_relative_to(root):
+            raise EnvironmentError_(f"read-only output directory is unavailable: {source}")
+        mounts.append((source, str(workdir / "outputs" / name)))
+    return mounts
+
+
 def container_argv(container: dict, checkout: Path, argv: list[str], working_directory: str, env: dict[str, str],
-                   mounts: list[Path], override: Path | None = None) -> list[str]:
+                   mounts: list[Path], override: Path | None = None,
+                   read_only_mounts: list[tuple[Path, str]] | None = None) -> list[str]:
     """``docker compose run`` of the repository's service with the job checkout as its project directory (the
     compose file's ``.`` volume therefore mounts this checkout, never the live repository). ``mounts`` are host
     directories the job reads (inputs, the job directory) and are mounted at the same path. ``override`` is an
@@ -194,6 +212,8 @@ def container_argv(container: dict, checkout: Path, argv: list[str], working_dir
            "--no-deps", *container_run_args(container), "-w", workdir]
     for m in sorted({str(Path(x).resolve()) for x in mounts}):
         cmd += ["-v", f"{m}:{m}"]
+    for source, target in read_only_mounts or []:
+        cmd += ["-v", f"{Path(source).resolve()}:{target}:ro"]
     cmd += git_mount_args(checkout)
     for k, v in sorted(env.items()):
         cmd += ["-e", f"{k}={v}"]

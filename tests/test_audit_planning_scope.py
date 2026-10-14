@@ -250,6 +250,29 @@ def test_container_repositories_run_experiments_in_their_own_image(tmp_path):
     assert "docker compose run research" in container_contract(repo)
 
 
+def test_configured_repository_outputs_are_mounted_read_only_at_checkout_paths(tmp_path):
+    import pytest
+    from research_autopilot.experiments.environment import EnvironmentError_, container_argv, repository_output_mounts
+
+    live = tmp_path / "live"
+    reference = live / "outputs" / "phase4_orbital_diagnostics"
+    reference.mkdir(parents=True)
+    (reference / "result.json").write_text("{}")
+    container = {"compose_project": "proj", "service": "research", "workdir": "/workspace"}
+    mounts = repository_output_mounts(live, ["phase4_orbital_diagnostics"], container)
+    argv = container_argv(container, tmp_path / "checkout", ["python", "audit.py"], ".", {}, [],
+                          read_only_mounts=mounts)
+    assert f"{reference.resolve()}:/workspace/outputs/phase4_orbital_diagnostics:ro" in argv
+    assert argv[-3:] == ["research", "python", "audit.py"]
+    with pytest.raises(EnvironmentError_, match="invalid read-only output"):
+        repository_output_mounts(live, ["../outside"], container)
+    with pytest.raises(EnvironmentError_, match="unavailable"):
+        repository_output_mounts(live, ["missing"], container)
+    (live / "outputs" / "link").symlink_to(reference, target_is_directory=True)
+    with pytest.raises(EnvironmentError_, match="unavailable"):
+        repository_output_mounts(live, ["link"], container)
+
+
 def test_container_runs_in_a_worktree_mount_the_main_git_dir_read_only(tmp_path):
     import subprocess
     from research_autopilot.experiments.environment import container_argv, worktree_git_mounts

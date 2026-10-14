@@ -16,3 +16,6 @@ check_timeout_seconds = 600
 # Optional: after a task is Done, ask on Discord whether to push its autopilot/... branch and open a PR
 # (needs a GitHub `url` and RA_GITHUB_PUSH_TOKEN; the base branch is never pushed, merging stays on GitHub).
 # publish = true
+# Phase 4 container repositories only: expose named children of the live outputs/ in the job
+# checkout at outputs/<name>, read-only. List only existing directories needed by approved work.
+# read_only_output_dirs = ["phase4_orbital_diagnostics"]

@@ -40,6 +40,8 @@ class RepoConfig(BaseModel):
     container: dict[str, str | dict[str, str]] | None = None
     # push the finished task branch and open a PR after a Discord approval (autopilot.publish); needs a GitHub url
     publish: bool = False
+    # Explicit immediate children of the live repository's outputs/ to expose read-only in Phase 4 containers.
+    read_only_output_dirs: list[str] = Field(default_factory=list)
 
 
 class ComplexityAssessment(BaseModel):
