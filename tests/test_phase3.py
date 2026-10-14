@@ -72,7 +72,7 @@ def test_codex_progress_summary_never_forwards_raw_commands_or_agent_text():
         "type": "agent_message", "text": "private chain of thought"}})) is None
 
 
-def test_implementation_progress_is_sent_to_logs_notifier(tmp_path):
+def test_only_implementation_and_review_milestones_are_sent_to_logs(tmp_path):
     class Recorder:
         persistent = True
 
@@ -90,9 +90,12 @@ def test_implementation_progress_is_sent_to_logs_notifier(tmp_path):
     m = implement(deps, handoff_path=Path(rec.handoff_path))
     details = [event.details[0] for event in recorder.events]
     assert m.state is RunState.COMPLETED
-    assert any("repository inspection started" in detail for detail in details)
-    assert any("review for attempt 1 finished with pass" in detail for detail in details)
+    # milestones only: implementation started -> finished -> review started -> finished (user request 2026-10-14)
+    assert [d.split(" (")[0] for d in details] == ["implementer attempt 1 started", "implementer attempt 1 finished with completed",
+                                                  "review for attempt 1 started", "review for attempt 1 finished with pass"]
     assert all(event.kind.value == "phase_transition" for event in recorder.events)
+    # the coding agent's step-by-step messages stay in the manifest for later inspection
+    assert any("repository inspection started" in e.message for e in m.events)
 
 
 # ---------------------------------------------------------------- classification / routing

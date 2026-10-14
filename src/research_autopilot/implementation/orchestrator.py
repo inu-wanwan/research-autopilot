@@ -513,7 +513,7 @@ def _run_with_fallback(deps: ImplDeps, m: ImplementationManifest, task: Implemen
             check_commands=[c for c in ((repo.test_command, repo.lint_command, repo.typecheck_command)
                                         if repo else ()) if c],
             on_progress=lambda message: _progress(
-                deps, m, run_dir, f"implementer attempt {attempt.number}: {message}"
+                deps, m, run_dir, f"implementer attempt {attempt.number}: {message}", notify=False
             ),
         )
 
@@ -599,7 +599,7 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
                     m.inherited_review if m.inherited_review and m.inherited_review.llm else None)
     outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallbacks,
                      previous=previous,
-                     on_event=lambda msg: _progress(deps, m, run_dir, msg),
+                     on_event=lambda msg: _progress(deps, m, run_dir, msg, notify=False),
                      extra_checks=lambda: [_experiment_check(task, wt)],
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,
                      extra_instructions=_repair_review_note(rctx) if rctx else "")
@@ -784,11 +784,13 @@ def _save(deps: ImplDeps, m: ImplementationManifest, run_dir: Path) -> None:
     deps.store.save_implementation(m)
 
 
-def _progress(deps: ImplDeps, m: ImplementationManifest, run_dir: Path, message: str) -> None:
-    """Persist operational progress and mirror its safe summary to Discord logs."""
+def _progress(deps: ImplDeps, m: ImplementationManifest, run_dir: Path, message: str, *, notify: bool = True) -> None:
+    """Persist operational progress; mirror only milestones to Discord logs (implementation / review started and
+    finished). The coding agent's and reviewer's step-by-step messages (e.g. "running the tests") stay in the
+    manifest events: they were added for development and flooded #logs (user request 2026-10-14)."""
     m.event("progress", message[:500])
     _save(deps, m, run_dir)
-    if deps.notifier is None:
+    if deps.notifier is None or not notify:
         return
     sequence = len(m.events)
     try:
