@@ -81,6 +81,7 @@ uv run research-agent discord check --send-test   # 明示的なテスト投稿�
 Compose では `prefect-worker` が PostgreSQL に通知を enqueue し、`discord-bot` が Gateway と REST を担当する。設定変更後は `ra-compose up -d prefect-worker discord-bot` で反映する。
 
 - イベントは種類から4チャンネルへ決定論的に routing し、Discord Embed で表示する。
+- Embed の書式（2026-10-14 ユーザー要望、`notifications/layout.py`）：タイトルは「承認依頼：研究計画｜INU-292」「完了｜INU-292」のように短く、本文は `[タスク]` `[確認してほしいこと]` `[状況]`／`[結果]`／`[内容]` `[変更点]` `[理由]` `[予算・費用]` `[期限]` `[次にやること]`（番号付き）`[リンク]`（Notion / Linear / PR）の順の短い見出しブロック。長い一覧は「ほか N 件（詳細は Notion / Linear）」で切る。request id・run id・commit SHA などは短縮してフッターの `参照: ...` 行に回し、その末尾に配信マーカー `ra:<24hex>` を置く（再起動時の取り込みは、フッターがマーカーと一致するか ` · <marker>` で終わるものを同じメッセージとみなす）。
 - 通知は DB outbox で重複排除し、成功時に message ID を保存する。失敗は pending/failed のまま指数 backoff で再送し、run の成否は変えない。
 - Gateway は自動再接続し、再起動時に pending 通知と承認待ち persistent view を DB から復元する。
 - Bot token は coding agent の環境、通知本文、ログ、custom_id、DB record に含めない。
