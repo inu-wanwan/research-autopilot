@@ -68,6 +68,11 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - compose（host override）で postgres / prefect-server が healthy。既存 volume のパスワードと一致していることも確認した。
   - `research_autopilot` DB を作成し、`db init` で 37 table。
   - Windows 側の待ち受けは 4200 / 5432 とも 127.0.0.1 のみ。LAN・tailnet の IP からの直接接続は不可。tailnet の Serve は `/api/health` 200、認証なしは 401。
+- 2026-10-14：ユーザー指示でエージェントが `C:\Users\rixyt\.wslconfig` を作成した（`memory=52GB`、`processors=32`。計算ノードとして使うため）。
+  - 反映には人間の `wsl --shutdown` と Docker Desktop の再起動が必要。反映後の `free -g` は未確認。
+  - 合意した `RA_EXP_*` は `eagle_wsl_setup.md` H5 にある。
+  - 未決定：`RA_AUTOPILOT_BUDGET_CPU_HOURS`。
+  - 既知の注意：`ra-prefect-worker` の restart は実行中のジョブも止める（KillMode が既定のまま）。
 - 判明したこと：`.env` を `set -a; . ./.env` で shell に読み込むと、`RA_MODEL_PRICING` の JSON 行でエラーになる（値は読まれない）。`deployment.md` §2 の automation 登録手順が該当する。代わりに `uv run python infra/host/with_dotenv.py <cmd>` を使う。
 
 ### Phase 10 Research Planning / Orchestration（2026-10-11 / Claude Code）

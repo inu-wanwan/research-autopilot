@@ -33,7 +33,7 @@ WSL2 Ubuntu（systemd 有効）
 
 | 項目 | 状態 |
 |---|---|
-| WSL | Ubuntu 24.04.1、x86_64、32 CPU、31 GiB。systemd は**無効**。`.wslconfig` はない |
+| WSL | Ubuntu 24.04.1、x86_64、32 CPU。H2 で systemd を有効化済み。2026-10-14 に `.wslconfig` で `memory=52GB` / `processors=32` を設定した（それまでは既定の 31 GiB）。実機は i9-14900KF（24 コア / 32 スレッド）、64 GB、RTX 4090 |
 | cgroup | v2（cpu / memory / pids などが使える）。`rixyt` の subuid は設定済み |
 | Docker | Docker Desktop（WSL integration）。WSL から `127.0.0.1` の publish ポートに届く |
 | Tailscale | Windows 側。Serve `https://eagle.tail5877f8.ts.net` → `127.0.0.1:4200` は設定済み |
@@ -154,7 +154,14 @@ sudo install -o ra -g ra -m 600 /home/rixyt/workspace/ResearchAutopilot/.env /op
 - 変更するもの：
   - `RA_CATALOG_ENVIRONMENT=eagle`
   - `RA_WORKTREES_DIR=/home/ra/worktrees`
-- `RA_EXP_*`：Eagle の資源に合わせる（`phase4_experiments.md` §2。予約分を残す）。決めるまでは Mac 用の値のままでよい。
+- `RA_EXP_*`：WSL 52 GB の前提で、2026-10-14 にユーザーと合意した値。
+  - `RA_EXP_RESERVE_CPU=4`
+  - `RA_EXP_RESERVE_MEMORY_GB=8`
+  - `RA_EXP_MAX_JOB_CPU=8`
+  - `RA_EXP_MAX_JOB_MEMORY_GB=14`
+  - `RA_EXP_MAX_PARALLEL=3`
+  - `RA_EXP_MAX_WALLTIME_MIN=480`
+- `RA_AUTOPILOT_BUDGET_CPU_HOURS`：既定の 4 だと、上の設定では約 10 分で予算承認を求められる。タスクの規模に合わせて人間が決める。
 
 **研究リポジトリ**：`~/research-repos/` に clone する。`config/research_repos.example.toml` をもとに `/opt/research-autopilot/config/research_repos.toml` を作る（path は `/home/ra/research-repos/...`）。どのリポジトリを入れるかは人間が決める。
 
