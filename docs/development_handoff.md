@@ -26,7 +26,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 01:44 JST / Codex
+2026-10-15 01:47 JST / Codex
 
 ### Eagle の研究 `outputs/` 参照経路（2026-10-15 / Codex）
 
@@ -43,6 +43,7 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - 01:31 JST に計画 v3 が生成され `pending_approval`。ただし `scope.autonomy` は 10/5/2/2 のままで、引用が途中で切れたため 3/3 が RA 既定値に戻った。v3 は承認しない。親仕様に「研究サイクル10回、新規タスク5件/サイクル、再試行3回/タスク、無進展3サイクルで停止」を一文で追加し、次の自動再計画待ち。元の数値は変更していない。INU-344 は未再開。
 - 計画 v4 は 10/5/3/3 を構造化値に取得したが、`needs_input`。blocking は `primary_metric`：value に「81 conditions」を含む一方、引用は「mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」のみで 81 を含まず、決定論的検証で ambiguous となった。モデルの引用選択と厳密な引用検証の組合せが原因であり、仕様の 81 条件自体は別箇所に明記されている。v3 は superseded、承認は v1 のまま。INU-344 は未再開。
 - ユーザー指示で Notion 親仕様の主指標文を「81 条件の mean simple regret（Hartree）を unique CASCI query 数（回）に対して評価する。」へ修正。既存の 81 条件・指標・閾値は変更なし。Eagle RA の TaskSpec に新文が入り、計画 v4 から spec hash が変わったことを確認。次の計画版生成と blocking 解消は未確認。
+- 計画 v5（https://www.notion.so/3f969893cf8f81f68de3d64574e6782a、hash `6ca4fa6cf512`）は `pending_approval`、6 tasks、`scope.autonomy` は 10/5/3/3、`primary_metric` は `stated`、blocking open question 0 件。非 blocking の BOCS 実装詳細・targets 引用についての質問は残る。承認は旧 v1 のままで、INU-344 は未再開。今回の仕様文修正だけで新計画の生成ゲートは通った。
 
 ## Git Branch / Commit
 
@@ -764,7 +765,7 @@ Fake の E2E で確認したこと：
 
 ## Known Issues / Blockers
 
-0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。計画 v4 は 3/3 を取得したが、primary_metric の引用に value 内の 81 がなく `needs_input`。承認は v1 のまま、INU-344 は resume 前で blocked。
+0. Eagle / INU-344：Phase 4 cache 欠損と Catalog 81件 inconsistent は 2026-10-15 に解消（81件 verified、resolve problems 0）。旧 INU-349 の単位宣言 fail も正常入力で監査し直すと発生しないことを確認。ユーザーは autonomy 上限を 3/3 と決定し、Notion 親仕様へ追記済み。計画 v5 は 10/5/3/3・blocking 0 で承認待ち。旧承認 v1 は 2/2 のまま、INU-344 は resume 前で blocked。
 1. **Notion / Linear へのアクセス不可**：エージェントは外部仕様を取得できない。Phase 1 の仕様はローカルの `docs/phase_specs/phase1.md` を使う。
 2. **実環境の情報が記録されていない**：研究室サーバーの OS / CPU、Docker / Compose のバージョン、バックアップの保存先、通知エンドポイント。サーバーでの動作はユーザーが確認済み。
 3. **実行中の run は自動で復旧できない**：heartbeat automation で Crashed を検出し、副作用を確認してから手動で再実行する設計（recovery.md）。
@@ -777,7 +778,7 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
-0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。`scope.py` の引用検証と Scope structurer の出力を調べ、仕様に既存の「81 条件」を primary_metric の引用に含められなかっただけで停止する問題を修正する。修正後は対象テストのみ実行し、新計画の 10/5/3/3 と blocking question 0 を確認する。新計画の研究スコープは人間が確認・承認する。旧 INU-349 の Spec / コード修正は不要。
+0a. Eagle の cache 配置・Catalog 81件 verified・read-only 監査 81/81 ok は完了。INU-344 の resume は未実施。計画 v5 の研究スコープ・6 tasks・非 blocking 質問を人間が確認し、Discord の新しい承認依頼で判断する。承認後にだけ再開する。旧 INU-349 の Spec / コード修正は不要。引用検証の堅牢化は別途検討できるが、今回の生成ゲートには不要。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
