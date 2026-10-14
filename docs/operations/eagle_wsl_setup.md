@@ -68,6 +68,12 @@ Windows の PowerShell で `wsl --shutdown` を実行し、WSL を開き直す�
 
 `wsl --shutdown` を実行すると、Docker Desktop のエンジン（WSL の `docker-desktop` ディストリ）も止まり、自動では戻らない（2026-10-13 に Eagle で発生）。そのため、続けて Docker Desktop をトレイの Quit Docker Desktop で終了し、起動し直す。
 
+**`wsl --shutdown` をするたびに（`.wslconfig` の変更を反映するときも）、この再起動が必要。** 2026-10-14 に発生した例では、コンテナは healthy のまま、Docker Desktop のポート中継が古いエンジンにつながったままになっていた。症状は次のとおり。
+- WSL / Windows から `127.0.0.1:4200` に応答がない（tailnet は 502）
+- `127.0.0.1:5432` への接続が `server closed the connection unexpectedly` で切れる
+
+確認：WSL で `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4200/api/health` が 200 になること。
+
 確認：
 - `ps -p 1 -o comm=` が `systemd` になる。
 - PowerShell の `wsl -l -v` で `docker-desktop` が Running になる。
