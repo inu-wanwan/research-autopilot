@@ -33,7 +33,9 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 - Eagle 実測：`ra` の worker / Discord bot / watchdog は active、INU-344 は `research stopped` で blocked。研究 repo の `supervisor_6c0d1dd` に exhaustive result 81 JSON があるが、`main_6c0d1dd/cache/` は存在しない。Catalog の対応 81 artifact は全件 inconsistent（代表的な理由：cache 照合先ファイルなし）。`outputs/*` は Git 除外のため、Phase 4 の `git archive` checkout に自動では入らない。
 - ブランチ `phase4/output-access`（origin/main `588fd4d` から分岐）の `7c5207d`：登録済み repository の `read_only_output_dirs` に列挙した `outputs/` 直下ディレクトリを Phase 4 コンテナの checkout 内 `outputs/<name>` に `:ro` mount。未設定時は従来どおり。存在しない / 不正な名前は実行前に拒否し、GPU compose override と共存。Eagle の `/opt/research-autopilot` では `deploy/output-access` の `c29897e` として適用し、`config/research_repos.toml` の active-space-research に `read_only_output_dirs = ["phase4_orbital_diagnostics"]` を設定した。Catalog の verified 判定や停止済み INU-344 は変更しない。
 - 変更前の関連テスト2件は WSL 既存 venv で成功。変更後は `tests/test_audit_planning_scope.py` の関連3件と `tests/test_gpu.py` の関連2件が成功（いずれも `PYTHONPATH=src /home/rixyt/workspace/ResearchAutopilot/.venv/bin/python -m pytest -q ... -k ...`）。全テストはユーザー指示で実行していない。Windows `uv run pytest -q` は sandbox の uv cache 書き込み拒否でテスト開始前に失敗した。
-- Eagle の rootless Docker で `:ro` mount による既存 reference 81件の読み取りと `statvfs` の read-only フラグを確認。`ra-prefect-worker` を再起動し、直後の `autopilot-poll` は Completed。`ra-discord-bot` / `ra-watchdog` も active。未検証：Mac 側に不足 cache の完全な原本が残っているか、実研究ジョブでの利用。
+- Eagle の rootless Docker で `:ro` mount による既存 reference 81件の読み取りと `statvfs` の read-only フラグを確認。`ra-prefect-worker` を再起動し、直後の `autopilot-poll` は Completed。`ra-discord-bot` / `ra-watchdog` も active。未検証：実研究ジョブでの利用。
+- 2026-10-15 の追加調査：Windows clone `C:\Users\rixyt\workspace_eagle\sekijima_lab_local\active_space_research\outputs\phase4_orbital_diagnostics\main_6c0d1dd\cache` に JSON 55,160件（ファイル長合計 120,930,269 bytes）を確認。一方 Eagle の `/home/ra/research-repos/active_space_research/outputs/phase4_orbital_diagnostics/main_6c0d1dd/cache` は未存在。Windows 側ファイルは WSL で mode 600 / uid 1001 と見え、`ra` から直接読むと Permission denied。両 clone は別実体であり、mount 設定だけでは不足 cache は補われない。Windows 原本と Eagle reference の全件 hash 照合および cache 完全性は未確認。
+- 旧 INU-349 の保存済み ExperimentSpec は監査 JSON の `group_id`、`mo_indices`、`energy_tolerance` を units に宣言したが、実出力に無く Validator は fail。現行の warning 緩和は「存在する値の単位宣言と形の不一致」が対象で、これら欠損宣言は依然 fail。再開前に旧 Spec をそのまま再利用しないよう、監査タスクの出力 schema / 宣言を整合させる必要がある。INU-344 は停止したまま。
 
 ## Git Branch / Commit
 
@@ -768,7 +770,7 @@ Fake の E2E で確認したこと：
 ## Exact Next Actions
 
 0. Eagle の `deploy/output-access` にローカル実装を適用済み。今後 main に統合する際は、`phase4/output-access` の `7c5207d`（実装）と後続の引き継ぎ commit を対象にし、Eagle の設定 `read_only_output_dirs` を維持する。Git main と本番 branch の統合は別途判断する。
-0a. 元の `main_6c0d1dd/cache/` を原本から Eagle に read-only で配置し、Catalog scan / resolve で 81件 verified を確認する。旧 INU-349 の ExperimentSpec は単位宣言不一致なので、監査再実行前に別途修復が必要。INU-344 の再開は研究者判断後に行う。
+0a. Windows clone の `main_6c0d1dd/cache/` を Eagle の研究 repo に持ち主・読み取り権限を整えて配置し、Catalog scan / resolve で 81件 verified を確認する。旧 INU-349 の ExperimentSpec は欠損フィールドの units 宣言が残るため、監査再実行前に出力 schema / 宣言を整合させる。INU-344 の再開は研究者判断後に行う。
 1. ユーザーの希望があれば、テスト専用 approval request で実 Discord の3ボタンと revision modal を操作し、polling / Linear 反映 / message disable まで確認する。本番タスクは使わない。
 2. Eagle デプロイ：`docs/operations/eagle_wsl_setup.md` の順に進める。
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
