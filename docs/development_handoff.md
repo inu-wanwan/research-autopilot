@@ -620,6 +620,6 @@ Fake の E2E で確認したこと：
    - 人間が H1〜H4 を行ったら、エージェントが §3 A1 を実行する。
    - 次に人間が H5、そのあとエージェントが A2 を実行する。
    - H4 最後の `docker run` が失敗したら、Phase 9 の制限オプション（`external/sandbox.py` の `_limits` / `_hardening`）を rootless 用に見直す。
-   - A1 は完了（2026-10-14）。H5 の clone（GitHub から）に `infra/host/` が必要だが、ブランチ `docs/wsl-setup` は未 push。push / main merge はユーザーの指示を待つ。
+   - A1 は完了（2026-10-14）。ユーザー指示（2026-10-14）で `docs/wsl-setup` を main に fast-forward し、origin に push した（`5335f57..beb2f1b`）。次は人間が H5 を行い、そのあとエージェントが A2 を実行する。
 2b. TSUBAME と Phase 5 の本番化（schedule active、TEST_ONLY=false）は `phase5_autopilot.md` §7 に従い、ユーザーの承認を得てから行う。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
