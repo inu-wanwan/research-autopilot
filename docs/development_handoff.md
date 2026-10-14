@@ -667,5 +667,6 @@ Fake の E2E で確認したこと：
    - 次に人間が H5、そのあとエージェントが A2 を実行する。
    - H4 最後の `docker run` が失敗したら、Phase 9 の制限オプション（`external/sandbox.py` の `_limits` / `_hardening`）を rootless 用に見直す。
    - A1 は完了（2026-10-14）。ユーザー指示（2026-10-14）で `docs/wsl-setup` を main に fast-forward し、origin に push した（`5335f57..beb2f1b`）。次は人間が H5 を行い、そのあとエージェントが A2 を実行する。
+   - ユーザー指示（2026-10-14）で `phase5/approved-push`（push 承認 / Linear 担当者 / GPU）を main に fast-forward し、push した（`49f52c3..838f2aa`）。ra の `/opt/research-autopilot` はまだ `4f02c64` のまま（git pull が必要）。
 2b. TSUBAME と Phase 5 の本番化（schedule active、TEST_ONLY=false）は `phase5_autopilot.md` §7 に従い、ユーザーの承認を得てから行う。
 3. テストデータの後片付け（INU-270〜273、INU-279、Notion のテストページと Notes、ラベル `autopilot`）と、Mac の検証用環境で PostgreSQL を 5433 で公開している override を外すかどうかは、ユーザーが判断する。
