@@ -275,7 +275,7 @@ def build(tmp: Path, *, drafts=None, compute=None, n=12, root_title="[TEST] Benc
     prices = {m: ModelPrice(input_per_1m=1.0, output_per_1m=4.0) for m in ("gpt-5.6-terra", "gpt-5.6-sol")}
     plan = make_deps(tmp, notion, linear, [make_plan()] * n, [review("approved")] * n, linear_write_enabled=True,
                      model_pricing=prices)
-    impl = ImplDeps(settings=Phase3Settings(worktrees_dir=tmp / "worktrees"), phase2=plan.settings,
+    impl = ImplDeps(settings=Phase3Settings(worktrees_dir=tmp / "worktrees", transient_retry_wait_seconds=0), phase2=plan.settings,
                     registry={"h2-test": repo_config(repo)}, store=plan.store, manager=plan.manager,
                     backends={"codex": FakeBackend("codex", [impl or impl_files()] * n), "claude": FakeBackend("claude", [])},
                     reviewers={"codex": FakeReviewer("codex", [code_review("pass")] * n), "claude": FakeReviewer("claude", [])})

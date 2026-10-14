@@ -163,7 +163,7 @@ def make_impl_deps(tmp_path: Path, codex: list[dict], claude: list[dict] | None 
                    codex_api: list[dict] | None = None, codex_api_reviewer: list | None = None, **settings_kw):
     repo = make_repo(tmp_path)
     deps2, notion, linear, rec = phase2_apply(tmp_path, sections, mode)
-    settings = Phase3Settings(worktrees_dir=tmp_path / "worktrees", **settings_kw)
+    settings = Phase3Settings(worktrees_dir=tmp_path / "worktrees", **{"transient_retry_wait_seconds": 0, **settings_kw})
     deps = ImplDeps(
         settings=settings, phase2=deps2.settings, registry={"h2-test": repo_config(repo)}, store=deps2.store,
         manager=TaskManager(notion, linear, deps2.settings),
