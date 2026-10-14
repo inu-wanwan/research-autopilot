@@ -51,8 +51,8 @@ def subscription_mode() -> str | None:
 
 
 def subscription_providers() -> list[str]:
-    """Subscriptions to try in order before the API: ``codex`` (default for truthy values) and/or ``claude``
-    (``RA_LLM_SUBSCRIPTION_FIRST=codex,claude``: the Claude subscription when Codex is at its limit)."""
+    """Subscriptions to try, in the written order, before the API: ``codex`` (default for truthy values) and/or
+    ``claude`` (``codex,claude``: Claude when Codex is at its limit; ``claude,codex``: Claude first)."""
     v = os.environ.get(ENV_FLAG, "").strip().lower()
     if v in ("1", "true", "yes", "on"):
         return ["codex"]
@@ -207,12 +207,10 @@ def try_structured(model: str, instructions: str, prompt: str, output_type: type
     Invalid output is retried once; usage limits / auth problems are cached for COOLDOWN_SECONDS so later calls
     skip the subprocess. Never raises for a subscription failure.
     """
-    providers = subscription_providers()
-    if "codex" in providers:
-        if (got := _try_codex(model, instructions, prompt, output_type, timeout, reasoning_effort)) is not None:
-            return got
-    if "claude" in providers:
-        if (got := _try_claude(instructions, prompt, output_type, timeout)) is not None:
+    for provider in subscription_providers():  # in the configured order (e.g. claude,codex: Claude first)
+        got = (_try_codex(model, instructions, prompt, output_type, timeout, reasoning_effort) if provider == "codex"
+               else _try_claude(instructions, prompt, output_type, timeout))
+        if got is not None:
             return got
     return None
 
