@@ -255,7 +255,8 @@ class ReviewOutcome(BaseModel):
     llm: CodeReviewResult | None
     reviewer: ModelChoice | None
     reviewer_usage: Usage = Field(default_factory=Usage)
-    reviewer_cost_usd: float | None = None
+    reviewer_cost_usd: float | None = None  # sum of the known-cost calls (None only in records before 2026-10-15)
+    reviewer_cost_unknown_calls: int = 0  # subscription calls etc.; they never hide the known cost of other calls
     revision_requests: list[str]
 
 

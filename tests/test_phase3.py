@@ -391,6 +391,18 @@ def test_reviewer_falls_back_through_every_backend(tmp_path):
     assert m.state is RunState.COMPLETED and m.final_review.reviewer.backend == "codex_api"
 
 
+def test_an_api_reviewers_cost_counts_after_a_subscription_reviewer_fails(tmp_path):
+    """Eagle 2026-10-15: the unknown cost of a failed subscription reviewer hid the fallback API reviewer's cost."""
+    from phase3_fakes import FakeReviewer
+    deps, _, rec, _, _ = make_impl_deps(tmp_path, [GOOD], reviewer=["quota_exhausted"],
+                                        claude_reviewer=["quota_exhausted"], codex_api=[])
+    deps.reviewers["codex_api"] = FakeReviewer("codex_api", [], cost_usd=0.25)
+    m = implement(deps, handoff_path=Path(rec.handoff_path))
+    assert m.final_review.reviewer_cost_usd == 0.25 and m.final_review.reviewer_cost_unknown_calls == 2
+    assert m.cost_usd_known == 0.25  # the subscription implementer and reviewers have no known cost
+    assert m.cost_unknown_calls == 1 + 2
+
+
 def test_api_billed_codex_backend_isolates_its_login_and_prices_every_call(tmp_path, monkeypatch):
     from research_autopilot.config import ModelPrice
     from research_autopilot.implementation.backends.base import BackendRequest

@@ -607,7 +607,7 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
                      science_guard=(lambda: _science_guard(rctx, task, wt)) if rctx else None,
                      extra_instructions=_repair_review_note(rctx) if rctx else "",
                      retry_wait_s=s.transient_retry_wait_seconds)
-    _account(m, outcome.reviewer_usage, outcome.reviewer_cost_usd if outcome.llm or outcome.reviewer_usage.total else 0.0)
+    _account_review(m, outcome)
     attempt.review = outcome
     m.changed_files = outcome.deterministic.changed_files
     m.event("review", f"attempt {attempt.number}: {outcome.verdict} ({outcome.reason[:200]})")
@@ -747,6 +747,13 @@ def _account(m: ImplementationManifest, usage: Usage, cost: float | None) -> Non
         m.cost_unknown_calls += 1
     else:
         m.cost_usd_known = round(m.cost_usd_known + cost, 6)
+
+
+def _account_review(m: ImplementationManifest, outcome: ReviewOutcome) -> None:
+    """A fallback API reviewer's known cost counts even when an earlier subscription reviewer's cost is unknown."""
+    m.usage = m.usage.add(outcome.reviewer_usage)
+    m.cost_usd_known = round(m.cost_usd_known + (outcome.reviewer_cost_usd or 0.0), 6)
+    m.cost_unknown_calls += outcome.reviewer_cost_unknown_calls
 
 
 def _resume_context(m: ImplementationManifest, task: ImplementationTask, wt: WorktreeManager) -> dict:
