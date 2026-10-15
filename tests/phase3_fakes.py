@@ -133,10 +133,11 @@ def code_review(verdict: str = "pass", invariant: bool = False, criteria: dict |
 
 
 class FakeReviewer:
-    def __init__(self, backend: str, script: list) -> None:
+    def __init__(self, backend: str, script: list, cost_usd: float | None = None) -> None:
         self.backend = backend
         self.script = list(script)
         self.calls = []
+        self.cost_usd = cost_usd  # None = unknown, like a subscription
 
     def __call__(self, task, choice, prompt, schema, log_path):
         self.calls.append((choice, prompt))
@@ -145,7 +146,7 @@ class FakeReviewer:
         if isinstance(item, str):  # a failure status
             status, item = item, None
         result = ImplementationResult(backend=self.backend, model=choice.model, status=status, exit_code=0,
-                                      usage=Usage(input_tokens=500, output_tokens=50))
+                                      usage=Usage(input_tokens=500, output_tokens=50), cost_usd=self.cost_usd)
         return result, item
 
 

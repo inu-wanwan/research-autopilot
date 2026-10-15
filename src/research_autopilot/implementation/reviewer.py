@@ -228,8 +228,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
                              previous=earlier)
     if extra_instructions:
         prompt = extra_instructions + "\n\n" + prompt
-    usage, cost = Usage(), 0.0
-    cost_known = True
+    usage, cost, unknown_calls = Usage(), 0.0, 0
     parsed, used = None, None
     candidates = [(choice, runner)] + (fallback if isinstance(fallback, list) else [fallback] if fallback else [])
     for i, (ch, run) in enumerate(candidates):
@@ -238,7 +237,7 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
             result, parsed = run(task, ch, prompt, review_schema(), log_dir / f"review-{ch.backend}-{i}-{attempt}.log")
             usage = usage.add(result.usage)
             if result.cost_usd is None:
-                cost_known = False
+                unknown_calls += 1
             else:
                 cost += result.cost_usd
             if result.status == "transient_error" and attempt == 0:  # e.g. Claude's OAuth refresh race
@@ -255,7 +254,8 @@ def review(task: ImplementationTask, repo: RepoConfig, wt: WorktreeManager, choi
             on_event(f"reviewer {ch.backend}/{ch.model} returned invalid review JSON (attempt {attempt + 1})")
         if parsed is not None:
             break
-    common = dict(deterministic=det, reviewer=used, reviewer_usage=usage, reviewer_cost_usd=cost if cost_known else None)
+    common = dict(deterministic=det, reviewer=used, reviewer_usage=usage, reviewer_cost_usd=round(cost, 6),
+                  reviewer_cost_unknown_calls=unknown_calls)
     if parsed is None:
         return ReviewOutcome(verdict="blocked", reason="LLM reviewer unavailable or returned invalid output",
                              categories=[], llm=None, revision_requests=[], **common)
