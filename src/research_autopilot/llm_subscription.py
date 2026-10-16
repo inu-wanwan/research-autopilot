@@ -182,46 +182,43 @@ def claude_structured(instructions: str, prompt: str, output_type: type[BaseMode
 
 
 GEMINI_MODEL_ENV = "RA_LLM_SUBSCRIPTION_GEMINI_MODEL"
-GEMINI_DEFAULT_MODEL = "gemini-3.1-pro-preview"  # from the CLI 0.64.0 constants; not yet verified with a real call
+GEMINI_DEFAULT_MODEL = "gemini-4-argon-high"  # `agy models` on Eagle, 2026-10-16
 _gemini = {"skip_until": 0.0}
 
 
 def gemini_structured(instructions: str, prompt: str, output_type: type[BaseModel],
                       timeout: int = DEFAULT_TIMEOUT, executable: str | None = None,
                       model: str | None = None) -> tuple[BaseModel, dict]:
-    """One headless ``gemini -o json`` call on the Google AI Pro login (every tool denied by policy, empty
-    directory, sanitized environment). The CLI cannot enforce a schema, so the schema is in the prompt and the
-    answer is validated here. Refuses (auth_error) unless the login is Login with Google (oauth-personal)."""
+    """One headless Antigravity CLI call (``agy --mode plan --json-schema``) on the Google AI Pro login, in an
+    empty directory with the sanitized environment. Refuses (auth_error) unless agy is logged in with a consumer
+    Google account, so it never adds pay-as-you-go cost."""
     from research_autopilot.implementation.backends import gemini as g
-    from research_autopilot.implementation.backends.base import run_process, tail
+    from research_autopilot.implementation.backends.base import run_process, sanitized_env, tail
 
-    exe = executable or os.environ.get("RA_LLM_SUBSCRIPTION_GEMINI", "").strip() or "gemini"
+    exe = executable or os.environ.get("RA_LLM_SUBSCRIPTION_GEMINI", "").strip() or "agy"
     if not shutil.which(exe):
         raise SubscriptionCallError("not_installed", f"{exe} not on PATH")
-    if (method := g.auth_type()) != g.SUBSCRIPTION_AUTH:
-        raise SubscriptionCallError("auth_error", f"gemini login is not a subscription ({method or 'unset'})")
+    ok, detail = g.login_state()
+    if not ok:
+        raise SubscriptionCallError("auth_error", f"agy is not logged in with a Google AI Pro account ({detail})")
     model = model or os.environ.get(GEMINI_MODEL_ENV, "").strip() or GEMINI_DEFAULT_MODEL
     with tempfile.TemporaryDirectory(prefix="ra-llm-sub-gemini-") as tmp:
         root = Path(tmp)
         work = root / "work"
         work.mkdir()
-        policy = root / "policy.toml"
-        policy.write_text(g.policy_toml(g.NO_TOOLS), encoding="utf-8")
-        stdin = (f"{instructions.strip()}\n\n---\nINPUT:\n{prompt}\n\n---\nAnswer with a single JSON object (no "
-                 f"prose, no code fence) that conforms to this JSON Schema:\n{json.dumps(strict_schema(output_type))}\n")
-        out = run_process(g.command(exe, model, policy, "default"), work, stdin, timeout, root / "gemini.log",
-                          lambda pid: None, env=g.process_env())
+        stdin = f"{instructions.strip()}\n\n{g.NO_TOOLS_NOTE}\n\n---\nINPUT:\n{prompt}\n"
+        out = run_process(g.command(exe, model, "plan", json.dumps(strict_schema(output_type))), work, stdin,
+                          timeout, root / "agy.log", lambda pid: None, env=sanitized_env())
     if out.timed_out:
         raise SubscriptionCallError("timeout", f"timed out after {timeout}s")
-    result, err = g.parse_output(out.stdout, out.stderr)
+    result = g.parse_output(out.stdout)
     u = g.usage_of(result)
     usage = {"input_tokens": u.input_tokens, "cached_input_tokens": u.cached_input_tokens,
              "output_tokens": u.output_tokens, "reasoning_tokens": u.reasoning_tokens}
-    if out.exit_code != 0 or not result or err:
-        detail = f"{err.get('type', '')}: {err.get('message', '')}".strip(": ") or tail(out.stderr, 300)
-        raise SubscriptionCallError(g.classify(out.exit_code, err, out.stderr), tail(detail, 300))
+    if out.exit_code != 0 or result.get("status") != "SUCCESS":
+        raise SubscriptionCallError(g.classify(result, out.stderr), tail(str(result.get("error") or out.stderr), 300))
     try:
-        return output_type.model_validate(g._json_object(str(result.get("response") or ""))), usage
+        return output_type.model_validate(json.loads(g.answer(result))), usage
     except (ValueError, ValidationError) as exc:
         raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
 

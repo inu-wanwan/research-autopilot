@@ -1,7 +1,7 @@
-"""Gemini CLI on the Google AI Pro subscription as a fallback (user decision 2026-10-16).
+"""Gemini via the Antigravity CLI (agy) on the Google AI Pro subscription as a fallback (user decisions 2026-10-16).
 
-The CLI is a fake executable; the output shapes follow the @google/gemini-cli 0.64.0 package (JSON on stdout,
-error JSON on stderr, exit 41 = authentication)."""
+agy is a fake executable; the output shapes are the ones agy 1.4.0 printed on Eagle (one JSON object on stdout,
+``status`` SUCCESS / ERROR, ``structured_output`` with ``--json-schema``, ``denied_actions`` for a denied tool)."""
 
 import json
 import stat
@@ -19,29 +19,35 @@ from research_autopilot.implementation.backends import gemini as g
 from research_autopilot.implementation.config import load_phase3_settings
 from research_autopilot.implementation.models import RunState
 from research_autopilot.implementation.orchestrator import implement
-from test_phase3 import EXP, GOOD, codes
+from test_phase3 import EXP, GOOD
 
 FAKE = """#!/bin/sh
-d="$FAKE_GEMINI_DIR"
+d="$FAKE_AGY_DIR"
 n=$(cat "$d/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$d/count"
 cat > "$d/stdin.$n"
-echo "$@" > "$d/args.$n"
+printf '%s\n' "$@" > "$d/args.$n"
 env > "$d/env.$n"
-for a in "$@"; do case "$prev" in --policy) cp "$a" "$d/policy.$n";; esac; prev="$a"; done
-[ -f "$d/out" ] && cat "$d/out"
+o="$d/out.$n"; [ -f "$o" ] || o="$d/out"
+[ -f "$o" ] && cat "$o"
 [ -f "$d/err" ] && cat "$d/err" >&2
 exit $(cat "$d/rc" 2>/dev/null || echo 0)
 """
 
-
-def ok_output(response: str) -> str:
-    return json.dumps({"session_id": "s", "response": response, "stats": {"models": {
-        "gemini-3.1-pro-preview": {"tokens": {"prompt": 1000, "cached": 400, "candidates": 50, "thoughts": 20}},
-        "gemini-3.5-flash": {"tokens": {"prompt": 100, "cached": 0, "candidates": 5, "thoughts": 0}}}}}, indent=2)
+USAGE = {"input_tokens": 1000, "output_tokens": 70, "thinking_tokens": 20, "cache_read_tokens": 400,
+         "total_tokens": 1070}
 
 
-QUOTA = json.dumps({"session_id": "s", "error": {"type": "TerminalQuotaError", "code": 429,
-                                                  "message": "You have exhausted your daily quota on this model."}})
+def ok(response: str = "done", structured=None, denied_actions=None) -> str:
+    r = {"conversation_id": "c", "status": "SUCCESS", "response": response, "num_turns": 1, "usage": USAGE}
+    if structured is not None:
+        r["structured_output"] = structured
+    if denied_actions:
+        r["denied_actions"] = [{"action": a, "display_name": a} for a in denied_actions]
+    return json.dumps(r)
+
+
+def error(message: str) -> str:
+    return json.dumps({"conversation_id": "", "status": "ERROR", "response": "", "error": message, "usage": {}})
 
 
 class Out(BaseModel):
@@ -50,90 +56,103 @@ class Out(BaseModel):
 
 
 @pytest.fixture
-def fake_gemini(tmp_path, monkeypatch):
+def fake_agy(tmp_path, monkeypatch):
     d = tmp_path / "fake"
     d.mkdir()
-    exe = tmp_path / "gemini"
+    exe = tmp_path / "agy"
     exe.write_text(FAKE)
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
-    home = tmp_path / "ghome"
-    (home / ".gemini").mkdir(parents=True)
-    (home / ".gemini" / "oauth_creds.json").write_text("{}")
-    monkeypatch.setenv("GEMINI_CLI_HOME", str(home))
-    monkeypatch.setenv("FAKE_GEMINI_DIR", str(d))
+    home = tmp_path / "home"
+    cli = home / ".gemini" / "antigravity-cli"
+    (cli / "cache").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("FAKE_AGY_DIR", str(d))
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_GEMINI", str(exe))
 
-    def login(kind: str = "oauth-personal") -> None:
-        (home / ".gemini" / "settings.json").write_text(json.dumps({"security": {"auth": {"selectedType": kind}}}))
+    def login(consumer: bool = True, token: bool = True) -> None:
+        (cli / "cache" / "onboarding.json").write_text(json.dumps(
+            {"consumerOnboardingComplete": consumer, "enterpriseOnboardingComplete": not consumer}))
+        (cli / "antigravity-oauth-token").unlink(missing_ok=True)
+        if token:
+            (cli / "antigravity-oauth-token").write_text("x")
 
     login()
     return SimpleNamespace(dir=d, exe=str(exe), login=login,
-                           calls=lambda: int((d / "count").read_text()) if (d / "count").exists() else 0)
+                           calls=lambda: int((d / "count").read_text()) if (d / "count").exists() else 0,
+                           args=lambda n=1: (d / f"args.{n}").read_text().split("\n"))
 
 
-def request(tmp_path, check_commands=None):
+def request(tmp_path):
     wt = tmp_path / "wt"
     wt.mkdir(exist_ok=True)
-    return SimpleNamespace(task=SimpleNamespace(worktree_path=str(wt)), choice=SimpleNamespace(model="gemini-3.1-pro-preview"),
+    return SimpleNamespace(task=SimpleNamespace(worktree_path=str(wt)), choice=SimpleNamespace(model="gemini-4-argon-high"),
                            prompt="IMPLEMENT", timeout_seconds=30, log_path=tmp_path / "logs" / "attempt-1-gemini.log",
-                           check_commands=check_commands or [])
+                           check_commands=[])
 
 
 # ---------------------------------------------------------------- backend
 
 
-def test_implementer_run_is_a_known_zero_cost_subscription_call(fake_gemini, tmp_path, monkeypatch):
-    (fake_gemini.dir / "out").write_text(ok_output("done"))
-    monkeypatch.setenv("GEMINI_API_KEY", "not-real")
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-    r = g.GeminiBackend(fake_gemini.exe).run(request(tmp_path, [["uv", "run", "pytest", "-q"]]), lambda pid: None)
+def test_implementer_run_is_a_known_zero_cost_subscription_call(fake_agy, tmp_path, monkeypatch):
+    (fake_agy.dir / "out").write_text(ok())
+    monkeypatch.setenv("AGY_LLM_GATEWAY_API_KEY", "not-real")
+    r = g.GeminiBackend(fake_agy.exe).run(request(tmp_path), lambda pid: None)
     assert r.status == "completed" and r.summary == "done"
     assert r.cost_usd == 0.0  # known price: never an "unpriced paid call" for the research budget
-    assert (r.usage.input_tokens, r.usage.cached_input_tokens, r.usage.output_tokens) == (1100, 400, 75)
-    args = (fake_gemini.dir / "args.1").read_text()
-    for flag in ("-o json", "-m gemini-3.1-pro-preview", "--approval-mode auto_edit", "--skip-trust", "-e none",
-                 "--allowed-mcp-server-names __none__"):
-        assert flag in args
-    assert (fake_gemini.dir / "stdin.1").read_text() == "IMPLEMENT"
-    env = (fake_gemini.dir / "env.1").read_text()
-    assert "GEMINI_API_KEY" not in env and "GOOGLE_GENAI_USE_VERTEXAI" not in env
-    policy = (fake_gemini.dir / "policy.1").read_text()
-    assert '"write_file"' in policy and '"uv run pytest -q"' in policy and 'toolName = "*"\ndecision = "deny"' in policy
+    assert (r.usage.input_tokens, r.usage.cached_input_tokens, r.usage.output_tokens, r.usage.reasoning_tokens) \
+        == (1000, 400, 70, 20)
+    args = fake_agy.args()
+    assert args[:7] == ["--output-format", "json", "--model", "gemini-4-argon-high", "--mode", "accept-edits",
+                        "--disable-slash-commands"]
+    assert "--dangerously-skip-permissions" not in args and "-p" not in args
+    stdin = (fake_agy.dir / "stdin.1").read_text()
+    assert stdin.endswith("IMPLEMENT") and "pre-approved shell commands" in stdin
+    assert "AGY_LLM_GATEWAY_API_KEY" not in (fake_agy.dir / "env.1").read_text()
 
 
-def test_quota_error_on_stderr_with_an_http_exit_code_is_quota_exhausted(fake_gemini, tmp_path):
-    (fake_gemini.dir / "err").write_text("[ERROR] something\n" + QUOTA + "\n")
-    (fake_gemini.dir / "rc").write_text("173")  # 429 as seen by the OS
-    r = g.GeminiBackend(fake_gemini.exe).run(request(tmp_path), lambda pid: None)
-    assert r.status == "quota_exhausted" and "daily quota" in r.error
+def test_a_denied_tool_is_reported_as_failed_for_the_review(fake_agy, tmp_path):
+    (fake_agy.dir / "out").write_text(ok("", denied_actions=["command"]))
+    r = g.GeminiBackend(fake_agy.exe).run(request(tmp_path), lambda pid: None)
+    assert r.status == "failed" and "command" in r.error
 
 
-def test_auth_exit_code_is_auth_error(fake_gemini, tmp_path):
-    (fake_gemini.dir / "err").write_text("Please set an Auth method in your settings.json\n")
-    (fake_gemini.dir / "rc").write_text("41")
-    assert g.GeminiBackend(fake_gemini.exe).run(request(tmp_path), lambda pid: None).status == "auth_error"
+def test_errors_are_classified(fake_agy, tmp_path):
+    (fake_agy.dir / "rc").write_text("1")
+    for message, status in (("RESOURCE_EXHAUSTED: You have exhausted your quota", "quota_exhausted"),
+                            ("429 Too Many Requests", "rate_limited"),
+                            ("401 Unauthorized", "auth_error"),
+                            ("invalid model selection (--model x)", "process_error")):
+        (fake_agy.dir / "out").write_text(error(message))
+        assert g.GeminiBackend(fake_agy.exe).run(request(tmp_path), lambda pid: None).status == status, message
 
 
-def test_api_billed_login_is_refused_without_starting_the_cli(fake_gemini, tmp_path):
-    fake_gemini.login("gemini-api-key")
-    backend = g.GeminiBackend(fake_gemini.exe)
-    assert not backend.status().authenticated and backend.status().billing == "api"
-    before = fake_gemini.calls()  # status() runs --version
-    r = backend.run(request(tmp_path), lambda pid: None)
-    assert r.status == "auth_error" and fake_gemini.calls() == before
-    fake_gemini.login()
+def test_only_a_consumer_google_login_is_used(fake_agy, tmp_path):
+    backend = g.GeminiBackend(fake_agy.exe)
     assert backend.status().authenticated and backend.status().billing == "subscription"
+    for kwargs in ({"consumer": False}, {"token": False}):
+        fake_agy.login(**kwargs)
+        assert not backend.status().authenticated
+        r = backend.run(request(tmp_path), lambda pid: None)
+        assert r.status == "auth_error" and fake_agy.calls() == 0
 
 
-def test_policies_by_mode():
-    read, none = g.policy_toml("read"), g.policy_toml(g.NO_TOOLS)
-    assert '"read_file"' in read and "write_file" not in read and "run_shell_command" not in read
-    assert none.count("[[rule]]") == 1 and 'decision = "deny"' in none
+def test_review_runner_is_read_only_with_the_schema_enforced(fake_agy, tmp_path):
+    from phase3_fakes import code_review
+    from research_autopilot.implementation.backends.review_runners import GeminiReviewRunner
+    (fake_agy.dir / "out").write_text(ok("text", structured=code_review("pass").model_dump(mode="json")))
+    req = request(tmp_path)
+    result, parsed = GeminiReviewRunner(g.GeminiBackend(fake_agy.exe))(req.task, req.choice, "REVIEW", {"type": "object"},
+                                                                    tmp_path / "review.log")
+    assert result.status == "completed" and parsed is not None and parsed.verdict == "pass"
+    args = fake_agy.args()
+    assert args[args.index("--mode") + 1] == "plan" and args[args.index("--json-schema") + 1] == '{"type": "object"}'
+    assert (fake_agy.dir / "stdin.1").read_text() == "REVIEW"
 
 
 def test_settings_default_order_puts_gemini_before_the_paid_api():
     s = load_phase3_settings({})
     assert s.fallback_backends == ["claude", "gemini", "codex_api"] and s.max_fallbacks == 3
+    assert s.models["gemini"]["high_reasoning"] == "gemini-4-argon-high"
     assert load_phase3_settings({"RA_GEMINI_MODEL_HIGH": "gemini-x"}).models["gemini"]["high_reasoning"] == "gemini-x"
 
 
@@ -204,45 +223,44 @@ def api(monkeypatch):
     return state
 
 
-def test_structured_call_on_gemini_is_a_subscription_call(fake_gemini, api, monkeypatch):
+def test_structured_call_on_gemini_is_a_subscription_call(fake_agy, api, monkeypatch):
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "gemini")
-    (fake_gemini.dir / "out").write_text(ok_output('```json\n{"answer": "gemini", "score": 5}\n```'))
+    (fake_agy.dir / "out").write_text(ok("answer=gemini", structured={"answer": "gemini", "score": 5}))
     run = _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out)
     assert run.output.answer == "gemini" and run.billing == "subscription" and api.calls == 0
-    stdin = (fake_gemini.dir / "stdin.1").read_text()
-    assert "JSON Schema" in stdin and '"answer"' in stdin
-    assert (fake_gemini.dir / "policy.1").read_text().count("[[rule]]") == 1  # no tools at all
-    assert "--approval-mode default" in (fake_gemini.dir / "args.1").read_text()
+    args = fake_agy.args()
+    assert args[args.index("--mode") + 1] == "plan" and args[args.index("--model") + 1] == "gemini-4-argon-high"
+    assert '"answer"' in args[args.index("--json-schema") + 1]
+    assert "Do not use any tools" in (fake_agy.dir / "stdin.1").read_text()
 
 
-def test_gemini_is_tried_after_claude_and_its_quota_is_cached(fake_gemini, api, monkeypatch, tmp_path):
+def test_gemini_is_tried_after_claude_and_its_quota_is_cached(fake_agy, api, monkeypatch, tmp_path):
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "codex,claude,gemini")
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_CODEX", str(tmp_path / "no-codex"))
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_CLAUDE", str(tmp_path / "no-claude"))
     assert sub.subscription_providers() == ["codex", "claude", "gemini"]
-    (fake_gemini.dir / "out").write_text(ok_output('{"answer": "gemini"}'))
+    (fake_agy.dir / "out").write_text(ok(structured={"answer": "gemini"}))
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).output.answer == "gemini"
-    (fake_gemini.dir / "out").unlink()
-    (fake_gemini.dir / "err").write_text(QUOTA)
-    (fake_gemini.dir / "rc").write_text("173")
+    (fake_agy.dir / "out").write_text(error("RESOURCE_EXHAUSTED"))
+    (fake_agy.dir / "rc").write_text("1")
     api.output = Out(answer="api")
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).billing == "api"
-    calls = fake_gemini.calls()
+    calls = fake_agy.calls()
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).billing == "api"
-    assert fake_gemini.calls() == calls  # skipped during the cooldown
+    assert fake_agy.calls() == calls  # skipped during the cooldown
 
 
-def test_invalid_gemini_answer_is_retried_once_then_the_api(fake_gemini, api, monkeypatch):
+def test_invalid_gemini_answer_is_retried_once_then_the_api(fake_agy, api, monkeypatch):
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "gemini")
-    (fake_gemini.dir / "out").write_text(ok_output("I cannot answer in JSON."))
+    (fake_agy.dir / "out").write_text(ok("I cannot answer.", denied_actions=["read_url"]))
     api.output = Out(answer="api")
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).billing == "api"
-    assert fake_gemini.calls() == 2
+    assert fake_agy.calls() == 2
 
 
-def test_api_billed_gemini_login_is_never_used_for_structured_calls(fake_gemini, api, monkeypatch):
+def test_non_subscription_agy_login_is_never_used_for_structured_calls(fake_agy, api, monkeypatch):
     monkeypatch.setenv("RA_LLM_SUBSCRIPTION_FIRST", "gemini")
-    fake_gemini.login("gemini-api-key")
+    fake_agy.login(consumer=False)
     api.output = Out(answer="api")
     assert _PricedAgent("m", PRICES, lambda: 1.0)._call("X", "i", {}, Out).billing == "api"
-    assert fake_gemini.calls() == 0
+    assert fake_agy.calls() == 0

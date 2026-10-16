@@ -42,16 +42,13 @@ class ClaudeReviewRunner:
 
 
 class GeminiReviewRunner:
-    """Read-only Gemini session; the CLI has no output-schema option, so the schema is part of the prompt and the
-    answer is validated like any other review (invalid JSON is retried once by the reviewer)."""
+    """Read-only (plan mode) Antigravity session with the review schema enforced by ``--json-schema``."""
 
     def __init__(self, backend: GeminiBackend | None = None) -> None:
         self.backend = backend or GeminiBackend()
 
     def __call__(self, task: ImplementationTask, choice: ModelChoice, prompt: str, schema: dict,
                  log_path: Path) -> tuple[ImplementationResult, CodeReviewResult | None]:
-        prompt = (f"{prompt}\n\nAnswer with a single JSON object (no prose, no code fence) that conforms to this "
-                  f"JSON Schema:\n{json.dumps(schema)}\n")
         req = BackendRequest(task=task, choice=choice, prompt=prompt, timeout_seconds=REVIEW_TIMEOUT, log_path=log_path)
-        result = self.backend.run(req, lambda pid: None, mode="read")
+        result = self.backend.run(req, lambda pid: None, json_schema=json.dumps(schema), read_only=True)
         return result, parse_review(result.summary) if result.status == "completed" else None

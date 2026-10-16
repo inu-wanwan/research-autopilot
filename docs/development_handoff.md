@@ -30,15 +30,21 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ### Gemini を subscription fallback に追加（2026-10-16 / Claude Code）
 
-- ユーザー決定：Google AI Pro を契約したので Gemini を fallback に加える。シャドー運用（並走比較）はしない。本番投入前に [TEST] タスクで 1 回だけ試験する。
-- ブランチ `phase3/gemini-fallback`（origin/main `d1571d5` から分岐、WSL clone `/home/rixyt/workspace/ResearchAutopilot` で作業）。
+- ユーザー決定：Google AI Pro を契約したので Gemini を fallback に加える。シャドー運用（並走比較）はしない。本番投入前に [TEST] タスクで 1 回だけ試験する。Gemini CLI は Google アカウントでログインできなくなったため（ユーザー報告）、ユーザーが Eagle の ra に Antigravity CLI `agy` 1.4.0（`~/.local/bin/agy`）を入れてログインした。RA は `agy` を使う（backend 名は `gemini` のまま）。
+- ブランチ `phase3/gemini-fallback`（origin/main `d1571d5` から分岐、WSL clone `/home/rixyt/workspace/ResearchAutopilot` で作業）。1 つ目の commit は Gemini CLI 前提、2 つ目で agy に置き換え。
+- Eagle の ra で実測した agy の挙動（空の一時ディレクトリで最小プロンプト 5 回、ファイルは削除済み）：
+  - プロンプトは stdin で渡せる（`-p` は値が必須で、`-p --output-format` と書くと誤解釈して exit 2）。`--output-format json` は stdout に 1 つの JSON：`status`（SUCCESS / ERROR）、`response`、`structured_output`（`--json-schema` 指定時）、`usage`（input_tokens はキャッシュ読み込みを含む、output_tokens は thinking を含む）、`denied_actions`。
+  - 不正なモデル名は `status: ERROR`、`error` に文字列、exit 1。
+  - `--mode accept-edits` でファイル作成は許可された。シェルコマンドと URL 取得は許可ルールが無いと自動拒否され、そのターンは応答なしで終わる（status は SUCCESS、`denied_actions` に記録）。
+  - 許可ルールの場所は `~/.gemini/antigravity-cli/settings.json` の `permissions.allow`（書式 `command(<target>)`）。呼び出しごとに指定するフラグは見つからなかった。
+  - `agy models`：`gemini-4-argon-{low,medium,high}`、`gemini-3.8-flash-{low,medium,high}`、Claude Opus/Sonnet 5.5、GPT-OSS 120B。
 - 実装：
-  - `implementation/backends/gemini.py`：`gemini -p ... -o json -m <model> --policy <toml> --skip-trust -e none --allowed-mcp-server-names __none__`（prompt は stdin）。`~/.gemini/settings.json` の `security.auth.selectedType` が `oauth-personal` のときだけ起動。費用は 0.0 USD（既知）。エラーは stderr の JSON の `error.type`（TerminalQuotaError → quota_exhausted、RetryableQuotaError → rate_limited）と exit 41（auth）で分類。
-  - Phase 3：`fallback_backends` 既定を `claude,gemini,codex_api`、`max_fallbacks` 既定・上限を 3 に。Gemini が書いた変更は Gemini 以外がレビュー（他に無ければ reviewer unavailable で blocked）。`GeminiReviewRunner` は読み取りのみ・schema は prompt に入れる。
-  - 構造化呼び出し：`RA_LLM_SUBSCRIPTION_FIRST` に `gemini` を追加可能。tool は全拒否、schema は prompt、invalid は 1 回再試行、quota/auth は 15 分 cooldown。
-- CLI の仕様は @google/gemini-cli 0.64.0 のパッケージ（docs と bundle JS）を読んで確認したもので、実呼び出しは未実施。未確認：quota 時の実際の exit code、explicit `-m` で自動のモデル切り替えが完全に止まるか、モデル ID（`gemini-3.1-pro-preview` / `gemini-3.5-flash`）が AI Pro ログインで使えるか。
-- テスト：`PYTHONPATH` 不要、WSL venv で `.venv/bin/python -m pytest -q tests/test_phase3.py tests/test_llm_subscription.py tests/test_definition_of_done.py tests/test_phase10_research.py tests/test_budget_unknown_calls.py tests/test_phase5_e2e.py tests/test_gemini.py` → 173 passed。全テストは未実行。
-- Eagle 反映は未実施。手順：(1) ra で `npm install -g @google/gemini-cli` → `gemini` を起動して Login with Google（人間）。(2) main へ merge・push 後、ra で `git pull`、`uv sync --frozen --no-dev`、`.env` の `RA_LLM_SUBSCRIPTION_FIRST=codex,claude,gemini`、サービス再起動。(3) [TEST] タスクで `RA_IMPL_PRIMARY_BACKEND=gemini` 相当の試験を 1 回（実装・レビュー・構造化呼び出し）。未ログインの間、Gemini は「使えない fallback」として飛ばされる。
+  - `implementation/backends/gemini.py`：`agy --output-format json --model <m> --mode accept-edits|plan --disable-slash-commands [--json-schema]`。OAuth token があり onboarding が consumer のときだけ起動。費用は 0.0 USD（既知）。`denied_actions` があれば `failed`（レビューが判断）。
+  - Phase 3：`fallback_backends` 既定を `claude,gemini,codex_api`、`max_fallbacks` 既定・上限を 3 に。Gemini が書いた変更は Gemini 以外がレビュー（他に無ければ reviewer unavailable で blocked）。
+  - 構造化呼び出し：`RA_LLM_SUBSCRIPTION_FIRST` に `gemini` を追加可能（plan モード＋`--json-schema`、invalid は 1 回再試行、quota/auth は 15 分 cooldown）。
+- 未確認：quota 到達時の agy のエラー文（分類は `RESOURCE_EXHAUSTED` / `quota` などの文字列頼み）、`command(...)` ルールが前方一致か、AI Pro の利用枠を超えたときに課金（AI credits）へ移るか、agy の自動更新で出力形式が変わらないか。
+- テスト：WSL venv で `.venv/bin/python -m pytest -q tests/test_phase3.py tests/test_llm_subscription.py tests/test_definition_of_done.py tests/test_phase10_research.py tests/test_budget_unknown_calls.py tests/test_phase5_e2e.py tests/test_gemini.py` → 173 passed。全テストは未実行。
+- Eagle 反映は未実施。手順：(1) 人間：ra の `~/.gemini/antigravity-cli/settings.json` に許可ルールを追加（`docs/operations/phase3_implementation.md` §4 の例）。(2) main へ merge・push 後、ra で `git pull`、`uv sync --frozen --no-dev`、`.env` の `RA_LLM_SUBSCRIPTION_FIRST=codex,claude,gemini`、サービス再起動。(3) [TEST] タスクで Gemini を明示指定して実装・レビュー・構造化呼び出しを 1 回ずつ試験。ra の `~/.gemini/settings.json` は Gemini CLI 用で `selectedType: gemini-api-key` になっているが、Gemini CLI は ra に入っておらず RA も使わない。
 
 ### （以前の記録）2026-10-15 04:30 JST / Antigravity
 

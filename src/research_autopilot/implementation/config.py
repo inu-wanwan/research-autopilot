@@ -15,10 +15,9 @@ DEFAULT_MODELS: dict[BackendName, dict[Tier, str]] = {
                "high_reasoning": "claude-opus-5-5"},
 }
 DEFAULT_MODELS["codex_api"] = dict(DEFAULT_MODELS["codex"])  # same Codex models, billed to the API key
-# Model IDs from the @google/gemini-cli 0.64.0 constants (2026-10-16); not yet verified with a real call on the
-# Google AI Pro login. Explicit IDs keep the CLI from silently routing to another model.
-DEFAULT_MODELS["gemini"] = {"lightweight": "gemini-3.5-flash", "standard": "gemini-3.1-pro-preview",
-                            "high_reasoning": "gemini-3.1-pro-preview"}
+# Antigravity CLI (agy) model IDs, listed by `agy models` on Eagle (2026-10-16); the ID includes the effort.
+DEFAULT_MODELS["gemini"] = {"lightweight": "gemini-3.8-flash-medium", "standard": "gemini-4-argon-medium",
+                            "high_reasoning": "gemini-4-argon-high"}
 DEFAULT_EFFORT: dict[Tier, str] = {"lightweight": "low", "standard": "medium", "high_reasoning": "high"}
 
 

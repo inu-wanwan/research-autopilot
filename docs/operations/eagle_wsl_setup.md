@@ -142,8 +142,7 @@ npm install -g @openai/codex
 curl -fsSL https://claude.ai/install.sh | bash
 codex login            # ChatGPT のサブスクリプションでログイン（ブラウザが開けなければ codex login --device-auth）
 claude                 # 起動して /login。claude.ai のサブスクリプションでログインする（API 課金のログインにしない）
-npm install -g @google/gemini-cli
-gemini                 # 起動して「Login with Google」を選び、Google AI Pro のアカウントでログインする（API キーにしない）
+agy                    # Antigravity CLI（~/.local/bin/agy）。起動して Google AI Pro の個人アカウントでログインする
 ```
 
 **`.env`**：rixyt 側の `.env` をコピーする。この操作は rixyt のシェルで行う（sudo が必要）。

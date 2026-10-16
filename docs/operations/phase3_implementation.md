@@ -66,7 +66,7 @@ uv run research-agent impl-runs show <phase3_run_id>
 |---|---|---|
 | Implementer（Codex） | low → `gpt-5.6-luna`、medium → `gpt-5.6-terra`、high → `gpt-5.6-sol` | `RA_CODEX_MODEL_LIGHT/STANDARD/HIGH` |
 | fallback（Claude） | `claude-haiku-4-5-20251001` / `claude-sonnet-5-5` / `claude-opus-5-5` | `RA_CLAUDE_MODEL_*` |
-| fallback（Gemini、Google AI Pro） | `gemini-3.5-flash` / `gemini-3.1-pro-preview` / `gemini-3.1-pro-preview`（CLI 0.64.0 の定数。実呼び出しでは未検証） | `RA_GEMINI_MODEL_*` |
+| fallback（Gemini、Antigravity CLI `agy`、Google AI Pro） | `gemini-3.8-flash-medium` / `gemini-4-argon-medium` / `gemini-4-argon-high`（`agy models` で確認） | `RA_GEMINI_MODEL_*` |
 | fallback の順番 | `claude,gemini,codex_api`（`codex_api` は API 課金で最後） | `RA_IMPL_FALLBACK_BACKEND` |
 | Reviewer | 科学的リスク low → standard、medium 以上 → high（既定は Codex の read-only セッション）。使えないときは fallback の順番で代わる。Gemini が書いた変更は Gemini 以外がレビューする | `RA_IMPL_REVIEWER_BACKEND` |
 | 修正 / 試行 | 2 / 3 | `RA_IMPL_MAX_REVISIONS` / `RA_IMPL_MAX_ATTEMPTS` |
@@ -76,12 +76,25 @@ uv run research-agent impl-runs show <phase3_run_id>
 
 Codex を ChatGPT ログイン（サブスクリプション）で使う場合、費用は unknown と記録し、回数・時間・トークン数で制御する。
 
-Gemini（2026-10-16 追加）：
+Gemini（2026-10-16 追加。Gemini CLI は Google アカウントでログインできなくなったため Antigravity CLI `agy` を使う）：
 
-- Gemini CLI の「Login with Google」（`~/.gemini/settings.json` の `security.auth.selectedType` が `oauth-personal`）のときだけ使う。API キー・Vertex のログインでは起動しない（未ログイン扱いで次の fallback へ進む）。
+- `agy` が個人の Google アカウントでログインしているときだけ使う（`~/.gemini/antigravity-cli/antigravity-oauth-token` があり、`cache/onboarding.json` が consumer）。それ以外では起動せず、使えない fallback として次へ進む。
 - 費用は 0 USD（既知）として記録する。研究の予算判定で「価格不明の課金呼び出し」にならない。
-- ツールは毎回生成する Policy Engine の TOML（`--policy`）で制限する。実装担当は読み取り・ファイル編集と、Claude と同じシェルコマンド（`uv run pytest` など）＋リポジトリのチェックコマンドだけ。レビュー担当は読み取りだけ。Web 検索・取得、MCP、拡張機能は使わない。
-- Gemini CLI の仕様で、ヘッドレス実行では `pyproject.toml`・lockfile・`Dockerfile` などのビルド設定ファイルを編集できない。これらの変更が必要なタスクを Gemini が担当すると、実装が不完全になりレビューで差し戻される。上限はリポジトリのチェーン全体（元の run と修正 run の合計）で数える。
+- 実装担当は `--mode accept-edits`（ファイル編集のみ自動許可）、レビュー担当と構造化呼び出しは `--mode plan`＋`--json-schema`。`--dangerously-skip-permissions` は使わない。
+- ヘッドレスでは許可ルールの無いツール（シェルコマンド、URL 取得など）は自動で拒否され、そこでターンが終わる。拒否が出た実装は `failed` としてレビューに回す。
+- 実装担当にテストを走らせるには、ra の `~/.gemini/antigravity-cli/settings.json` に許可ルールを人間が一度だけ追加する（RA は書き換えない）。ルールの書式は `command(<コマンド>)`。前方一致かどうかは未検証。例：
+
+  ```json
+  {
+    "trustedWorkspaces": ["/opt/research-autopilot"],
+    "permissions": {"allow": [
+      "command(uv run pytest)", "command(git status)", "command(git diff)",
+      "command(docker compose -p active-space-ra run --rm -T --user 0 -e RESEARCH_USER=root research pytest)"
+    ]}
+  }
+  ```
+
+- `agy` は会話を `~/.gemini/antigravity-cli/conversations/` に残す。
 
 ## 5. 保存先
 
