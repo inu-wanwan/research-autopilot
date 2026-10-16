@@ -44,7 +44,12 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
   - 構造化呼び出し：`RA_LLM_SUBSCRIPTION_FIRST` に `gemini` を追加可能（plan モード＋`--json-schema`、invalid は 1 回再試行、quota/auth は 15 分 cooldown）。
 - 未確認：quota 到達時の agy のエラー文（分類は `RESOURCE_EXHAUSTED` / `quota` などの文字列頼み）、`command(...)` ルールが前方一致か、AI Pro の利用枠を超えたときに課金（AI credits）へ移るか、agy の自動更新で出力形式が変わらないか。
 - テスト：WSL venv で `.venv/bin/python -m pytest -q tests/test_phase3.py tests/test_llm_subscription.py tests/test_definition_of_done.py tests/test_phase10_research.py tests/test_budget_unknown_calls.py tests/test_phase5_e2e.py tests/test_gemini.py` → 173 passed。全テストは未実行。
-- Eagle 反映は未実施。手順：(1) 人間：ra の `~/.gemini/antigravity-cli/settings.json` に許可ルールを追加（`docs/operations/phase3_implementation.md` §4 の例）。(2) main へ merge・push 後、ra で `git pull`、`uv sync --frozen --no-dev`、`.env` の `RA_LLM_SUBSCRIPTION_FIRST=codex,claude,gemini`、サービス再起動。(3) [TEST] タスクで Gemini を明示指定して実装・レビュー・構造化呼び出しを 1 回ずつ試験。ra の `~/.gemini/settings.json` は Gemini CLI 用で `selectedType: gemini-api-key` になっているが、Gemini CLI は ra に入っておらず RA も使わない。
+- Eagle 反映（2026-10-16 15:25 JST、ユーザー指示。INU-344 はユーザーがキャンセル済みで、実行中 run・承認待ち・エージェントプロセス・実験コンテナが無いことを確認してから実施）：
+  - 人間が ra の `~/.gemini/antigravity-cli/settings.json` に `permissions.allow`（`command(uv run pytest)`、`command(git status)`、`command(git diff)`、active-space-research の docker compose pytest）を追加。内容を確認した。
+  - `main` を `8ef433e` に fast-forward して origin に push。ra の `/opt/research-autopilot` で `git pull --ff-only`（`d1571d5` のレビュー費用修正も同時に反映）、`uv sync --frozen --no-dev`。
+  - `.env`：`RA_LLM_SUBSCRIPTION_FIRST=codex,claude,gemini`（バックアップ `.env.bak-20261016-gemini`）。3 サービス再起動、直後の `autopilot-poll`（`famous-rattlesnake`）は Completed。サービスの PATH で `GeminiBackend().status()` は installed / authenticated / subscription。
+  - 未実施：[TEST] タスクでの Gemini 試験（実装・レビュー・構造化呼び出し）と、許可ルールが `uv run pytest -q` のような引数付きコマンドにも効くかの確認。
+- watchdog の修正依頼を有効化（2026-10-16、ユーザー指示）：Eagle の `.env` を `RA_WATCH_FIX=true` にして `ra-watchdog` を再起動、active。report チャンネルで認可ユーザーが `@bot <指示>` すると `autofix/<日時>-<id>` ブランチの worktree（`/home/ra/.local/state/research-autopilot/autofix/`、初回に作成）で Codex → Claude が修正し、テスト結果を投稿する。注意：`/opt/research-autopilot` は main にいるため、`@bot 適用` は main 保護で拒否される（修正は autofix ブランチに commit されたまま残り、取り込みは人が行う）。
 
 ### （以前の記録）2026-10-15 04:30 JST / Antigravity
 
