@@ -35,11 +35,14 @@ BASELINE: list[DoneCriterion] = [
 _VAGUE = re.compile(r"\b(appropriate(ly)?|reasonabl[ey]|as needed|if possible|etc\.?)\b|適切に|必要に応じ", re.I)
 _MARKUP = re.compile(r"\*\*|__|[`#*_「」『』“”‘’\"']")
 _LINE_MARK = re.compile(r"^\s*(?:[-*+・•]|\d+[.)]|[(（]\d+[)）])\s*", re.M)
+# Backslashes before ASCII punctuation: markdown escapes (``A^\*``) and LaTeX delimiters (``\(``) drift in copies.
+_ESCAPE = re.compile(r"\\+(?=[!-/:-@\[-`{-~])")
 
 
 def _norm(text: str) -> str:
-    """Comparable form of a spec quote: NFKC, no markdown / quote marks / list markers, one-space whitespace."""
-    text = unicodedata.normalize("NFKC", text or "")
+    """Comparable form of a spec quote: NFKC, no markdown / quote marks / list markers / escaping backslashes,
+    one-space whitespace."""
+    text = _ESCAPE.sub("", unicodedata.normalize("NFKC", text or ""))
     text = _MARKUP.sub("", _LINE_MARK.sub("", text))
     return re.sub(r"\s+", " ", text).strip().strip("。.").strip()
 

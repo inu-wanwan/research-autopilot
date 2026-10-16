@@ -52,6 +52,16 @@ def test_a_source_may_cite_several_verbatim_passages():
     assert any("not found: 'Use a GPU.'" in p for p in bad)  # the missing passage itself is named
 
 
+def test_escaping_backslashes_do_not_break_a_verbatim_quote():
+    # INU-369: the spec wrote a markdown-escaped star inside LaTeX; the Planner quoted it as plain LaTeX.
+    tex = spec(specification="3. 各 \\(A^\\*\\in\\Omega^\\*\\) と実行可能な \\(m<k\\) について、次を計算する。")
+    for quote in ("各 \\(A^*\\in\\Omega^*\\) と実行可能な \\(m<k\\) について、次を計算する。",
+                  "各 \\\\(A^\\*\\in\\Omega^\\*\\\\) と実行可能な \\(m<k\\) について、次を計算する。"):
+        assert dod.problems(tex, plan_with([item(source=quote)])) == []
+    other = dod.problems(tex, plan_with([item(source="各 \\(B^*\\in\\Omega^*\\) について")]))
+    assert any("quote the task specification" in p for p in other)  # a different formula is still rejected
+
+
 def test_definition_of_done_problems_are_detected_deterministically():
     assert dod.problems(spec(), plan_with([], done=()))[0].startswith("definition_of_done is empty")
     invented = dod.problems(spec(), plan_with([item(source="Record the OS and the BLAS vendor.")]))
