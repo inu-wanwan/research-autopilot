@@ -28,6 +28,14 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 2026-10-16 JST / Claude Code
 
+### INU-369 の DoD 引用照合の修正（2026-10-16 / Claude Code）
+
+- 事象：INU-369（[解析] Beam-8 の成功と小集合のエネルギー順位）が `Phase 2 blocked: the plan's Definition of Done was not acceptable after 3 attempt(s)` で Blocked。D3 / D6 の source が仕様の verbatim 引用と判定されなかった。
+- 原因（Notion MCP の表示から推定）：仕様の数式が `\(A^\*\in\Omega^\*\)`（`*` の前にバックスラッシュ）で、Planner は `A^*` と引用する。`_norm` は `*` を消すがバックスラッシュは残すため一致しない。何度再計画しても同じ。
+- 修正 `5cd4fba`（ブランチ `phase2/dod-quote-escapes`、ユーザー指示で main に取り込み）：`planning/dod.py` の `_norm` で ASCII 記号の前のバックスラッシュを除去してから照合。別の式は引き続き拒否。
+- 検証：旧コードで同じ引用が not found になることを確認。`tests/test_definition_of_done.py` `tests/test_audit_planning_scope.py` 43 passed。全テストは未実行。
+- 未実施：Eagle の `/opt/research-autopilot` への反映（ra 権限が必要）と INU-369 の再実行（Notion で Run Requested を ON）。
+
 ### Gemini を subscription fallback に追加（2026-10-16 / Claude Code）
 
 - ユーザー決定：Google AI Pro を契約したので Gemini を fallback に加える。シャドー運用（並走比較）はしない。本番投入前に [TEST] タスクで 1 回だけ試験する。Gemini CLI は Google アカウントでログインできなくなったため（ユーザー報告）、ユーザーが Eagle の ra に Antigravity CLI `agy` 1.4.0（`~/.local/bin/agy`）を入れてログインした。RA は `agy` を使う（backend 名は `gemini` のまま）。
