@@ -3,7 +3,12 @@
 from research_autopilot.config import Settings, load_settings
 from research_autopilot.implementation.backends.claude import ClaudeBackend
 from research_autopilot.implementation.backends.codex import CodexApiBackend, CodexBackend
-from research_autopilot.implementation.backends.review_runners import ClaudeReviewRunner, CodexReviewRunner
+from research_autopilot.implementation.backends.gemini import GeminiBackend
+from research_autopilot.implementation.backends.review_runners import (
+    ClaudeReviewRunner,
+    CodexReviewRunner,
+    GeminiReviewRunner,
+)
 from research_autopilot.implementation.config import Phase3Settings, load_phase3_settings, load_registry
 from research_autopilot.implementation.orchestrator import ImplDeps
 from research_autopilot.notifications import get_notifier
@@ -29,8 +34,10 @@ def build_impl_deps(phase2: Settings | None = None, settings: Phase3Settings | N
     return ImplDeps(
         settings=settings, phase2=phase2, registry=load_registry(settings.repos_file),
         store=store, manager=manager,
-        backends={"codex": CodexBackend(), "claude": ClaudeBackend(), "codex_api": codex_api},
+        backends={"codex": CodexBackend(), "claude": ClaudeBackend(), "codex_api": codex_api,
+                  "gemini": GeminiBackend()},
         reviewers={"codex": CodexReviewRunner(), "codex_api": CodexReviewRunner(codex_api),
-                   "claude": ClaudeReviewRunner(max_budget_usd=settings.claude_max_budget_usd_per_call)},
+                   "claude": ClaudeReviewRunner(max_budget_usd=settings.claude_max_budget_usd_per_call),
+                   "gemini": GeminiReviewRunner()},
         notifier=get_notifier(store=store),
     )

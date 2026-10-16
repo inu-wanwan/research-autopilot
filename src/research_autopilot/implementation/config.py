@@ -15,6 +15,10 @@ DEFAULT_MODELS: dict[BackendName, dict[Tier, str]] = {
                "high_reasoning": "claude-opus-5-5"},
 }
 DEFAULT_MODELS["codex_api"] = dict(DEFAULT_MODELS["codex"])  # same Codex models, billed to the API key
+# Model IDs from the @google/gemini-cli 0.64.0 constants (2026-10-16); not yet verified with a real call on the
+# Google AI Pro login. Explicit IDs keep the CLI from silently routing to another model.
+DEFAULT_MODELS["gemini"] = {"lightweight": "gemini-3.5-flash", "standard": "gemini-3.1-pro-preview",
+                            "high_reasoning": "gemini-3.1-pro-preview"}
 DEFAULT_EFFORT: dict[Tier, str] = {"lightweight": "low", "standard": "medium", "high_reasoning": "high"}
 
 
@@ -25,8 +29,8 @@ class Phase3Settings(BaseModel):
     worktrees_dir: Path = Path.home() / ".research-autopilot" / "worktrees"
     primary_backend: BackendName = "codex"
     # tried in order when the active backend hits a usage limit / rate limit / process failure; codex_api is the
-    # pay-as-you-go last resort after both subscriptions (user decision 2026-10-12)
-    fallback_backends: list[BackendName] = Field(default_factory=lambda: ["claude", "codex_api"])
+    # pay-as-you-go last resort after the subscriptions (user decisions 2026-10-12; Gemini added 2026-10-16)
+    fallback_backends: list[BackendName] = Field(default_factory=lambda: ["claude", "gemini", "codex_api"])
     reviewer_backend: BackendName = "codex"
     models: dict[BackendName, dict[Tier, str]] = Field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_MODELS.items()})
     reasoning_effort: dict[Tier, str] = Field(default_factory=lambda: dict(DEFAULT_EFFORT))
@@ -36,7 +40,7 @@ class Phase3Settings(BaseModel):
 
     max_revisions: int = Field(default=2, ge=0, le=2)
     max_attempts: int = Field(default=3, ge=1, le=3)
-    max_fallbacks: int = Field(default=2, ge=0, le=2)
+    max_fallbacks: int = Field(default=3, ge=0, le=3)
     max_concurrent_tasks: int = Field(default=1, ge=1, le=1)
     task_wall_time_seconds: int = Field(default=1800, ge=60)
     max_tokens_per_run: int = Field(default=3_000_000, ge=1)
@@ -66,7 +70,7 @@ def load_phase3_settings(env: dict[str, str] | None = None) -> Phase3Settings:
         data["fallback_backends"] = [b.strip() for b in env["RA_IMPL_FALLBACK_BACKEND"].split(",") if b.strip()]
     if (raw := env.get("RA_IMPL_MAX_FALLBACKS", "").strip()):
         data["max_fallbacks"] = int(raw)
-    for backend in ("codex", "claude", "codex_api"):
+    for backend in ("codex", "claude", "codex_api", "gemini"):
         for tier, suffix in (("lightweight", "LIGHT"), ("standard", "STANDARD"), ("high_reasoning", "HIGH")):
             if (raw := env.get(f"RA_{backend.upper()}_MODEL_{suffix}", "").strip()):
                 data["models"][backend][tier] = raw

@@ -14,7 +14,8 @@ from research_autopilot.models import ExecutionPlan, SourceRef, new_id, utcnow
 
 Level = Literal["low", "medium", "high"]
 Tier = Literal["lightweight", "standard", "high_reasoning"]
-BackendName = Literal["codex", "claude", "codex_api"]  # codex_api: Codex CLI billed to the OpenAI API key
+BackendName = Literal["codex", "claude", "codex_api", "gemini"]  # codex_api: Codex CLI billed to the OpenAI API key;
+# gemini: Gemini CLI on the Google AI Pro subscription
 
 TIER_ORDER: list[Tier] = ["lightweight", "standard", "high_reasoning"]
 

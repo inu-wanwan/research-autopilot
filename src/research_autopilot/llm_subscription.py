@@ -51,12 +51,12 @@ def subscription_mode() -> str | None:
 
 
 def subscription_providers() -> list[str]:
-    """Subscriptions to try, in the written order, before the API: ``codex`` (default for truthy values) and/or
-    ``claude`` (``codex,claude``: Claude when Codex is at its limit; ``claude,codex``: Claude first)."""
+    """Subscriptions to try, in the written order, before the API: ``codex`` (default for truthy values),
+    ``claude`` and/or ``gemini`` (``codex,claude,gemini``: Claude when Codex is at its limit, then Gemini)."""
     v = os.environ.get(ENV_FLAG, "").strip().lower()
     if v in ("1", "true", "yes", "on"):
         return ["codex"]
-    return [p for p in (x.strip() for x in v.split(",")) if p in ("codex", "claude")]
+    return [p for p in (x.strip() for x in v.split(",")) if p in ("codex", "claude", "gemini")]
 
 
 def strict_schema(output_type: type[BaseModel]) -> dict:
@@ -84,6 +84,7 @@ def reset() -> None:
     with _lock:
         _skip_until, _skip_reason = 0.0, ""
     _claude.update(skip_until=0.0, billing=None)
+    _gemini.update(skip_until=0.0)
 
 
 def _executable() -> str:
@@ -180,6 +181,70 @@ def claude_structured(instructions: str, prompt: str, output_type: type[BaseMode
         raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
 
 
+GEMINI_MODEL_ENV = "RA_LLM_SUBSCRIPTION_GEMINI_MODEL"
+GEMINI_DEFAULT_MODEL = "gemini-3.1-pro-preview"  # from the CLI 0.64.0 constants; not yet verified with a real call
+_gemini = {"skip_until": 0.0}
+
+
+def gemini_structured(instructions: str, prompt: str, output_type: type[BaseModel],
+                      timeout: int = DEFAULT_TIMEOUT, executable: str | None = None,
+                      model: str | None = None) -> tuple[BaseModel, dict]:
+    """One headless ``gemini -o json`` call on the Google AI Pro login (every tool denied by policy, empty
+    directory, sanitized environment). The CLI cannot enforce a schema, so the schema is in the prompt and the
+    answer is validated here. Refuses (auth_error) unless the login is Login with Google (oauth-personal)."""
+    from research_autopilot.implementation.backends import gemini as g
+    from research_autopilot.implementation.backends.base import run_process, tail
+
+    exe = executable or os.environ.get("RA_LLM_SUBSCRIPTION_GEMINI", "").strip() or "gemini"
+    if not shutil.which(exe):
+        raise SubscriptionCallError("not_installed", f"{exe} not on PATH")
+    if (method := g.auth_type()) != g.SUBSCRIPTION_AUTH:
+        raise SubscriptionCallError("auth_error", f"gemini login is not a subscription ({method or 'unset'})")
+    model = model or os.environ.get(GEMINI_MODEL_ENV, "").strip() or GEMINI_DEFAULT_MODEL
+    with tempfile.TemporaryDirectory(prefix="ra-llm-sub-gemini-") as tmp:
+        root = Path(tmp)
+        work = root / "work"
+        work.mkdir()
+        policy = root / "policy.toml"
+        policy.write_text(g.policy_toml(g.NO_TOOLS), encoding="utf-8")
+        stdin = (f"{instructions.strip()}\n\n---\nINPUT:\n{prompt}\n\n---\nAnswer with a single JSON object (no "
+                 f"prose, no code fence) that conforms to this JSON Schema:\n{json.dumps(strict_schema(output_type))}\n")
+        out = run_process(g.command(exe, model, policy, "default"), work, stdin, timeout, root / "gemini.log",
+                          lambda pid: None, env=g.process_env())
+    if out.timed_out:
+        raise SubscriptionCallError("timeout", f"timed out after {timeout}s")
+    result, err = g.parse_output(out.stdout, out.stderr)
+    u = g.usage_of(result)
+    usage = {"input_tokens": u.input_tokens, "cached_input_tokens": u.cached_input_tokens,
+             "output_tokens": u.output_tokens, "reasoning_tokens": u.reasoning_tokens}
+    if out.exit_code != 0 or not result or err:
+        detail = f"{err.get('type', '')}: {err.get('message', '')}".strip(": ") or tail(out.stderr, 300)
+        raise SubscriptionCallError(g.classify(out.exit_code, err, out.stderr), tail(detail, 300))
+    try:
+        return output_type.model_validate(g._json_object(str(result.get("response") or ""))), usage
+    except (ValueError, ValidationError) as exc:
+        raise SubscriptionCallError("invalid_output", str(exc)[:300]) from exc
+
+
+def _try_gemini(instructions: str, prompt: str, output_type: type[BaseModel], timeout: int):
+    if _gemini["skip_until"] > time.monotonic():
+        return None
+    for attempt in (1, 2):
+        try:
+            return gemini_structured(instructions, prompt, output_type, timeout)
+        except SubscriptionCallError as exc:
+            if exc.status in ("invalid_output", "transient_error") and attempt == 1:
+                continue
+            if exc.status in _STICKY:
+                _gemini["skip_until"] = time.monotonic() + COOLDOWN_SECONDS
+            log.warning("gemini subscription call failed (%s: %s)", exc.status, exc.detail[:200])
+            return None
+        except OSError as exc:
+            log.warning("gemini subscription call could not start (%s)", exc)
+            return None
+    return None
+
+
 def _try_claude(instructions: str, prompt: str, output_type: type[BaseModel], timeout: int):
     if _claude["skip_until"] > time.monotonic():
         return None
@@ -213,7 +278,8 @@ def try_structured(model: str, instructions: str, prompt: str, output_type: type
     """
     for provider in subscription_providers():  # in the configured order (e.g. claude,codex: Claude first)
         got = (_try_codex(model, instructions, prompt, output_type, timeout, reasoning_effort) if provider == "codex"
-               else _try_claude(instructions, prompt, output_type, timeout))
+               else _try_claude(instructions, prompt, output_type, timeout) if provider == "claude"
+               else _try_gemini(instructions, prompt, output_type, timeout))
         if got is not None:
             return got
     return None

@@ -11,8 +11,8 @@ research-agent implement --task INU-123   (Prefect flow "implement-task")
   3. Notion の Repository / Allowed files → リポジトリ登録ファイルで解決（未登録・未記載なら blocked）
   4. リース（全体で1件、タスクごとに1件）→ worktree の作成とロック
   5. 難易度・科学的リスクの分類 → モデルの選択
-  6. 試行：実装（Codex、失敗時は Claude）→ commit → レビュー（決定論的検証 → LLM）
-     修正は最大2回。同じ種類の失敗が続いたときだけ昇格する。fallback は1回まで。トークン・費用・時間に上限がある
+  6. 試行：実装（Codex、利用枠などで失敗したら Claude → Gemini → API 課金の Codex の順）→ commit → レビュー（決定論的検証 → LLM）
+     修正は最大2回。同じ種類の失敗が続いたときだけ昇格する。fallback は最大3回（`RA_IMPL_MAX_FALLBACKS`）。トークン・費用・時間に上限がある
   7. pass したら、固定 commit、ExperimentSpec、Phase 4 用の handoff、manifest を作る（merge / push はしない）
 ```
 
@@ -66,13 +66,22 @@ uv run research-agent impl-runs show <phase3_run_id>
 |---|---|---|
 | Implementer（Codex） | low → `gpt-5.6-luna`、medium → `gpt-5.6-terra`、high → `gpt-5.6-sol` | `RA_CODEX_MODEL_LIGHT/STANDARD/HIGH` |
 | fallback（Claude） | `claude-haiku-4-5-20251001` / `claude-sonnet-5-5` / `claude-opus-5-5` | `RA_CLAUDE_MODEL_*` |
-| Reviewer | 科学的リスク low → standard、medium 以上 → high（既定は Codex の read-only セッション） | `RA_IMPL_REVIEWER_BACKEND` |
+| fallback（Gemini、Google AI Pro） | `gemini-3.5-flash` / `gemini-3.1-pro-preview` / `gemini-3.1-pro-preview`（CLI 0.64.0 の定数。実呼び出しでは未検証） | `RA_GEMINI_MODEL_*` |
+| fallback の順番 | `claude,gemini,codex_api`（`codex_api` は API 課金で最後） | `RA_IMPL_FALLBACK_BACKEND` |
+| Reviewer | 科学的リスク low → standard、medium 以上 → high（既定は Codex の read-only セッション）。使えないときは fallback の順番で代わる。Gemini が書いた変更は Gemini 以外がレビューする | `RA_IMPL_REVIEWER_BACKEND` |
 | 修正 / 試行 | 2 / 3 | `RA_IMPL_MAX_REVISIONS` / `RA_IMPL_MAX_ATTEMPTS` |
 | 実行時間 | 1800 秒 | `RA_IMPL_WALL_TIME_SECONDS` |
 | トークン / 費用 | 300万 / $5（費用は CLI が報告するものだけ計上） | `RA_IMPL_MAX_TOKENS` / `RA_IMPL_MAX_COST_USD` |
 | Claude の1回あたりの上限 | $2（`--max-budget-usd`） | `RA_CLAUDE_MAX_BUDGET_USD` |
 
-Codex を ChatGPT ログイン（サブスクリプション）で使う場合、費用は unknown と記録し、回数・時間・トークン数で制御する。上限はリポジトリのチェーン全体（元の run と修正 run の合計）で数える。
+Codex を ChatGPT ログイン（サブスクリプション）で使う場合、費用は unknown と記録し、回数・時間・トークン数で制御する。
+
+Gemini（2026-10-16 追加）：
+
+- Gemini CLI の「Login with Google」（`~/.gemini/settings.json` の `security.auth.selectedType` が `oauth-personal`）のときだけ使う。API キー・Vertex のログインでは起動しない（未ログイン扱いで次の fallback へ進む）。
+- 費用は 0 USD（既知）として記録する。研究の予算判定で「価格不明の課金呼び出し」にならない。
+- ツールは毎回生成する Policy Engine の TOML（`--policy`）で制限する。実装担当は読み取り・ファイル編集と、Claude と同じシェルコマンド（`uv run pytest` など）＋リポジトリのチェックコマンドだけ。レビュー担当は読み取りだけ。Web 検索・取得、MCP、拡張機能は使わない。
+- Gemini CLI の仕様で、ヘッドレス実行では `pyproject.toml`・lockfile・`Dockerfile` などのビルド設定ファイルを編集できない。これらの変更が必要なタスクを Gemini が担当すると、実装が不完全になりレビューで差し戻される。上限はリポジトリのチェーン全体（元の run と修正 run の合計）で数える。
 
 ## 5. 保存先
 

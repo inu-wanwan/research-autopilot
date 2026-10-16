@@ -596,8 +596,16 @@ def _review(deps: ImplDeps, m: ImplementationManifest, task: ImplementationTask,
     _save(deps, m, run_dir)
     _progress(deps, m, run_dir, f"review for attempt {attempt.number} started")
     choice = routing.reviewer_choice(s, m.assessment)
-    fallbacks = [(routing.choose(s, b, choice.tier), deps.reviewers[b]) for b in s.fallback_backends
-                 if b != choice.backend and b in deps.reviewers]
+    order = [choice.backend] + [b for b in s.fallback_backends if b != choice.backend and b in deps.reviewers]
+    implementers = {m.implementer_choice.backend if m.implementer_choice else None, attempt.choice.backend,
+                    *m.fallbacks_used}
+    if "gemini" in implementers:  # work written by Gemini is reviewed by another model (user decision 2026-10-16)
+        order = [b for b in order if b != "gemini"]
+        if not order:
+            raise _Stop(RunState.BLOCKED, "backend_unavailable", "no reviewer other than gemini is configured",
+                        "reviewer")
+        choice = routing.choose(s, order[0], choice.tier)
+    fallbacks = [(routing.choose(s, b, choice.tier), deps.reviewers[b]) for b in order[1:]]
     previous = next((a.review for a in reversed(m.attempts) if a is not attempt and a.review and a.review.llm),
                     m.inherited_review if m.inherited_review and m.inherited_review.llm else None)
     outcome = review(task, repo, wt, choice, deps.reviewers[choice.backend], run_dir, fallback=fallbacks,

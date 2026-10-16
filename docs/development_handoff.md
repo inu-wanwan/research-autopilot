@@ -26,7 +26,21 @@ INU-292（[E2E] H₂ RHF–FCI 結合解離曲線の自律研究）で 10A→10B
 
 ## Last Updated
 
-2026-10-15 04:30 JST / Antigravity
+2026-10-16 JST / Claude Code
+
+### Gemini を subscription fallback に追加（2026-10-16 / Claude Code）
+
+- ユーザー決定：Google AI Pro を契約したので Gemini を fallback に加える。シャドー運用（並走比較）はしない。本番投入前に [TEST] タスクで 1 回だけ試験する。
+- ブランチ `phase3/gemini-fallback`（origin/main `d1571d5` から分岐、WSL clone `/home/rixyt/workspace/ResearchAutopilot` で作業）。
+- 実装：
+  - `implementation/backends/gemini.py`：`gemini -p ... -o json -m <model> --policy <toml> --skip-trust -e none --allowed-mcp-server-names __none__`（prompt は stdin）。`~/.gemini/settings.json` の `security.auth.selectedType` が `oauth-personal` のときだけ起動。費用は 0.0 USD（既知）。エラーは stderr の JSON の `error.type`（TerminalQuotaError → quota_exhausted、RetryableQuotaError → rate_limited）と exit 41（auth）で分類。
+  - Phase 3：`fallback_backends` 既定を `claude,gemini,codex_api`、`max_fallbacks` 既定・上限を 3 に。Gemini が書いた変更は Gemini 以外がレビュー（他に無ければ reviewer unavailable で blocked）。`GeminiReviewRunner` は読み取りのみ・schema は prompt に入れる。
+  - 構造化呼び出し：`RA_LLM_SUBSCRIPTION_FIRST` に `gemini` を追加可能。tool は全拒否、schema は prompt、invalid は 1 回再試行、quota/auth は 15 分 cooldown。
+- CLI の仕様は @google/gemini-cli 0.64.0 のパッケージ（docs と bundle JS）を読んで確認したもので、実呼び出しは未実施。未確認：quota 時の実際の exit code、explicit `-m` で自動のモデル切り替えが完全に止まるか、モデル ID（`gemini-3.1-pro-preview` / `gemini-3.5-flash`）が AI Pro ログインで使えるか。
+- テスト：`PYTHONPATH` 不要、WSL venv で `.venv/bin/python -m pytest -q tests/test_phase3.py tests/test_llm_subscription.py tests/test_definition_of_done.py tests/test_phase10_research.py tests/test_budget_unknown_calls.py tests/test_phase5_e2e.py tests/test_gemini.py` → 173 passed。全テストは未実行。
+- Eagle 反映は未実施。手順：(1) ra で `npm install -g @google/gemini-cli` → `gemini` を起動して Login with Google（人間）。(2) main へ merge・push 後、ra で `git pull`、`uv sync --frozen --no-dev`、`.env` の `RA_LLM_SUBSCRIPTION_FIRST=codex,claude,gemini`、サービス再起動。(3) [TEST] タスクで `RA_IMPL_PRIMARY_BACKEND=gemini` 相当の試験を 1 回（実装・レビュー・構造化呼び出し）。未ログインの間、Gemini は「使えない fallback」として飛ばされる。
+
+### （以前の記録）2026-10-15 04:30 JST / Antigravity
 
 ### A3 Generic Optimizer Benchmark（INU-327）の結果解析（2026-10-15 / Antigravity）
 
